@@ -1,78 +1,81 @@
-"""Input validation helpers."""
+"""Input validation for long-form Polars backtest data."""
 
 from __future__ import annotations
 
-import pandas as pd
+from collections.abc import Iterable
+
+import polars as pl
 
 from .exceptions import InputValidationError
 
+TIME = "time"
+ASSET_ID = "asset_id"
 
-def validate_prices(prices: pd.DataFrame) -> pd.DataFrame:
-    """Validate daily close prices and return a normalized defensive copy."""
 
-    if not isinstance(prices, pd.DataFrame):
-        raise InputValidationError("prices must be a pandas DataFrame")
-    frame = prices.copy(deep=True)
-    _validate_numeric_frame(frame, label="prices")
-    if frame.isna().all(axis=None):
-        raise InputValidationError("prices must contain at least one non-missing value")
-    return _normalize_index(frame, label="prices")
+def validate_panel_frame(
+    frame: pl.DataFrame,
+    *,
+    label: str,
+    value_columns: Iterable[str],
+) -> pl.DataFrame:
+    """Validate a long-form panel and return a defensive sorted clone."""
+
+    if not isinstance(frame, pl.DataFrame):
+        raise InputValidationError(f"{label} must be a polars DataFrame")
+    columns = set(frame.columns)
+    required = {TIME, ASSET_ID, *value_columns}
+    missing = sorted(required - columns)
+    if missing:
+        raise InputValidationError(f"{label} is missing required columns: {missing}")
+    if frame.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
+        raise InputValidationError(f"{label} must be unique by (time, asset_id)")
+
+    normalized = frame.clone().with_columns(
+        pl.col(TIME).cast(pl.Date, strict=False),
+        pl.col(ASSET_ID).cast(pl.String),
+    )
+    if normalized.select(pl.col(TIME).is_null().any()).item():
+        raise InputValidationError(f"{label} contains invalid time values")
+    for column in value_columns:
+        if not normalized.schema[column].is_numeric():
+            raise InputValidationError(f"{label}.{column} must be numeric")
+    return normalized.sort([TIME, ASSET_ID])
+
+
+def validate_prices(prices: pl.DataFrame) -> pl.DataFrame:
+    return validate_panel_frame(prices, label="prices", value_columns=("price",))
+
+
+def validate_weights(weights: pl.DataFrame) -> pl.DataFrame:
+    return validate_panel_frame(weights, label="weights", value_columns=("weight",))
+
+
+def validate_factor(factor: pl.DataFrame) -> pl.DataFrame:
+    return validate_panel_frame(factor, label="factor", value_columns=("factor",))
 
 
 def align_signal_and_prices(
-    signal: pd.DataFrame,
-    prices: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Align signal/factor values and prices to common dates and assets."""
+    signal: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    signal_column: str,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Keep only overlapping (time, asset_id) rows for a signal and prices."""
 
-    signal = validate_signal_frame(signal)
-    prices = validate_prices(prices)
-    common_dates = signal.index.intersection(prices.index).sort_values()
-    common_assets = prices.columns.intersection(signal.columns)
-
-    if common_dates.empty:
-        raise InputValidationError("signal and prices have no overlapping dates")
-    if common_assets.empty:
-        raise InputValidationError("signal and prices have no overlapping assets")
-
-    return (
-        signal.reindex(index=common_dates, columns=common_assets),
-        prices.reindex(index=common_dates, columns=common_assets),
+    signal_frame = validate_panel_frame(
+        signal,
+        label="signal",
+        value_columns=(signal_column,),
     )
-
-
-def validate_signal_frame(signal: pd.DataFrame) -> pd.DataFrame:
-    """Validate weights or factor scores and return a normalized defensive copy."""
-
-    if not isinstance(signal, pd.DataFrame):
-        raise InputValidationError("signal must be a pandas DataFrame")
-    frame = signal.copy(deep=True)
-    _validate_numeric_frame(frame, label="signal")
-    return _normalize_index(frame, label="signal")
-
-
-def _validate_numeric_frame(frame: pd.DataFrame, *, label: str) -> None:
-    if frame.index.nlevels != 1 or frame.columns.nlevels != 1:
-        raise InputValidationError(f"{label} must have 1D index and columns")
-    if frame.index.has_duplicates:
-        raise InputValidationError(f"{label} dates must be unique")
-    if frame.columns.has_duplicates:
-        raise InputValidationError(f"{label} assets must be unique")
-    numeric_columns = frame.select_dtypes(include="number").columns
-    if len(numeric_columns) != len(frame.columns):
-        raise InputValidationError(f"{label} must be fully numeric")
-
-
-def _normalize_index(frame: pd.DataFrame, *, label: str) -> pd.DataFrame:
-    normalized = frame.copy(deep=True)
-    normalized.index = pd.DatetimeIndex(pd.to_datetime(normalized.index))
-    if normalized.index.tz is not None:
-        normalized.index = normalized.index.tz_localize(None)
-    normalized.index = normalized.index.normalize().as_unit("ns")
-    if normalized.index.has_duplicates:
-        raise InputValidationError(
-            f"{label} dates must remain unique after normalization"
-        )
-    if not normalized.index.is_monotonic_increasing:
-        normalized = normalized.sort_index()
-    return normalized
+    price_frame = validate_prices(prices)
+    keys = price_frame.select(TIME, ASSET_ID).join(
+        signal_frame.select(TIME, ASSET_ID),
+        on=[TIME, ASSET_ID],
+        how="inner",
+    )
+    return (
+        signal_frame.join(keys, on=[TIME, ASSET_ID], how="inner").sort(
+            [TIME, ASSET_ID]
+        ),
+        price_frame.join(keys, on=[TIME, ASSET_ID], how="inner").sort([TIME, ASSET_ID]),
+    )
