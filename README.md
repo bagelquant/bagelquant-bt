@@ -1,21 +1,32 @@
 # bagelquant-bt
 
 `bagelquant-bt` provides backtesting, factor evaluation, performance metrics, and
-visualization for the BagelQuant ecosystem.
+Plotly visualization for long-form Polars panels.
 
-The package is intentionally DataFrame-first:
+The public input shape is always explicit:
 
-- `bagelquant-core` builds and computes factors, signals, and portfolio weights.
-- `bagelquant-data` retrieves and shapes datasets.
-- `bagelquant-bt` evaluates already-computed DataFrames against daily prices.
+- prices: `time`, `asset_id`, `price`
+- weights: `time`, `asset_id`, `weight`
+- factors: `time`, `asset_id`, `factor`
 
-Package code does not import `bagelquant-core` or `bagelquant-data`. The public
-boundary is a numeric `pandas.DataFrame`.
-
-## Portfolio Weight Backtest
+Weights at `time=t` earn each asset's close-to-close return from `t` to the next
+available observation.
 
 ```python
+import polars as pl
+
 from bagelquant_bt import BacktestConfig, run_backtest
+
+prices = pl.DataFrame(
+    {
+        "time": ["2024-01-02", "2024-01-03"],
+        "asset_id": ["AAA", "AAA"],
+        "price": [100.0, 102.0],
+    }
+)
+weights = pl.DataFrame(
+    {"time": ["2024-01-02"], "asset_id": ["AAA"], "weight": [1.0]}
+)
 
 result = run_backtest(
     weights,
@@ -24,85 +35,25 @@ result = run_backtest(
     config=BacktestConfig(initial_capital=1_000_000),
 )
 
-result.summary.sharpe
-result.gross_cumulative_returns
-result.net_cumulative_returns
+print(result.returns)
+print(result.summary)
 ```
 
-`prices` must be a daily close-price `DataFrame` indexed by date and columned by
-asset. Weight values use the same shape. Weights on date `t` earn
-close-to-close returns from `t` to `t+1`.
+Factor evaluation computes daily cross-sectional IC, quantile returns, a
+top-minus-bottom spread, and a TOP N equal-weight backtest.
 
-## Factor Evaluation
+Visualization helpers return Plotly figures:
 
 ```python
-from bagelquant_bt import BacktestConfig, run_backtest
+from bagelquant_bt.visualization import plot_cumulative_returns
 
-result = run_backtest(
-    factor,
-    prices,
-    kind="factor",
-    config=BacktestConfig(initial_capital=1_000_000, top_n=50),
-)
-
-result.ic_mean
-result.icir
-result.quantile_cumulative_returns
-result.top_n_backtest.summary.total_return
+fig = plot_cumulative_returns(result)
+fig.write_html("cumulative_returns.html")
 ```
 
-Factor evaluation computes daily cross-sectional IC, ICIR, quantile portfolio
-returns, top-minus-bottom spread, and a long-only TOP N equal-weight portfolio
-backtest.
-
-## Transaction Costs
-
-The default transaction cost model is:
-
-```python
-TransactionCostConfig(rate=0.00015, min_fee=5.0)
-```
-
-For each asset with nonzero traded notional:
-
-- raw fee is `traded_notional * rate`
-- applied fee is `max(raw_fee, min_fee)`
-- daily cost return is total fee divided by portfolio value before trading
-
-`BacktestConfig(initial_capital=...)` is required because the minimum fee is a
-currency amount. Every backtest includes both gross no-cost and net cost-adjusted
-returns.
-
-## Visualization
-
-Visualization helpers return matplotlib figure objects and never call
-`plt.show()`:
-
-```python
-from bagelquant_bt.visualization import plot_cumulative_returns, plot_drawdown
-
-fig, ax = plot_cumulative_returns(result)
-fig, ax = plot_drawdown(result)
-```
-
-## Documentation
-
-- [Quick start](docs/en/quick-start.md)
-- [Concepts](docs/en/concepts.md)
-- [Architecture](docs/en/architecture.md)
-- [API](docs/en/reference/api.md)
-- [Public API](docs/en/reference/public-api.md)
-- [Transaction costs](docs/en/reference/transaction-costs.md)
-- [Factor evaluation](docs/en/reference/factor-evaluation.md)
-
-## Examples
-
-Run examples from the package root:
+## Development
 
 ```bash
-uv run python examples/weight_backtest.py
-uv run python examples/factor_evaluation.py
-uv run python examples/visualization.py
+uv run ruff check .
+uv run pytest
 ```
-
-The visualization example writes `cumulative_returns.png` and `drawdown.png`.

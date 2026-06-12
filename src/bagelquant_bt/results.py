@@ -4,19 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pandas as pd
+import polars as pl
 
 
 @dataclass(frozen=True, slots=True)
 class TransactionCostBreakdown:
     """Daily transaction cost details."""
 
-    traded_asset_count: pd.Series
-    traded_notional: pd.Series
-    raw_fee: pd.Series
-    min_fee_adjustment: pd.Series
-    total_fee: pd.Series
-    cost_return: pd.Series
+    data: pl.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,15 +34,11 @@ class PerformanceSummary:
 class BacktestResult:
     """Portfolio backtest result with gross and net return paths."""
 
-    weights: pd.DataFrame
-    asset_returns: pd.DataFrame
-    gross_returns: pd.Series
-    net_returns: pd.Series
-    gross_cumulative_returns: pd.Series
-    net_cumulative_returns: pd.Series
-    gross_value: pd.Series
-    net_value: pd.Series
-    turnover: pd.Series
+    weights: pl.DataFrame
+    asset_returns: pl.DataFrame
+    returns: pl.DataFrame
+    value: pl.DataFrame
+    turnover: pl.DataFrame
     transaction_costs: TransactionCostBreakdown
     summary: PerformanceSummary
 
@@ -56,14 +47,13 @@ class BacktestResult:
 class FactorEvaluationResult:
     """Factor diagnostics and derived TOP N backtest."""
 
-    factor: pd.DataFrame
-    forward_returns: pd.DataFrame
-    ic: pd.Series
+    factor: pl.DataFrame
+    forward_returns: pl.DataFrame
+    ic: pl.DataFrame
     ic_mean: float
     ic_std: float
     icir: float
-    quantile_returns: pd.DataFrame
-    quantile_cumulative_returns: pd.DataFrame
-    top_minus_bottom: pd.Series
-    top_n_weights: pd.DataFrame
+    quantile_returns: pl.DataFrame
+    top_minus_bottom: pl.DataFrame
+    top_n_weights: pl.DataFrame
     top_n_backtest: BacktestResult

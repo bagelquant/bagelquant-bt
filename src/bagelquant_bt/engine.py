@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-import pandas as pd
+import polars as pl
 
 from .config import BacktestConfig
 from .costs import turnover
 from .exceptions import BacktestConfigError, InputValidationError
-from .inputs import align_signal_and_prices
+from .inputs import ASSET_ID, TIME, validate_prices, validate_weights
 from .performance import summarize_performance
 from .results import BacktestResult, TransactionCostBreakdown
 from .returns import (
     align_weights_to_forward_returns,
     cumulative_returns,
     portfolio_returns,
-    value_path,
 )
 
 
 def run_backtest(
-    signal: pd.DataFrame,
-    prices: pd.DataFrame,
+    signal: pl.DataFrame,
+    prices: pl.DataFrame,
     *,
     kind: str,
     config: BacktestConfig | None = None,
@@ -37,15 +36,16 @@ def run_backtest(
 
 
 def run_weight_backtest(
-    weights: pd.DataFrame,
-    prices: pd.DataFrame,
+    weights: pl.DataFrame,
+    prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
 ) -> BacktestResult:
-    """Backtest a portfolio weight DataFrame."""
+    """Backtest a long-form portfolio weight frame."""
 
     resolved_config = _require_config(config)
-    aligned_weights, aligned_prices = align_signal_and_prices(weights, prices)
+    aligned_weights = validate_weights(weights)
+    aligned_prices = validate_prices(prices)
     return backtest_weight_frame(
         aligned_weights,
         aligned_prices,
@@ -54,31 +54,31 @@ def run_weight_backtest(
 
 
 def backtest_weight_frame(
-    weights: pd.DataFrame,
-    prices: pd.DataFrame,
+    weights: pl.DataFrame,
+    prices: pl.DataFrame,
     *,
     config: BacktestConfig,
 ) -> BacktestResult:
-    """Backtest an already materialized weight frame."""
+    """Backtest an already materialized long-form weight frame."""
 
-    aligned_weights, aligned_prices = align_signal_and_prices(weights, prices)
+    aligned_weights = validate_weights(weights)
+    aligned_prices = validate_prices(prices)
     executable_weights, forward_returns = align_weights_to_forward_returns(
         aligned_weights,
         aligned_prices,
     )
-    if executable_weights.empty:
-        raise InputValidationError("at least two overlapping price dates are required")
+    if executable_weights.is_empty():
+        raise InputValidationError("at least two overlapping price times are required")
 
     gross_returns = portfolio_returns(executable_weights, forward_returns)
     turn = turnover(executable_weights)
-    costs, net_returns, gross_value, net_value = _simulate_cost_adjusted_returns(
+    costs, returns, value = _simulate_cost_adjusted_returns(
         weights=executable_weights,
         gross_returns=gross_returns,
         config=config,
     )
     summary = summarize_performance(
-        gross_returns=gross_returns,
-        net_returns=net_returns,
+        returns=returns,
         turnover=turn,
         costs=costs,
         initial_capital=config.initial_capital,
@@ -87,12 +87,8 @@ def backtest_weight_frame(
     return BacktestResult(
         weights=executable_weights,
         asset_returns=forward_returns,
-        gross_returns=gross_returns,
-        net_returns=net_returns,
-        gross_cumulative_returns=cumulative_returns(gross_returns),
-        net_cumulative_returns=cumulative_returns(net_returns),
-        gross_value=gross_value,
-        net_value=net_value,
+        returns=returns,
+        value=value,
         turnover=turn,
         transaction_costs=costs,
         summary=summary,
@@ -101,59 +97,86 @@ def backtest_weight_frame(
 
 def _simulate_cost_adjusted_returns(
     *,
-    weights: pd.DataFrame,
-    gross_returns: pd.Series,
+    weights: pl.DataFrame,
+    gross_returns: pl.DataFrame,
     config: BacktestConfig,
-) -> tuple[TransactionCostBreakdown, pd.Series, pd.Series, pd.Series]:
-    dates = weights.index
-    value_before_trade = pd.Series(index=dates, dtype=float)
-    net_returns = pd.Series(index=dates, dtype=float)
-    net_value = pd.Series(index=dates, dtype=float)
+) -> tuple[TransactionCostBreakdown, pl.DataFrame, pl.DataFrame]:
+    weights_by_time = {
+        _partition_key(time): {
+            str(row[ASSET_ID]): 0.0 if row["weight"] is None else float(row["weight"])
+            for row in group.iter_rows(named=True)
+        }
+        for time, group in weights.partition_by(TIME, as_dict=True).items()
+    }
+    gross_by_time = {
+        row[TIME]: float(row["gross_return"] or 0.0)
+        for row in gross_returns.iter_rows(named=True)
+    }
 
     current_value = float(config.initial_capital)
-    previous_weights = pd.Series(0.0, index=weights.columns)
-    traded_asset_count = pd.Series(index=dates, dtype=int)
-    traded_notional = pd.Series(index=dates, dtype=float)
-    raw_fee = pd.Series(index=dates, dtype=float)
-    min_fee_adjustment = pd.Series(index=dates, dtype=float)
-    total_fee = pd.Series(index=dates, dtype=float)
-    cost_return = pd.Series(index=dates, dtype=float)
+    previous_weights: dict[str, float] = {}
+    cost_rows: list[dict[str, object]] = []
+    return_rows: list[dict[str, object]] = []
+    value_rows: list[dict[str, object]] = []
 
-    for date in dates:
-        value_before_trade.loc[date] = current_value
-        current_weights = weights.loc[date].fillna(0.0)
-        delta = current_weights.sub(previous_weights).abs()
-        notional = delta * current_value
-        traded = notional.gt(0.0)
-        raw_fee_row = notional * config.transaction_cost.rate
-        fee_row = raw_fee_row.where(
-            ~traded,
-            raw_fee_row.clip(lower=config.transaction_cost.min_fee),
-        ).where(traded, 0.0)
+    for time in sorted(weights_by_time):
+        current_weights = weights_by_time[time]
+        assets = set(previous_weights) | set(current_weights)
+        traded_asset_count = 0
+        traded_notional = 0.0
+        raw_fee = 0.0
+        total_fee = 0.0
+        for asset in assets:
+            delta = abs(
+                current_weights.get(asset, 0.0) - previous_weights.get(asset, 0.0)
+            )
+            notional = delta * current_value
+            if notional <= 0.0:
+                continue
+            traded_asset_count += 1
+            traded_notional += notional
+            asset_raw_fee = notional * config.transaction_cost.rate
+            raw_fee += asset_raw_fee
+            total_fee += max(asset_raw_fee, config.transaction_cost.min_fee)
 
-        traded_asset_count.loc[date] = int(traded.sum())
-        traded_notional.loc[date] = float(notional.sum())
-        raw_fee.loc[date] = float(raw_fee_row.where(traded, 0.0).sum())
-        total_fee.loc[date] = float(fee_row.sum())
-        min_fee_adjustment.loc[date] = total_fee.loc[date] - raw_fee.loc[date]
-        cost_return.loc[date] = total_fee.loc[date] / current_value
-
-        net_return = float(gross_returns.loc[date]) - cost_return.loc[date]
-        net_returns.loc[date] = net_return
+        cost_return = total_fee / current_value if current_value else 0.0
+        gross_return = gross_by_time.get(time, 0.0)
+        net_return = gross_return - cost_return
+        gross_value = current_value * (1.0 + gross_return)
         current_value *= 1.0 + net_return
-        net_value.loc[date] = current_value
+        cost_rows.append(
+            {
+                TIME: time,
+                "traded_asset_count": traded_asset_count,
+                "traded_notional": traded_notional,
+                "raw_fee": raw_fee,
+                "min_fee_adjustment": total_fee - raw_fee,
+                "total_fee": total_fee,
+                "cost_return": cost_return,
+            }
+        )
+        return_rows.append(
+            {TIME: time, "gross_return": gross_return, "net_return": net_return}
+        )
+        value_rows.append(
+            {TIME: time, "gross_value": gross_value, "net_value": current_value}
+        )
         previous_weights = current_weights
 
-    costs = TransactionCostBreakdown(
-        traded_asset_count=traded_asset_count,
-        traded_notional=traded_notional,
-        raw_fee=raw_fee,
-        min_fee_adjustment=min_fee_adjustment,
-        total_fee=total_fee,
-        cost_return=cost_return,
+    returns = pl.DataFrame(return_rows).sort(TIME)
+    value = (
+        pl.DataFrame(value_rows)
+        .sort(TIME)
+        .join(
+            cumulative_returns(returns, "gross_return"),
+            on=TIME,
+        )
+        .join(
+            cumulative_returns(returns, "net_return"),
+            on=TIME,
+        )
     )
-    gross_value = value_path(gross_returns, initial_capital=config.initial_capital)
-    return costs, net_returns, gross_value, net_value
+    return TransactionCostBreakdown(pl.DataFrame(cost_rows).sort(TIME)), returns, value
 
 
 def _require_config(config: BacktestConfig | None) -> BacktestConfig:
@@ -162,3 +185,11 @@ def _require_config(config: BacktestConfig | None) -> BacktestConfig:
             "config is required because initial_capital is needed for minimum fees"
         )
     return config
+
+
+def _partition_key(key: object) -> object:
+    if isinstance(key, tuple):
+        return key[0]
+    if isinstance(key, list):
+        return key[0]
+    return key
