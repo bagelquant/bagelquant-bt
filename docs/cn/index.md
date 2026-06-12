@@ -6,9 +6,10 @@
 
 - [快速开始](quick-start.md)
 - [架构与设计](architecture.md)
-- [公开 API](public-api.md)
-- [内部实现](internals.md)
 - [概念](concepts.md)
-- [交易成本](transaction-costs.md)
-- [因子评估](factor-evaluation.md)
+- [公开 API](reference/public-api.md)
+- [内部实现](reference/internals.md)
+- [API](reference/api.md)
+- [交易成本](reference/transaction-costs.md)
+- [因子评估](reference/factor-evaluation.md)
 

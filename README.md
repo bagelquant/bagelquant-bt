@@ -87,10 +87,13 @@ fig, ax = plot_drawdown(result)
 
 ## Documentation
 
-- [Concepts](docs/concepts.md)
-- [API](docs/api.md)
-- [Transaction costs](docs/transaction-costs.md)
-- [Factor evaluation](docs/factor-evaluation.md)
+- [Quick start](docs/en/quick-start.md)
+- [Concepts](docs/en/concepts.md)
+- [Architecture](docs/en/architecture.md)
+- [API](docs/en/reference/api.md)
+- [Public API](docs/en/reference/public-api.md)
+- [Transaction costs](docs/en/reference/transaction-costs.md)
+- [Factor evaluation](docs/en/reference/factor-evaluation.md)
 
 ## Examples
 
