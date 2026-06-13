@@ -52,12 +52,12 @@ cost and performance behavior consistent.
 
 ## Validation Principles
 
-Validation should fail early for non-DataFrame inputs, duplicate axes,
-non-numeric values, empty intersections, invalid config values, and unsupported
-dispatch kinds. Error messages should name the offending input.
+Validation should fail early for non-Polars inputs, duplicate `(time, asset_id)`
+keys, non-numeric values, empty intersections, invalid config values, and
+unsupported dispatch kinds. Error messages should name the offending input.
 
 ## Visualization
 
-Plotting helpers should consume result objects and return matplotlib objects.
+Plotting helpers should consume result objects and return Plotly `go.Figure` objects.
 They should not recompute performance metrics or mutate result data.
 

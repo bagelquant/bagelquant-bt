@@ -1,7 +1,7 @@
 # Quick Start
 
 `bagelquant-bt` evaluates research outputs. It does not retrieve data and it
-does not build factor signals. Inputs are numeric pandas DataFrames.
+does not build factor signals. Inputs are numeric long-form Polars DataFrames.
 
 ## Install
 
@@ -12,10 +12,24 @@ uv add bagelquant-bt
 ## Weight Backtest
 
 Use `kind="weights"` when the signal frame already contains portfolio weights.
-Rows are dates, columns are assets, and values are target weights.
+Weights use `time`, `asset_id`, and `weight`; prices use `time`, `asset_id`,
+and `price`.
 
 ```python
+import polars as pl
+
 from bagelquant_bt import BacktestConfig, run_backtest
+
+prices = pl.DataFrame(
+    {
+        "time": ["2024-01-02", "2024-01-03"],
+        "asset_id": ["AAA", "AAA"],
+        "price": [100.0, 102.0],
+    }
+)
+weights = pl.DataFrame(
+    {"time": ["2024-01-02"], "asset_id": ["AAA"], "weight": [1.0]}
+)
 
 result = run_backtest(
     weights,
@@ -30,15 +44,20 @@ result.net_cumulative_returns
 
 ## Factor Evaluation
 
-Use `kind="factor"` when the first frame contains cross-sectional factor scores.
+Use `kind="factor"` when the first frame contains cross-sectional factor scores
+with `time`, `asset_id`, and `factor` columns.
 The package computes forward returns, information coefficients, quantile
 returns, and a top-N backtest.
 
 ```python
 from bagelquant_bt import BacktestConfig, run_backtest
 
+factor = pl.DataFrame(
+    {"time": ["2024-01-02"], "asset_id": ["AAA"], "factor": [1.5]}
+)
+
 result = run_backtest(
-    factor_scores,
+    factor,
     prices,
     kind="factor",
     config=BacktestConfig(

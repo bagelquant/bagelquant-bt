@@ -11,16 +11,15 @@ It does not import `bagelquant-core` or `bagelquant-data`.
 - `bagelquant-bt` owns evaluation, transaction costs, summaries, and plots.
 
 This keeps the backtester useful with any workflow that can produce a
-date-by-asset `DataFrame`.
+long-form Polars `DataFrame`.
 
 ## DataFrame Shape
 
-Prices, weights, and factor scores use the same date-by-asset shape:
+Prices, weights, and factor scores use the same long-form key shape:
 
 ```text
-index:   daily dates
-columns: assets
-values:  numeric prices, weights, or factor scores
+keys:    time, asset_id
+values:  price, weight, or factor
 ```
 
 Prices are interpreted as close prices.
@@ -44,12 +43,11 @@ dropped from return calculations.
 
 ## Alignment
 
-`bagelquant-bt` aligns prices and signal values by intersecting dates and assets.
+`bagelquant-bt` aligns prices and signal values by intersecting `(time, asset_id)` keys.
 
 It rejects:
 
-- duplicate dates
-- duplicate assets
+- duplicate `(time, asset_id)` keys
 - nonnumeric values
 - empty date overlap
 - empty asset overlap

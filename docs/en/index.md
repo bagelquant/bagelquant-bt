@@ -6,11 +6,11 @@ not retrieve market data.
 The expected workflow is:
 
 ```text
-daily data -> factor or weights DataFrame -> bagelquant-bt result
+daily data -> long-form factor or weights DataFrame -> bagelquant-bt result
 ```
 
-The package is DataFrame-first. Prices and signal values must be numeric
-`pandas.DataFrame` objects.
+The package is Polars-first. Prices and signal values must be long-form
+`polars.DataFrame` objects keyed by `time` and `asset_id`.
 
 ## Main Entry Points
 
