@@ -1,6 +1,6 @@
 # bagelquant-bt 文档
 
-`bagelquant-bt` 用于评估研究输出。它不生成信号，也不读取市场数据；输入边界是数值型 pandas DataFrame。
+`bagelquant-bt` 用于评估研究输出。它不生成信号，也不读取市场数据；输入边界是 long-form Polars DataFrame。
 
 ## 推荐阅读
 

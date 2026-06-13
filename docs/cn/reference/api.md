@@ -19,7 +19,7 @@ run_backtest(signal, prices, *, kind, config=None)
 run_weight_backtest(weights, prices, *, config)
 ```
 
-把 DataFrame 解释为组合权重并执行回测，返回 `BacktestResult`。
+把 long-form Polars DataFrame 解释为组合权重并执行回测，返回 `BacktestResult`。
 
 重要字段包括 `weights`、`asset_returns`、`gross_returns`、`net_returns`、累计收益、组合价值、换手、交易成本和 `summary`。
 
@@ -29,7 +29,7 @@ run_weight_backtest(weights, prices, *, config)
 run_factor_evaluation(factor, prices, *, config)
 ```
 
-把 DataFrame 解释为因子分数并执行评估，返回 `FactorEvaluationResult`。
+把 long-form Polars DataFrame 解释为因子分数并执行评估，返回 `FactorEvaluationResult`。
 
 重要字段包括 `factor`、`forward_returns`、`ic`、`ic_mean`、`ic_std`、`icir`、分位数组合收益、top-minus-bottom、TOP N 权重和 TOP N 回测结果。
 
@@ -50,4 +50,4 @@ BacktestConfig(
 
 ## DataFrame 边界
 
-第一个参数必须是数值型 `pandas.DataFrame`。行是日期，列是资产，值是权重或因子分数。
+第一个参数必须是数值型 `polars.DataFrame`。权重需要 `time`、`asset_id`、`weight` 列；因子需要 `time`、`asset_id`、`factor` 列；价格需要 `time`、`asset_id`、`price` 列。

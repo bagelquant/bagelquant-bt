@@ -20,7 +20,7 @@ Dispatches to the correct evaluation path.
 run_weight_backtest(weights, prices, *, config)
 ```
 
-Evaluates a DataFrame as portfolio weights.
+Evaluates a long-form Polars DataFrame as portfolio weights.
 
 Returns `BacktestResult`.
 
@@ -44,7 +44,7 @@ Important fields:
 run_factor_evaluation(factor, prices, *, config)
 ```
 
-Evaluates a DataFrame as factor scores.
+Evaluates a long-form Polars DataFrame as factor scores.
 
 Returns `FactorEvaluationResult`.
 
@@ -81,6 +81,8 @@ BacktestConfig(
 
 ## DataFrame Boundary
 
-The first argument must be a numeric `pandas.DataFrame`.
+The first argument must be a numeric `polars.DataFrame`.
 
-Rows are dates, columns are assets, and values are weights or factor scores.
+Weights require `time`, `asset_id`, and `weight` columns. Factors require
+`time`, `asset_id`, and `factor` columns. Prices require `time`, `asset_id`,
+and `price` columns.
