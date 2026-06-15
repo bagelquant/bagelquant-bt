@@ -1,37 +1,118 @@
+from __future__ import annotations
+
+from datetime import date
+
+import numpy as np
 import polars as pl
 
-from bagelquant_bt import BacktestConfig, run_backtest
+from bagelquant_bt import BacktestConfig, run_weight_backtest
 
-prices = pl.DataFrame(
-    {
-        "time": ["2024-01-02", "2024-01-03", "2024-01-04"] * 3,
-        "asset_id": ["AAA"] * 3 + ["BBB"] * 3 + ["CCC"] * 3,
-        "price": [100.0, 102.0, 104.0, 100.0, 99.0, 102.0, 100.0, 101.0, 102.0],
-    }
-)
-weights = pl.DataFrame(
-    {
-        "time": [
-            "2024-01-02",
-            "2024-01-02",
-            "2024-01-02",
-            "2024-01-03",
-            "2024-01-03",
-            "2024-01-03",
-        ],
-        "asset_id": ["AAA", "BBB", "CCC", "AAA", "BBB", "CCC"],
-        "weight": [0.5, 0.3, 0.2, 0.2, 0.5, 0.3],
-    }
-)
 
-result = run_backtest(
-    weights,
-    prices,
-    kind="weights",
-    config=BacktestConfig(initial_capital=1_000_000),
-)
+def make_prices(
+    start: date = date(2024, 1, 1),
+    end: date = date(2024, 12, 31),
+    n_assets: int = 50,
+    seed: int = 42,
+) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
 
-print("Returns:")
-print(result.returns.to_dicts())
-print("\nSummary:")
-print(result.summary)
+    dates = pl.DataFrame(
+        {
+            "time": pl.date_range(start, end, interval="1d", eager=True)
+        }
+    )
+
+    assets = pl.DataFrame(
+        {
+            "asset_id": [f"asset_{i:03d}" for i in range(n_assets)]
+        }
+    )
+
+    panel = dates.join(assets, how="cross")
+
+    annual_mu = 0.08
+    annual_sigma = 0.25
+    dt = 1 / 252
+    start_price = 100.0
+
+    prices = (
+        panel
+        .with_columns(
+            shock=pl.Series(rng.normal(size=panel.height))
+        )
+        .with_columns(
+            log_return=(
+                (annual_mu - 0.5 * annual_sigma**2) * dt
+                + annual_sigma * np.sqrt(dt) * pl.col("shock")
+            )
+        )
+        .sort(["asset_id", "time"])
+        .with_columns(
+            price=(
+                start_price
+                * pl.col("log_return").cum_sum().exp().over("asset_id")
+            )
+        )
+        .select("time", "asset_id", "price")
+        .sort(["time", "asset_id"])
+    )
+
+    return prices
+
+
+def make_weights(
+    prices: pl.DataFrame,
+    seed: int = 123,
+) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+
+    weights = (
+        prices
+        .select("time", "asset_id")
+        .with_columns(
+            raw_weight=pl.Series(
+                rng.uniform(
+                    low=0.0,
+                    high=1.0,
+                    size=prices.height,
+                )
+            )
+        )
+        .with_columns(
+            weight=(
+                pl.col("raw_weight")
+                / pl.col("raw_weight").sum().over("time")
+            )
+        )
+        .select("time", "asset_id", "weight")
+        .sort(["time", "asset_id"])
+    )
+
+    return weights
+
+
+def main() -> None:
+    prices = make_prices()
+    weights = make_weights(prices)
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=1_000_000),
+    )
+
+    print("Prices:")
+    print(prices.head())
+
+    print("\nWeights:")
+    print(weights.head())
+
+    print("\nReturns:")
+    print(result.returns.head())
+
+    print("\nSummary:")
+    print(result.summary)
+
+
+if __name__ == "__main__":
+    main()

@@ -17,24 +17,6 @@ from .returns import (
 )
 
 
-def run_backtest(
-    signal: pl.DataFrame,
-    prices: pl.DataFrame,
-    *,
-    kind: str,
-    config: BacktestConfig | None = None,
-) -> BacktestResult | object:
-    """Dispatch to weight backtest or factor evaluation based on explicit kind."""
-
-    if kind == "weights":
-        return run_weight_backtest(signal, prices, config=config)
-    if kind == "factor":
-        from .factor import run_factor_evaluation
-
-        return run_factor_evaluation(signal, prices, config=config)
-    raise InputValidationError("kind must be 'weights' or 'factor'")
-
-
 def run_weight_backtest(
     weights: pl.DataFrame,
     prices: pl.DataFrame,
