@@ -181,8 +181,8 @@ def top_n_equal_weights(factor: pl.DataFrame, *, top_n: int) -> pl.DataFrame:
 
 
 def _top_minus_bottom(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:
-    top = f"q{quantiles}"
-    bottom = "q1"
+    top = "q1"
+    bottom = f"q{quantiles}"
     return (
         quantile_returns.filter(pl.col("quantile").is_in([bottom, top]))
         .select(TIME, "quantile", "return")

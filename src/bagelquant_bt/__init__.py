@@ -1,7 +1,7 @@
 """Backtesting and factor evaluation for the BagelQuant ecosystem."""
 
 from .config import BacktestConfig, TransactionCostConfig
-from .engine import run_backtest, run_weight_backtest
+from .engine import run_weight_backtest
 from .exceptions import (
     BacktestConfigError,
     BagelQuantBacktestError,
@@ -25,7 +25,6 @@ __all__ = [
     "PerformanceSummary",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
-    "run_backtest",
     "run_factor_evaluation",
     "run_weight_backtest",
 ]

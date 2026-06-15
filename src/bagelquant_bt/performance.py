@@ -42,7 +42,7 @@ def summarize_performance(
         else math.nan
     )
     dd = drawdown(frame, "net_return")
-    max_drawdown = float(dd["drawdown"].min()) if periods else math.nan
+    max_drawdown = float(dd["drawdown"].min()) if periods else math.nan  # type: ignore
     hit_rate = float(np.mean(net > 0)) if periods else math.nan
 
     return PerformanceSummary(
@@ -53,7 +53,7 @@ def summarize_performance(
         max_drawdown=max_drawdown,
         hit_rate=hit_rate,
         average_turnover=(
-            float(turnover["turnover"].mean()) if turnover.height else math.nan
+            float(turnover["turnover"].mean()) if turnover.height else math.nan  # type: ignore
         ),
         total_transaction_cost=(
             float(costs.data["total_fee"].sum()) if costs.data.height else 0.0
