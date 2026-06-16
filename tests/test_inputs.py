@@ -29,3 +29,19 @@ def test_prices_are_sorted_and_cloned() -> None:
     result = validate_prices(frame)
 
     assert result["price"].to_list() == [1.0, 2.0]
+
+
+def test_required_nulls_and_nans_are_removed_before_duplicate_check() -> None:
+    frame = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01", None, "2024-01-02"],
+            "asset_id": ["a", "a", "b", "c"],
+            "price": [float("nan"), 1.0, 2.0, None],
+        }
+    )
+
+    result = validate_prices(frame)
+
+    assert result.to_dicts() == [
+        {"time": result["time"][0], "asset_id": "a", "price": 1.0}
+    ]

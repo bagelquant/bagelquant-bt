@@ -4,7 +4,6 @@ import polars as pl
 import pytest
 
 from bagelquant_bt import BacktestConfig, run_factor_evaluation
-from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.factor import (
     factor_quantile_returns,
     information_coefficients,
@@ -102,7 +101,7 @@ def test_factor_evaluation_adds_long_short_and_lag_outputs() -> None:
         )
 
 
-def test_low_frequency_factor_keeps_analytics_and_trades_daily_portfolios() -> None:
+def test_sparse_factor_keeps_analytics_and_trades_daily_portfolios() -> None:
     prices = pl.DataFrame(
         {
             "time": [
@@ -130,7 +129,7 @@ def test_low_frequency_factor_keeps_analytics_and_trades_daily_portfolios() -> N
     )
     factor = pl.DataFrame(
         {
-            "time": ["2024-01-02", "2024-01-02"],
+            "time": ["2024-01-03", "2024-01-03"],
             "asset_id": ["a", "b"],
             "factor": [2.0, 1.0],
         }
@@ -225,44 +224,69 @@ def test_long_short_quantile_weights_handle_nulls_and_bucket_sizes() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("factor", "match"),
-    [
-        (
-            pl.DataFrame(
-                {"time": ["2023-12-31"], "asset_id": ["a"], "factor": [1.0]}
-            ),
-            "outside covered price range",
-        ),
-        (
-            pl.DataFrame(
-                {"time": ["2024-01-03"], "asset_id": ["a"], "factor": [1.0]}
-            ),
-            "outside covered price range",
-        ),
-        (
-            pl.DataFrame(
-                {"time": ["2024-01-01"], "asset_id": ["b"], "factor": [1.0]}
-            ),
-            "assets missing from prices",
-        ),
-    ],
-)
-def test_factor_must_be_covered_by_prices(
-    factor: pl.DataFrame,
-    match: str,
-) -> None:
+def test_factor_evaluation_drops_missing_price_keys_and_uses_matches() -> None:
     prices = pl.DataFrame(
         {
-            "time": ["2024-01-01", "2024-01-02"],
-            "asset_id": ["a", "a"],
-            "price": [10.0, 11.0],
+            "time": [
+                date
+                for asset in ["a", "b", "c"]
+                for date in ["2024-01-01", "2024-01-02", "2024-01-03"]
+            ],
+            "asset_id": [asset for asset in ["a", "b", "c"] for _ in range(3)],
+            "price": [10.0, 11.0, 12.0, 20.0, 18.0, 16.0, 30.0, 33.0, 36.0],
+        }
+    )
+    factor = pl.DataFrame(
+        {
+            "time": ["2024-01-01"] * 4 + ["2024-01-04"],
+            "asset_id": ["a", "b", "c", "d", "a"],
+            "factor": [3.0, 1.0, 2.0, 4.0, 5.0],
         }
     )
 
-    with pytest.raises(InputValidationError, match=match):
-        run_factor_evaluation(
-            factor,
-            prices,
-            config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
-        )
+    result = run_factor_evaluation(
+        factor,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+    )
+
+    assert set(result.factor["asset_id"]) == {"a", "b", "c"}
+    assert set(result.top_n_weights["asset_id"]) == {"a"}
+    assert "d" not in set(result.long_short_weights["asset_id"])
+    assert result.ic.height == 1
+    assert set(result.quantile_returns["quantile"]) == {"q1", "q2"}
+    assert result.missing_price_keys.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d")
+    ).to_dicts() == [
+        {"time": "2024-01-01", "asset_id": "d"},
+        {"time": "2024-01-04", "asset_id": "a"},
+    ]
+
+
+def test_factor_evaluation_removes_null_and_nan_rows_before_alignment() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"] * 2,
+            "asset_id": ["a", "a", "a", "b", "b", "b"],
+            "price": [10.0, 11.0, 12.0, 20.0, float("nan"), 18.0],
+        }
+    )
+    factor = pl.DataFrame(
+        {
+            "time": ["2024-01-01"] * 4,
+            "asset_id": ["a", "b", "c", "d"],
+            "factor": [2.0, 1.0, None, float("nan")],
+        }
+    )
+
+    result = run_factor_evaluation(
+        factor,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+    )
+
+    assert result.factor.select("asset_id", "factor").to_dicts() == [
+        {"asset_id": "a", "factor": 2.0},
+        {"asset_id": "b", "factor": 1.0},
+    ]
+    assert result.missing_price_keys.is_empty()

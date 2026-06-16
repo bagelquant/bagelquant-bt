@@ -66,7 +66,11 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
         plot_rolling_sharpe(result, annualization=annualization),
         plot_rolling_volatility(result, annualization=annualization),
     ]
-    return _section("Tables", "".join(tables)) + _figures_section("Plots", figures)
+    return (
+        _section("Tables", "".join(tables))
+        + _figures_section("Plots", figures)
+        + _missing_price_keys_section(result.missing_price_keys)
+    )
 
 
 def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str:
@@ -75,8 +79,16 @@ def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str
         _factor_top_n_section(result, annualization=annualization),
         _factor_spread_section(result, annualization=annualization),
         _factor_quantile_section(result),
+        _missing_price_keys_section(result.missing_price_keys),
     ]
     return "".join(sections)
+
+
+def _missing_price_keys_section(missing_price_keys: pl.DataFrame) -> str:
+    return _section(
+        "Missing Price Keys",
+        _table_section("Missing Price Keys", missing_price_keys),
+    )
 
 
 def _factor_ic_section(result: FactorEvaluationResult) -> str:

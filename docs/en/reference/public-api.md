@@ -51,6 +51,7 @@ config = BacktestConfig(
 - `transaction_costs`
 - `summary`
 - `performance`
+- `missing_price_keys`
 
 `FactorEvaluationResult` exposes:
 
@@ -71,6 +72,7 @@ config = BacktestConfig(
 - `lag_analysis`
 - `lag_returns`
 - `ic_decay`
+- `missing_price_keys`
 
 ## Exceptions
 

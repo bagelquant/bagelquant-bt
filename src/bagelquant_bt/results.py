@@ -52,6 +52,7 @@ class BacktestResult:
     transaction_costs: TransactionCostBreakdown
     summary: PerformanceSummary
     performance: pl.DataFrame
+    missing_price_keys: pl.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,3 +75,4 @@ class FactorEvaluationResult:
     lag_analysis: pl.DataFrame
     lag_returns: pl.DataFrame
     ic_decay: pl.DataFrame
+    missing_price_keys: pl.DataFrame

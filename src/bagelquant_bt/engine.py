@@ -7,7 +7,13 @@ import polars as pl
 from .config import BacktestConfig
 from .costs import turnover
 from .exceptions import BacktestConfigError, InputValidationError
-from .inputs import ASSET_ID, TIME, validate_prices, validate_weights
+from .inputs import (
+    ASSET_ID,
+    TIME,
+    missing_price_keys,
+    validate_prices,
+    validate_weights,
+)
 from .performance import summarize_performance
 from .results import BacktestResult, TransactionCostBreakdown
 from .returns import (
@@ -47,11 +53,13 @@ def backtest_weight_frame(
     aligned_weights = validate_weights(weights)
     aligned_prices = validate_prices(prices)
     forward_returns = asset_close_to_close_returns(aligned_prices)
+    missing_keys = missing_price_keys(aligned_weights, aligned_prices)
     return _backtest_weight_frame_with_forward_returns(
         aligned_weights,
         aligned_prices,
         forward_returns,
         config=config,
+        missing_price_keys=missing_keys,
     )
 
 
@@ -61,6 +69,7 @@ def _backtest_weight_frame_with_forward_returns(
     forward_returns: pl.DataFrame,
     *,
     config: BacktestConfig,
+    missing_price_keys: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest a weight frame with a precomputed forward-return panel."""
 
@@ -91,7 +100,16 @@ def _backtest_weight_frame_with_forward_returns(
         transaction_costs=costs,
         summary=summary,
         performance=performance,
+        missing_price_keys=(
+            _empty_missing_price_keys()
+            if missing_price_keys is None
+            else missing_price_keys.sort([TIME, ASSET_ID])
+        ),
     )
+
+
+def _empty_missing_price_keys() -> pl.DataFrame:
+    return pl.DataFrame(schema={TIME: pl.Date, ASSET_ID: pl.String})
 
 
 def _simulate_cost_adjusted_returns(
