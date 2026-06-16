@@ -147,8 +147,19 @@ def _simulate_cost_adjusted_returns(
         cost_return = total_fee / current_value if current_value else 0.0
         gross_return = gross_by_time.get(time, 0.0)
         net_return = gross_return - cost_return
+        next_value = current_value * (1.0 + net_return)
+        if next_value <= 0.0:
+            raise InputValidationError(
+                "net portfolio value became non-positive after transaction costs "
+                f"at {time}: current_value={current_value:.6g}, "
+                f"gross_return={gross_return:.6g}, "
+                f"cost_return={cost_return:.6g}, "
+                f"traded_asset_count={traded_asset_count}, "
+                f"total_fee={total_fee:.6g}. "
+                "Increase initial_capital or reduce traded universe/turnover."
+            )
         gross_value = current_value * (1.0 + gross_return)
-        current_value *= 1.0 + net_return
+        current_value = next_value
         cost_rows.append(
             {
                 TIME: time,
