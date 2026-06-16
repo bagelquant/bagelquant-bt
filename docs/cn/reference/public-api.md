@@ -50,6 +50,7 @@ config = BacktestConfig(
 - `transaction_costs`
 - `summary`
 - `performance`
+- `missing_price_keys`
 
 `FactorEvaluationResult` 暴露：
 
@@ -70,6 +71,7 @@ config = BacktestConfig(
 - `lag_analysis`
 - `lag_returns`
 - `ic_decay`
+- `missing_price_keys`
 
 ## 异常
 

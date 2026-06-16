@@ -27,18 +27,18 @@ def validate_panel_frame(
     missing = sorted(required - columns)
     if missing:
         raise InputValidationError(f"{label} is missing required columns: {missing}")
-    if frame.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
-        raise InputValidationError(f"{label} must be unique by (time, asset_id)")
-
     normalized = frame.clone().with_columns(
         pl.col(TIME).cast(pl.Date, strict=False),
         pl.col(ASSET_ID).cast(pl.String),
     )
-    if normalized.select(pl.col(TIME).is_null().any()).item():
-        raise InputValidationError(f"{label} contains invalid time values")
     for column in value_columns:
         if not normalized.schema[column].is_numeric():
             raise InputValidationError(f"{label}.{column} must be numeric")
+    normalized = normalized.drop_nulls([TIME, ASSET_ID, *value_columns])
+    for column in value_columns:
+        normalized = normalized.filter(~pl.col(column).is_nan())
+    if normalized.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
+        raise InputValidationError(f"{label} must be unique by (time, asset_id)")
     return normalized.sort([TIME, ASSET_ID])
 
 
@@ -52,6 +52,16 @@ def validate_weights(weights: pl.DataFrame) -> pl.DataFrame:
 
 def validate_factor(factor: pl.DataFrame) -> pl.DataFrame:
     return validate_panel_frame(factor, label="factor", value_columns=("factor",))
+
+
+def missing_price_keys(frame: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFrame:
+    """Return frame keys without an exact matching price key."""
+
+    return (
+        frame.select(TIME, ASSET_ID)
+        .join(prices.select(TIME, ASSET_ID), on=[TIME, ASSET_ID], how="anti")
+        .sort([TIME, ASSET_ID])
+    )
 
 
 def align_signal_and_prices(

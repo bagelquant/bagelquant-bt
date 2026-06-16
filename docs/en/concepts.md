@@ -35,19 +35,19 @@ are considered better for quantile and TOP N tests.
 The package uses a no-lookahead convention:
 
 ```text
-weight or factor at date t -> executes on the next available price date
+weight or factor at date t -> uses the exact matching price date
 executed portfolio weights -> earn close-to-close return to the next price date
 ```
 
-Signal and weight timestamps must be inside the covered price range. A timestamp
-that falls between price observations is moved forward to the next available
-tradable price date. The final price date cannot produce a realized forward
-return, so it is not a tradable execution date.
+Signal and weight rows without an exact `(time, asset_id)` price key are dropped
+from execution and listed in `missing_price_keys`. The final price date cannot
+produce a realized forward return, so rows there may be retained as inputs but
+will not contribute realized returns.
 
 ## Alignment
 
-`bagelquant-bt` aligns signal and weight snapshots to the price calendar before
-evaluation.
+`bagelquant-bt` aligns signal and weight snapshots to exact price keys before
+evaluation. Required null and NaN values are removed before alignment.
 
 For portfolio weights, each timestamp is a complete target portfolio. The
 backtest engine carries that target forward across price returns until the next
@@ -64,6 +64,4 @@ It rejects:
 
 - duplicate `(time, asset_id)` keys
 - nonnumeric values
-- timestamps outside the covered price range
-- assets missing from prices
 - non-DataFrame signal inputs

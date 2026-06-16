@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
-
 import polars as pl
 
 from .exceptions import InputValidationError
@@ -42,13 +40,12 @@ def align_signal_to_forward_returns(
     value_column: str,
     label: str,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Map sparse signal snapshots to the next tradable price date."""
+    """Keep signal snapshots with exact price keys."""
 
     returns = asset_close_to_close_returns(prices)
-    aligned = _align_snapshots_to_tradable_times(
+    aligned = _filter_snapshots_to_price_keys(
         signal,
         prices,
-        returns,
         value_columns=(value_column,),
         label=label,
     )
@@ -78,10 +75,9 @@ def _expand_portfolio_weights(
     prices: pl.DataFrame,
     forward_returns: pl.DataFrame,
 ) -> pl.DataFrame:
-    aligned = _align_snapshots_to_tradable_times(
+    aligned = _filter_snapshots_to_price_keys(
         weights,
         prices,
-        forward_returns,
         value_columns=("weight",),
         label="weights",
     )
@@ -120,73 +116,24 @@ def _expand_portfolio_weights(
     ).sort([TIME, ASSET_ID])
 
 
-def _align_snapshots_to_tradable_times(
+def _filter_snapshots_to_price_keys(
     frame: pl.DataFrame,
     prices: pl.DataFrame,
-    forward_returns: pl.DataFrame,
     *,
     value_columns: tuple[str, ...],
     label: str,
 ) -> pl.DataFrame:
     if frame.is_empty():
         return frame.select(TIME, ASSET_ID, *value_columns)
-    if forward_returns.is_empty():
+    if prices.is_empty():
         raise InputValidationError(f"{label} has no covered price range")
 
-    tradable_times = _sorted_unique(forward_returns[TIME].to_list())
-    price_times = _sorted_unique(prices[TIME].to_list())
-    first_price_time = price_times[0]
-    last_price_time = price_times[-1]
-    return_keys = {
-        (row[TIME], str(row[ASSET_ID]))
-        for row in forward_returns.select(TIME, ASSET_ID).iter_rows(named=True)
-    }
-    price_assets = {asset for _, asset in return_keys}
-    snapshots: dict[object, pl.DataFrame] = {}
-
-    for source_time, group in frame.partition_by(TIME, as_dict=True).items():
-        source_time = _partition_key(source_time)
-        if source_time < first_price_time or source_time > last_price_time:
-            raise InputValidationError(
-                f"{label} time is outside covered price range: {source_time}"
-            )
-        execution_time = _next_tradable_time(source_time, tradable_times)
-        if execution_time is None:
-            continue
-
-        assets = [str(asset) for asset in group[ASSET_ID].to_list()]
-        missing_assets = sorted(set(assets) - price_assets)
-        if missing_assets:
-            raise InputValidationError(
-                f"{label} contains assets missing from prices: {missing_assets}"
-            )
-        missing_at_execution = sorted(
-            asset
-            for asset in set(assets)
-            if (execution_time, asset) not in return_keys
-        )
-        if missing_at_execution:
-            raise InputValidationError(
-                f"{label} assets are not tradable at {execution_time}: "
-                f"{missing_at_execution}"
-            )
-
-        snapshots[execution_time] = group.with_columns(
-            pl.lit(execution_time).alias(TIME)
-        )
-
-    aligned = pl.concat(snapshots.values()) if snapshots else frame.clear()
+    aligned = frame.join(
+        prices.select(TIME, ASSET_ID),
+        on=[TIME, ASSET_ID],
+        how="inner",
+    )
     return aligned.select(TIME, ASSET_ID, *value_columns).sort([TIME, ASSET_ID])
-
-
-def _next_tradable_time(
-    source_time: object,
-    tradable_times: list[object],
-) -> object | None:
-    index = bisect_left(tradable_times, source_time)
-    if index >= len(tradable_times):
-        return None
-    return tradable_times[index]
 
 
 def _sorted_unique(values: list[object]) -> list[object]:

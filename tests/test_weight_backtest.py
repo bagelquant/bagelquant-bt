@@ -118,7 +118,7 @@ def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
     assert cost["min_fee_adjustment"] == pytest.approx(9.0)
 
 
-def test_non_price_weight_date_executes_on_next_price_date() -> None:
+def test_non_price_weight_date_is_dropped() -> None:
     prices = pl.DataFrame(
         {
             "time": ["2024-01-01", "2024-01-03", "2024-01-04"],
@@ -130,55 +130,85 @@ def test_non_price_weight_date_executes_on_next_price_date() -> None:
         {"time": ["2024-01-02"], "asset_id": ["a"], "weight": [1.0]}
     )
 
+    with pytest.raises(InputValidationError, match="at least two overlapping"):
+        run_weight_backtest(
+            weights,
+            prices,
+            config=BacktestConfig(initial_capital=10_000),
+        )
+
+
+def test_weight_backtest_drops_missing_price_keys_and_trades_matches() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": [
+                "2024-01-01",
+                "2024-01-02",
+                "2024-01-03",
+                "2024-01-01",
+                "2024-01-02",
+                "2024-01-03",
+            ],
+            "asset_id": ["a", "a", "a", "b", "b", "b"],
+            "price": [10.0, 11.0, 12.0, 20.0, 18.0, 16.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": [
+                "2024-01-01",
+                "2024-01-01",
+                "2024-01-01",
+                "2024-01-04",
+            ],
+            "asset_id": ["a", "b", "c", "a"],
+            "weight": [0.5, 0.5, 0.5, 1.0],
+        }
+    )
+
     result = run_weight_backtest(
         weights,
         prices,
         config=BacktestConfig(initial_capital=10_000),
     )
 
-    assert result.weights["time"].dt.strftime("%Y-%m-%d").to_list() == [
-        "2024-01-03",
+    assert set(result.weights["asset_id"]) == {"a", "b"}
+    assert result.missing_price_keys.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d")
+    ).to_dicts() == [
+        {"time": "2024-01-01", "asset_id": "c"},
+        {"time": "2024-01-04", "asset_id": "a"},
+    ]
+    assert result.returns["gross_return"].round(4).to_list() == [
+        0.0,
+        pytest.approx(-0.0101),
     ]
 
 
-@pytest.mark.parametrize(
-    ("weights", "match"),
-    [
-        (
-            pl.DataFrame(
-                {"time": ["2023-12-31"], "asset_id": ["a"], "weight": [1.0]}
-            ),
-            "outside covered price range",
-        ),
-        (
-            pl.DataFrame(
-                {"time": ["2024-01-04"], "asset_id": ["a"], "weight": [1.0]}
-            ),
-            "outside covered price range",
-        ),
-        (
-            pl.DataFrame(
-                {"time": ["2024-01-01"], "asset_id": ["b"], "weight": [1.0]}
-            ),
-            "assets missing from prices",
-        ),
-    ],
-)
-def test_weights_must_be_covered_by_prices(
-    weights: pl.DataFrame,
-    match: str,
-) -> None:
+def test_weight_backtest_removes_null_and_nan_rows_before_alignment() -> None:
     prices = pl.DataFrame(
         {
-            "time": ["2024-01-01", "2024-01-02"],
-            "asset_id": ["a", "a"],
-            "price": [10.0, 11.0],
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["a", "a", "a"],
+            "price": [10.0, float("nan"), 12.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["a", "a", "a"],
+            "weight": [1.0, None, float("nan")],
         }
     )
 
-    with pytest.raises(InputValidationError, match=match):
-        run_weight_backtest(
-            weights,
-            prices,
-            config=BacktestConfig(initial_capital=10_000),
-        )
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+    )
+
+    assert (
+        result.weights.with_columns(pl.col("time").dt.strftime("%Y-%m-%d")).to_dicts()
+        == [{"time": "2024-01-01", "asset_id": "a", "weight": 1.0}]
+    )
+    assert result.missing_price_keys.is_empty()

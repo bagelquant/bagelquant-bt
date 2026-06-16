@@ -37,11 +37,13 @@ def test_summary_report_renders_and_writes_backtest_html(tmp_path) -> None:
     assert html.startswith("<!doctype html>")
     assert "Performance" in html
     assert "Trading Summary" in html
+    assert "Missing Price Keys" in html
     assert "Portfolio Cumulative Returns" in html
     assert "Plotly.newPlot" in html
     assert "<h3>Returns</h3>" not in html
     assert "<h3>Value</h3>" not in html
     assert "<h3>Transaction Costs</h3>" not in html
+    assert html.index("<h2>Missing Price Keys</h2>") > html.index("<h2>Plots</h2>")
     assert output_path.read_text(encoding="utf-8") == html
 
 
@@ -90,6 +92,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "Long-Short Lag Analysis" in html
     assert "Spread Summary" in html
     assert "Quantile Performance" in html
+    assert "Missing Price Keys" in html
     assert "Information Coefficient" in html
     assert "IC Distribution" in html
     assert "TOP N Gross Lag Cumulative Returns" in html
@@ -102,6 +105,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
         html.index("<h2>TOP N</h2>"),
         html.index("<h2>Spread Performance</h2>"),
         html.index("<h2>Quantile Performance</h2>"),
+        html.index("<h2>Missing Price Keys</h2>"),
     ]
     assert section_order == sorted(section_order)
     assert html.index("<h3>IC Summary</h3>") < html.index("Information Coefficient")
