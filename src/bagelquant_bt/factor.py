@@ -12,7 +12,7 @@ from .engine import _require_config, backtest_weight_frame
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_factor, validate_prices
 from .results import FactorEvaluationResult
-from .returns import asset_close_to_close_returns
+from .returns import align_signal_to_forward_returns
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
 
@@ -45,24 +45,25 @@ def evaluate_factor_frame(
 
     aligned_factor = validate_factor(factor)
     aligned_prices = validate_prices(prices)
-    forward_returns = asset_close_to_close_returns(aligned_prices)
-    paired = aligned_factor.join(forward_returns, on=[TIME, ASSET_ID], how="inner")
-    if paired.is_empty():
+    factor, forward_returns = align_signal_to_forward_returns(
+        aligned_factor,
+        aligned_prices,
+        value_column="factor",
+        label="factor",
+    )
+    if factor.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
 
-    factor = paired.select(TIME, ASSET_ID, "factor").sort([TIME, ASSET_ID])
-    forward_returns = paired.select(TIME, ASSET_ID, "forward_return").sort(
-        [TIME, ASSET_ID]
-    )
     ic = information_coefficients(factor, forward_returns)
     ic_summary = summarize_ic(ic)
     values = np.array(ic["spearman_ic"].drop_nulls(), dtype=float)
     ic_std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
     ic_mean = float(np.mean(values)) if len(values) else math.nan
     icir = ic_mean / ic_std if ic_std != 0 and not math.isnan(ic_std) else math.nan
-    quantile_returns = factor_quantile_returns(
+    quantile_returns = traded_factor_quantile_returns(
         factor,
-        forward_returns,
+        aligned_prices,
+        config=config,
         quantiles=config.quantiles,
     )
     top_minus_bottom = _top_minus_bottom(quantile_returns, config.quantiles)
@@ -253,6 +254,93 @@ def factor_quantile_returns(
             (1.0 + pl.col("return").fill_null(0.0)).cum_prod().over("quantile") - 1.0
         ).alias("cumulative_return")
     )
+
+
+def traded_factor_quantile_returns(
+    factor: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+    quantiles: int,
+) -> pl.DataFrame:
+    """Compute quantile return series by trading quantile portfolios."""
+
+    rows: list[dict[str, object]] = []
+    for quantile, weights in quantile_equal_weights(
+        factor,
+        quantiles=quantiles,
+    ).items():
+        if weights.is_empty():
+            continue
+        backtest = backtest_weight_frame(weights, prices, config=config)
+        for row in backtest.returns.iter_rows(named=True):
+            rows.append(
+                {
+                    TIME: row[TIME],
+                    "quantile": quantile,
+                    "return": row["gross_return"],
+                }
+            )
+    if not rows:
+        return pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                "quantile": pl.String,
+                "return": pl.Float64,
+                "cumulative_return": pl.Float64,
+            }
+        )
+    returns = pl.DataFrame(rows).sort([TIME, "quantile"])
+    return returns.with_columns(
+        (
+            (1.0 + pl.col("return").fill_null(0.0)).cum_prod().over("quantile") - 1.0
+        ).alias("cumulative_return")
+    )
+
+
+def quantile_equal_weights(
+    factor: pl.DataFrame,
+    *,
+    quantiles: int,
+) -> dict[str, pl.DataFrame]:
+    """Convert factor scores into equal-weight portfolios by quantile."""
+
+    rows: dict[str, list[dict[str, object]]] = {
+        f"q{number}": [] for number in range(1, quantiles + 1)
+    }
+    for time, group in factor.partition_by(TIME, as_dict=True).items():
+        values = group.drop_nulls("factor").sort("factor")
+        if values.height < quantiles:
+            continue
+        ranked = values.with_row_index("rank", offset=1).with_columns(
+            (((pl.col("rank") - 1) * quantiles / pl.len()).floor() + 1)
+            .cast(pl.Int64)
+            .alias("bucket")
+        )
+        for bucket, bucket_group in ranked.partition_by("bucket", as_dict=True).items():
+            bucket_number = int(_partition_key(bucket))
+            quantile = f"q{bucket_number}"
+            weight = 1.0 / bucket_group.height
+            for row in bucket_group.iter_rows(named=True):
+                rows[quantile].append(
+                    {
+                        TIME: _partition_key(time),
+                        ASSET_ID: row[ASSET_ID],
+                        "weight": weight,
+                    }
+                )
+
+    empty = pl.DataFrame(
+        schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
+    )
+    return {
+        quantile: (
+            pl.DataFrame(weight_rows).sort([TIME, ASSET_ID])
+            if weight_rows
+            else empty.clone()
+        )
+        for quantile, weight_rows in rows.items()
+    }
 
 
 def top_n_equal_weights(factor: pl.DataFrame, *, top_n: int) -> pl.DataFrame:

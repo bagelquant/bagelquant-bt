@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from time import perf_counter
 
 import numpy as np
 import polars as pl
@@ -10,7 +11,7 @@ from bagelquant_bt.factor import FactorEvaluationResult
 
 
 def make_prices(
-    start: date = date(2024, 1, 1),
+    start: date = date(2000, 1, 1),
     end: date = date(2024, 12, 31),
     n_assets: int = 50,
     seed: int = 42,
@@ -75,20 +76,22 @@ def make_factor(
     prices: pl.DataFrame,
     seed: int = 123,
 ) -> pl.DataFrame:
-    """Generate synthetic factor values for each date x asset."""
+    """Generate synthetic monthly factor values for each asset."""
     rng = np.random.default_rng(seed)
+    monthly_dates = prices.select("time").unique().filter(pl.col("time").dt.day() == 1)
+    assets = prices.select("asset_id").unique()
+    monthly_panel = monthly_dates.join(assets, how="cross")
 
-    # Generate one random factor value for every date x asset.
+    # Generate one random factor value for every month x asset.
     # Higher factor values are interpreted as better stocks.
     factor_values = rng.normal(
         loc=0.0,
         scale=1.0,
-        size=prices.height,
+        size=monthly_panel.height,
     )
 
     factor = (
-        prices
-        .select("time", "asset_id")
+        monthly_panel
         .with_columns(
             factor=pl.Series(factor_values)
         )
@@ -112,20 +115,12 @@ def main() -> None:
         ),
     )
 
-    print("IC:")
-    print(result.ic.head())
-    print(f"IC mean: {result.ic_mean}")
-    print(f"ICIR: {result.icir}")
-
-    print("\nQuantile returns:")
-    print(result.quantile_returns.head())
-
-    print("\nTOP N returns:")
-    print(result.top_n_backtest.returns.head())
-
     summary_report(result, output_path="factor_summary_report.html")
     print("\nSaved factor_summary_report.html")
 
 
 if __name__ == "__main__":
+    start_time = perf_counter()
     main()
+    end_time = perf_counter()
+    print(f"\nExecution time: {end_time - start_time:.2f} seconds")
