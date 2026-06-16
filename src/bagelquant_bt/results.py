@@ -23,6 +23,16 @@ class PerformanceSummary:
     annualized_volatility: float
     sharpe: float
     max_drawdown: float
+    gross_total_return: float
+    net_total_return: float
+    gross_annualized_return: float
+    net_annualized_return: float
+    gross_annualized_volatility: float
+    net_annualized_volatility: float
+    gross_sharpe: float
+    net_sharpe: float
+    gross_max_drawdown: float
+    net_max_drawdown: float
     hit_rate: float
     average_turnover: float
     total_transaction_cost: float
@@ -41,6 +51,7 @@ class BacktestResult:
     turnover: pl.DataFrame
     transaction_costs: TransactionCostBreakdown
     summary: PerformanceSummary
+    performance: pl.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +61,7 @@ class FactorEvaluationResult:
     factor: pl.DataFrame
     forward_returns: pl.DataFrame
     ic: pl.DataFrame
+    ic_summary: pl.DataFrame
     ic_mean: float
     ic_std: float
     icir: float
@@ -57,3 +69,8 @@ class FactorEvaluationResult:
     top_minus_bottom: pl.DataFrame
     top_n_weights: pl.DataFrame
     top_n_backtest: BacktestResult
+    long_short_weights: pl.DataFrame
+    long_short_backtest: BacktestResult | None
+    lag_analysis: pl.DataFrame
+    lag_returns: pl.DataFrame
+    ic_decay: pl.DataFrame

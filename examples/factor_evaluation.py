@@ -5,7 +5,7 @@ from datetime import date
 import numpy as np
 import polars as pl
 
-from bagelquant_bt import BacktestConfig, run_factor_evaluation
+from bagelquant_bt import BacktestConfig, run_factor_evaluation, summary_report
 from bagelquant_bt.factor import FactorEvaluationResult
 
 
@@ -122,6 +122,9 @@ def main() -> None:
 
     print("\nTOP N returns:")
     print(result.top_n_backtest.returns.head())
+
+    summary_report(result, output_path="factor_summary_report.html")
+    print("\nSaved factor_summary_report.html")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ from bagelquant_bt import run_backtest, run_factor_evaluation, run_weight_backte
 - `run_backtest(signal, prices, *, kind, config=None)`: dispatch by `kind`.
 - `run_weight_backtest(weights, prices, *, config)`: evaluate portfolio weights.
 - `run_factor_evaluation(factor, prices, *, config)`: evaluate factor scores.
+- `summary_report(result, *, output_path=None, title=None, annualization=252)`:
+  build a static HTML report for `BacktestResult` or `FactorEvaluationResult`.
 
 ## Configuration
 
@@ -28,7 +30,8 @@ config = BacktestConfig(
 ```
 
 - `initial_capital` must be positive.
-- `ic_method` may be `"spearman"` or `"pearson"`.
+- `ic_method` is accepted for compatibility. Factor evaluation outputs both
+  Spearman and Pearson IC.
 - `quantiles` controls factor bucket count.
 - `top_n` controls the top-N factor portfolio.
 
@@ -47,12 +50,14 @@ config = BacktestConfig(
 - `turnover`
 - `transaction_costs`
 - `summary`
+- `performance`
 
 `FactorEvaluationResult` exposes:
 
 - `factor`
 - `forward_returns`
 - `ic`
+- `ic_summary`
 - `ic_mean`
 - `ic_std`
 - `icir`
@@ -61,10 +66,14 @@ config = BacktestConfig(
 - `top_minus_bottom`
 - `top_n_weights`
 - `top_n_backtest`
+- `long_short_weights`
+- `long_short_backtest`
+- `lag_analysis`
+- `lag_returns`
+- `ic_decay`
 
 ## Exceptions
 
 - `BagelQuantBacktestError`: base package error.
 - `BacktestConfigError`: invalid configuration.
 - `InputValidationError`: invalid or incompatible input frames.
-

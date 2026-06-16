@@ -59,7 +59,7 @@ def backtest_weight_frame(
         gross_returns=gross_returns,
         config=config,
     )
-    summary = summarize_performance(
+    summary, performance = summarize_performance(
         returns=returns,
         turnover=turn,
         costs=costs,
@@ -74,6 +74,7 @@ def backtest_weight_frame(
         turnover=turn,
         transaction_costs=costs,
         summary=summary,
+        performance=performance,
     )
 
 
