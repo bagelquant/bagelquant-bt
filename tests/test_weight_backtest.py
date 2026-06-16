@@ -118,6 +118,39 @@ def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
     assert cost["min_fee_adjustment"] == pytest.approx(9.0)
 
 
+def test_weight_backtest_raises_when_transaction_costs_exhaust_capital() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"] * 3,
+            "asset_id": ["a", "a", "b", "b", "c", "c"],
+            "price": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b", "c"],
+            "weight": [1 / 3, 1 / 3, 1 / 3],
+        }
+    )
+
+    with pytest.raises(
+        InputValidationError,
+        match=(
+            "net portfolio value became non-positive.*"
+            "Increase initial_capital or reduce traded universe/turnover"
+        ),
+    ):
+        run_weight_backtest(
+            weights,
+            prices,
+            config=BacktestConfig(
+                initial_capital=10,
+                transaction_cost=TransactionCostConfig(rate=0.001, min_fee=5.0),
+            ),
+        )
+
+
 def test_non_price_weight_date_is_dropped() -> None:
     prices = pl.DataFrame(
         {
