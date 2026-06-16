@@ -37,6 +37,7 @@ Important fields:
 - `turnover`
 - `transaction_costs`
 - `summary`
+- `performance`
 
 ## `run_factor_evaluation`
 
@@ -53,6 +54,7 @@ Important fields:
 - `factor`
 - `forward_returns`
 - `ic`
+- `ic_summary`
 - `ic_mean`
 - `ic_std`
 - `icir`
@@ -61,6 +63,24 @@ Important fields:
 - `top_minus_bottom`
 - `top_n_weights`
 - `top_n_backtest`
+- `long_short_weights`
+- `long_short_backtest`
+- `lag_analysis`
+- `lag_returns`
+- `ic_decay`
+
+## `summary_report`
+
+```python
+summary_report(result, *, output_path=None, title=None, annualization=252)
+```
+
+Builds a static HTML report for `BacktestResult` or `FactorEvaluationResult`.
+The report includes compact summary tables and Plotly figures. If `output_path`
+is provided, the HTML is written to disk and also returned.
+
+Factor reports are grouped into IC and ICIR, TOP N, spread performance, and
+quantile performance sections. Each section shows compact tables before plots.
 
 ## Config
 
@@ -77,7 +97,8 @@ BacktestConfig(
 
 `initial_capital` must be positive.
 
-`ic_method` may be `"spearman"` or `"pearson"`.
+`ic_method` is accepted for compatibility. Factor evaluation now outputs both
+Spearman and Pearson IC.
 
 ## DataFrame Boundary
 

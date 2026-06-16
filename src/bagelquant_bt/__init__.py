@@ -8,6 +8,7 @@ from .exceptions import (
     InputValidationError,
 )
 from .factor import run_factor_evaluation
+from .reporting import summary_report
 from .results import (
     BacktestResult,
     FactorEvaluationResult,
@@ -27,4 +28,5 @@ __all__ = [
     "TransactionCostConfig",
     "run_factor_evaluation",
     "run_weight_backtest",
+    "summary_report",
 ]

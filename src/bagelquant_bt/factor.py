@@ -14,6 +14,8 @@ from .inputs import ASSET_ID, TIME, validate_factor, validate_prices
 from .results import FactorEvaluationResult
 from .returns import asset_close_to_close_returns
 
+FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
+
 
 def run_factor_evaluation(
     factor: pl.DataFrame,
@@ -52,12 +54,9 @@ def evaluate_factor_frame(
     forward_returns = paired.select(TIME, ASSET_ID, "forward_return").sort(
         [TIME, ASSET_ID]
     )
-    ic = information_coefficient(
-        factor,
-        forward_returns,
-        method=config.ic_method,
-    )
-    values = np.array(ic["ic"].drop_nulls(), dtype=float)
+    ic = information_coefficients(factor, forward_returns)
+    ic_summary = summarize_ic(ic)
+    values = np.array(ic["spearman_ic"].drop_nulls(), dtype=float)
     ic_std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
     ic_mean = float(np.mean(values)) if len(values) else math.nan
     icir = ic_mean / ic_std if ic_std != 0 and not math.isnan(ic_std) else math.nan
@@ -73,11 +72,42 @@ def evaluate_factor_frame(
         aligned_prices,
         config=config,
     )
+    long_short_weights = long_short_quantile_weights(
+        factor,
+        quantiles=config.quantiles,
+    )
+    long_short_backtest = (
+        backtest_weight_frame(
+            long_short_weights,
+            aligned_prices,
+            config=config,
+        )
+        if long_short_weights.height
+        else None
+    )
+    lag_analysis = factor_lag_analysis(
+        factor,
+        aligned_prices,
+        config=config,
+        lags=FACTOR_LAGS,
+    )
+    lag_returns = factor_lag_returns(
+        factor,
+        aligned_prices,
+        config=config,
+        lags=FACTOR_LAGS,
+    )
+    ic_decay = factor_ic_decay(
+        factor,
+        forward_returns,
+        lags=FACTOR_LAGS,
+    )
 
     return FactorEvaluationResult(
         factor=factor,
         forward_returns=forward_returns,
         ic=ic,
+        ic_summary=ic_summary,
         ic_mean=ic_mean,
         ic_std=ic_std,
         icir=icir,
@@ -85,7 +115,33 @@ def evaluate_factor_frame(
         top_minus_bottom=top_minus_bottom,
         top_n_weights=top_n_weights,
         top_n_backtest=top_n_backtest,
+        long_short_weights=long_short_weights,
+        long_short_backtest=long_short_backtest,
+        lag_analysis=lag_analysis,
+        lag_returns=lag_returns,
+        ic_decay=ic_decay,
     )
+
+
+def information_coefficients(
+    factor: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+) -> pl.DataFrame:
+    """Compute daily Pearson and Spearman cross-sectional IC."""
+
+    pearson = _information_coefficient_values(
+        factor,
+        forward_returns,
+        method="pearson",
+        output_column="pearson_ic",
+    )
+    spearman = _information_coefficient_values(
+        factor,
+        forward_returns,
+        method="spearman",
+        output_column="spearman_ic",
+    )
+    return pearson.join(spearman, on=TIME, how="full", coalesce=True).sort(TIME)
 
 
 def information_coefficient(
@@ -96,12 +152,42 @@ def information_coefficient(
 ) -> pl.DataFrame:
     """Compute daily cross-sectional IC."""
 
+    return _information_coefficient_values(
+        factor,
+        forward_returns,
+        method=method,
+        output_column="ic",
+    )
+
+
+def summarize_ic(ic: pl.DataFrame) -> pl.DataFrame:
+    """Summarize Pearson and Spearman IC series."""
+
+    rows: list[dict[str, object]] = []
+    for method, column in (("pearson", "pearson_ic"), ("spearman", "spearman_ic")):
+        values = np.array(ic[column].drop_nulls(), dtype=float)
+        std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
+        mean = float(np.mean(values)) if len(values) else math.nan
+        icir = mean / std if std != 0 and not math.isnan(std) else math.nan
+        rows.append({"method": method, "mean": mean, "std": std, "icir": icir})
+    return pl.DataFrame(rows)
+
+
+def _information_coefficient_values(
+    factor: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    method: str,
+    output_column: str,
+) -> pl.DataFrame:
+    """Compute daily cross-sectional IC for one method."""
+
     paired = factor.join(forward_returns, on=[TIME, ASSET_ID], how="inner")
     rows: list[dict[str, object]] = []
     for time, group in paired.partition_by(TIME, as_dict=True).items():
         values = group.drop_nulls(["factor", "forward_return"])
         if values.height < 2:
-            rows.append({TIME: _partition_key(time), "ic": None})
+            rows.append({TIME: _partition_key(time), output_column: None})
             continue
         left = np.array(values["factor"], dtype=float)
         right = np.array(values["forward_return"], dtype=float)
@@ -109,10 +195,13 @@ def information_coefficient(
             left = _average_rank(left)
             right = _average_rank(right)
         if len(np.unique(left)) < 2 or len(np.unique(right)) < 2:
-            rows.append({TIME: _partition_key(time), "ic": None})
+            rows.append({TIME: _partition_key(time), output_column: None})
             continue
         rows.append(
-            {TIME: _partition_key(time), "ic": float(np.corrcoef(left, right)[0, 1])}
+            {
+                TIME: _partition_key(time),
+                output_column: float(np.corrcoef(left, right)[0, 1]),
+            }
         )
     return pl.DataFrame(rows).sort(TIME)
 
@@ -180,9 +269,201 @@ def top_n_equal_weights(factor: pl.DataFrame, *, top_n: int) -> pl.DataFrame:
     return selected.sort([TIME, ASSET_ID])
 
 
+def long_short_quantile_weights(
+    factor: pl.DataFrame,
+    *,
+    quantiles: int,
+) -> pl.DataFrame:
+    """Convert factor scores into top-long and bottom-short weights."""
+
+    rows: list[dict[str, object]] = []
+    for time, group in factor.partition_by(TIME, as_dict=True).items():
+        values = group.drop_nulls("factor").sort("factor")
+        if values.height < quantiles:
+            continue
+        ranked = values.with_row_index("rank", offset=1).with_columns(
+            (((pl.col("rank") - 1) * quantiles / pl.len()).floor() + 1)
+            .cast(pl.Int64)
+            .alias("bucket")
+        )
+        bottom = ranked.filter(pl.col("bucket") == 1)
+        top = ranked.filter(pl.col("bucket") == quantiles)
+        if bottom.is_empty() or top.is_empty():
+            continue
+        long_weight = 1.0 / top.height
+        short_weight = -1.0 / bottom.height
+        for row in top.iter_rows(named=True):
+            rows.append(
+                {
+                    TIME: _partition_key(time),
+                    ASSET_ID: row[ASSET_ID],
+                    "weight": long_weight,
+                }
+            )
+        for row in bottom.iter_rows(named=True):
+            rows.append(
+                {
+                    TIME: _partition_key(time),
+                    ASSET_ID: row[ASSET_ID],
+                    "weight": short_weight,
+                }
+            )
+    if not rows:
+        return pl.DataFrame(
+            schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
+        )
+    return pl.DataFrame(rows).sort([TIME, ASSET_ID])
+
+
+def factor_lag_analysis(
+    factor: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+    lags: tuple[int, ...] = FACTOR_LAGS,
+) -> pl.DataFrame:
+    """Backtest lagged factor signals for TOP N and long-short portfolios."""
+
+    rows: list[dict[str, object]] = []
+    for lag in lags:
+        lagged = lag_factor(factor, lag=lag)
+        portfolio_specs = (
+            ("top_n", top_n_equal_weights(lagged, top_n=config.top_n)),
+            (
+                "long_short",
+                long_short_quantile_weights(lagged, quantiles=config.quantiles),
+            ),
+        )
+        for portfolio, weights in portfolio_specs:
+            row: dict[str, object] = {
+                "lag": lag,
+                "portfolio": portfolio,
+                "gross_cumulative_return": math.nan,
+                "net_cumulative_return": math.nan,
+                "gross_sharpe": math.nan,
+                "net_sharpe": math.nan,
+            }
+            if weights.height:
+                try:
+                    backtest = backtest_weight_frame(weights, prices, config=config)
+                except InputValidationError:
+                    backtest = None
+                if backtest is not None:
+                    row.update(
+                        {
+                            "gross_cumulative_return": (
+                                backtest.summary.gross_total_return
+                            ),
+                            "net_cumulative_return": backtest.summary.net_total_return,
+                            "gross_sharpe": backtest.summary.gross_sharpe,
+                            "net_sharpe": backtest.summary.net_sharpe,
+                        }
+                    )
+            rows.append(row)
+    return pl.DataFrame(rows).sort(["portfolio", "lag"])
+
+
+def factor_lag_returns(
+    factor: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+    lags: tuple[int, ...] = FACTOR_LAGS,
+) -> pl.DataFrame:
+    """Return cumulative lagged factor backtest time series."""
+
+    rows: list[dict[str, object]] = []
+    for lag in lags:
+        lagged = lag_factor(factor, lag=lag)
+        portfolio_specs = (
+            ("top_n", top_n_equal_weights(lagged, top_n=config.top_n)),
+            (
+                "long_short",
+                long_short_quantile_weights(lagged, quantiles=config.quantiles),
+            ),
+        )
+        for portfolio, weights in portfolio_specs:
+            if not weights.height:
+                continue
+            try:
+                backtest = backtest_weight_frame(weights, prices, config=config)
+            except InputValidationError:
+                continue
+            for row in backtest.value.iter_rows(named=True):
+                rows.append(
+                    {
+                        "lag": lag,
+                        "portfolio": portfolio,
+                        TIME: row[TIME],
+                        "gross_cumulative_return": row["gross_return_cumulative"],
+                        "net_cumulative_return": row["net_return_cumulative"],
+                        "gross_sharpe": backtest.summary.gross_sharpe,
+                        "net_sharpe": backtest.summary.net_sharpe,
+                    }
+                )
+    if not rows:
+        return pl.DataFrame(
+            schema={
+                "lag": pl.Int64,
+                "portfolio": pl.String,
+                TIME: pl.Date,
+                "gross_cumulative_return": pl.Float64,
+                "net_cumulative_return": pl.Float64,
+                "gross_sharpe": pl.Float64,
+                "net_sharpe": pl.Float64,
+            }
+        )
+    return pl.DataFrame(rows).sort(["portfolio", "lag", TIME])
+
+
+def factor_ic_decay(
+    factor: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    lags: tuple[int, ...] = FACTOR_LAGS,
+) -> pl.DataFrame:
+    """Compute mean Pearson and Spearman IC for lagged factor signals."""
+
+    rows: list[dict[str, object]] = []
+    for lag in lags:
+        lagged = lag_factor(factor, lag=lag)
+        if lagged.is_empty():
+            rows.extend(
+                [
+                    {"lag": lag, "method": "pearson", "ic_mean": math.nan},
+                    {"lag": lag, "method": "spearman", "ic_mean": math.nan},
+                ]
+            )
+            continue
+        ic = information_coefficients(lagged, forward_returns)
+        summary = summarize_ic(ic)
+        for row in summary.iter_rows(named=True):
+            rows.append(
+                {
+                    "lag": lag,
+                    "method": row["method"],
+                    "ic_mean": row["mean"],
+                }
+            )
+    return pl.DataFrame(rows).sort(["method", "lag"])
+
+
+def lag_factor(factor: pl.DataFrame, *, lag: int) -> pl.DataFrame:
+    """Shift each asset's factor signal forward by lag observations."""
+
+    if lag <= 0:
+        return factor.sort([TIME, ASSET_ID])
+    return (
+        factor.sort([ASSET_ID, TIME])
+        .with_columns(pl.col("factor").shift(lag).over(ASSET_ID).alias("factor"))
+        .drop_nulls("factor")
+        .sort([TIME, ASSET_ID])
+    )
+
+
 def _top_minus_bottom(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:
-    top = "q1"
-    bottom = f"q{quantiles}"
+    bottom = "q1"
+    top = f"q{quantiles}"
     return (
         quantile_returns.filter(pl.col("quantile").is_in([bottom, top]))
         .select(TIME, "quantile", "return")

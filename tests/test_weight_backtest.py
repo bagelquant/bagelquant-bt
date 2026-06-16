@@ -36,3 +36,9 @@ def test_weight_backtest_returns_polars_result_frames() -> None:
         "net_return_cumulative",
     ]
     assert result.transaction_costs.data["total_fee"].sum() > 0
+    assert result.summary.gross_sharpe != result.summary.net_sharpe
+    assert result.summary.gross_max_drawdown >= result.summary.net_max_drawdown
+    assert result.summary.sharpe == result.summary.net_sharpe
+    assert result.summary.max_drawdown == result.summary.net_max_drawdown
+    assert result.performance.columns == ["metric", "gross", "net"]
+    assert "sharpe" in result.performance["metric"].to_list()

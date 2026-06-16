@@ -5,7 +5,7 @@ from datetime import date
 import numpy as np
 import polars as pl
 
-from bagelquant_bt import BacktestConfig, run_weight_backtest
+from bagelquant_bt import BacktestConfig, run_weight_backtest, summary_report
 
 
 def make_prices(
@@ -112,6 +112,9 @@ def main() -> None:
 
     print("\nSummary:")
     print(result.summary)
+
+    summary_report(result, output_path="backtest_summary_report.html")
+    print("\nSaved backtest_summary_report.html")
 
 
 if __name__ == "__main__":

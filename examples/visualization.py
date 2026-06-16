@@ -5,8 +5,7 @@ from datetime import date
 import numpy as np
 import polars as pl
 
-from bagelquant_bt import BacktestConfig, run_weight_backtest
-from bagelquant_bt.visualization import plot_cumulative_returns, plot_drawdown
+from bagelquant_bt import BacktestConfig, run_weight_backtest, summary_report
 
 
 def make_prices(
@@ -116,10 +115,9 @@ def main() -> None:
         config=BacktestConfig(initial_capital=1_000_000),
     )
 
-    plot_cumulative_returns(result).write_html("cumulative_returns.html")
-    plot_drawdown(result).write_html("drawdown.html")
+    summary_report(result, output_path="backtest_summary_report.html")
 
-    print("Saved cumulative_returns.html and drawdown.html")
+    print("Saved backtest_summary_report.html")
 
 
 if __name__ == "__main__":
