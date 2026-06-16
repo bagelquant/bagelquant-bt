@@ -36,7 +36,14 @@ run_factor_evaluation(factor, prices, *, config)
 ## `summary_report`
 
 ```python
-summary_report(result, *, output_path=None, title=None, annualization=252)
+summary_report(
+    result,
+    *,
+    output_path=None,
+    missing_price_keys_output_path=None,
+    title=None,
+    annualization=252,
+)
 ```
 
 为 `BacktestResult` 或 `FactorEvaluationResult` 生成静态 HTML 报告。报告包含精简汇总表格和 Plotly 图表；如果传入 `output_path`，会写入文件并同时返回 HTML 字符串。

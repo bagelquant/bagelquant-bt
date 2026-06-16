@@ -11,8 +11,11 @@ from bagelquant_bt import run_backtest, run_factor_evaluation, run_weight_backte
 - `run_backtest(signal, prices, *, kind, config=None)`: dispatch by `kind`.
 - `run_weight_backtest(weights, prices, *, config)`: evaluate portfolio weights.
 - `run_factor_evaluation(factor, prices, *, config)`: evaluate factor scores.
-- `summary_report(result, *, output_path=None, title=None, annualization=252)`:
+- `summary_report(result, *, output_path=None, missing_price_keys_output_path=None, title=None, annualization=252)`:
   build a static HTML report for `BacktestResult` or `FactorEvaluationResult`.
+  Missing price keys are written to a separate CSV. With `output_path`, the
+  default CSV path is `<report_stem>_missing_price_keys.csv`; pass
+  `missing_price_keys_output_path` to override it or write only the CSV.
 
 ## Configuration
 

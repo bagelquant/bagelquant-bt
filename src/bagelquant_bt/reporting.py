@@ -34,6 +34,7 @@ def summary_report(
     result: BacktestResult | FactorEvaluationResult,
     *,
     output_path: str | Path | None = None,
+    missing_price_keys_output_path: str | Path | None = None,
     title: str | None = None,
     annualization: int = 252,
 ) -> str:
@@ -50,7 +51,20 @@ def summary_report(
 
     html = _document(report_title, body)
     if output_path is not None:
-        Path(output_path).write_text(html, encoding="utf-8")
+        html_path = Path(output_path)
+        html_path.write_text(html, encoding="utf-8")
+        csv_path = missing_price_keys_output_path or _default_missing_price_keys_path(
+            html_path
+        )
+        _write_missing_price_keys_csv(
+            result.missing_price_keys,
+            csv_path,
+        )
+    elif missing_price_keys_output_path is not None:
+        _write_missing_price_keys_csv(
+            result.missing_price_keys,
+            missing_price_keys_output_path,
+        )
     return html
 
 
@@ -69,7 +83,6 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
     return (
         _section("Tables", "".join(tables))
         + _figures_section("Plots", figures)
-        + _missing_price_keys_section(result.missing_price_keys)
     )
 
 
@@ -79,16 +92,19 @@ def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str
         _factor_top_n_section(result, annualization=annualization),
         _factor_spread_section(result, annualization=annualization),
         _factor_quantile_section(result),
-        _missing_price_keys_section(result.missing_price_keys),
     ]
     return "".join(sections)
 
 
-def _missing_price_keys_section(missing_price_keys: pl.DataFrame) -> str:
-    return _section(
-        "Missing Price Keys",
-        _table_section("Missing Price Keys", missing_price_keys),
-    )
+def _default_missing_price_keys_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}_missing_price_keys.csv")
+
+
+def _write_missing_price_keys_csv(
+    missing_price_keys: pl.DataFrame,
+    output_path: str | Path,
+) -> None:
+    missing_price_keys.write_csv(Path(output_path))
 
 
 def _factor_ic_section(result: FactorEvaluationResult) -> str:

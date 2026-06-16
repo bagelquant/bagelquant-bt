@@ -72,12 +72,24 @@ Important fields:
 ## `summary_report`
 
 ```python
-summary_report(result, *, output_path=None, title=None, annualization=252)
+summary_report(
+    result,
+    *,
+    output_path=None,
+    missing_price_keys_output_path=None,
+    title=None,
+    annualization=252,
+)
 ```
 
 Builds a static HTML report for `BacktestResult` or `FactorEvaluationResult`.
 The report includes compact summary tables and Plotly figures. If `output_path`
-is provided, the HTML is written to disk and also returned.
+is provided, the HTML is written to disk and also returned. Missing price keys
+are written to a separate CSV instead of being embedded in the HTML report. By
+default, the CSV is written next to the HTML as
+`<report_stem>_missing_price_keys.csv`; pass `missing_price_keys_output_path` to
+choose a different CSV path or to write the CSV when no HTML `output_path` is
+provided.
 
 Factor reports are grouped into IC and ICIR, TOP N, spread performance, and
 quantile performance sections. Each section shows compact tables before plots.

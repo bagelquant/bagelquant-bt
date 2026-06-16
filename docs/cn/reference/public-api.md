@@ -11,7 +11,7 @@ from bagelquant_bt import run_backtest, run_factor_evaluation, run_weight_backte
 - `run_backtest(signal, prices, *, kind, config=None)`：根据 `kind` 分发。
 - `run_weight_backtest(weights, prices, *, config)`：评估组合权重。
 - `run_factor_evaluation(factor, prices, *, config)`：评估因子分数。
-- `summary_report(result, *, output_path=None, title=None, annualization=252)`：
+- `summary_report(result, *, output_path=None, missing_price_keys_output_path=None, title=None, annualization=252)`：
   为 `BacktestResult` 或 `FactorEvaluationResult` 生成静态 HTML 报告。
 
 ## 配置

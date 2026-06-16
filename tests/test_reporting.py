@@ -20,9 +20,9 @@ def test_summary_report_renders_and_writes_backtest_html(tmp_path) -> None:
     )
     weights = pl.DataFrame(
         {
-            "time": ["2024-01-01", "2024-01-02"],
-            "asset_id": ["a", "a"],
-            "weight": [1.0, 1.0],
+            "time": ["2024-01-01", "2024-01-02", "2024-01-04"],
+            "asset_id": ["a", "a", "a"],
+            "weight": [1.0, 1.0, 1.0],
         }
     )
     result = run_weight_backtest(
@@ -31,20 +31,23 @@ def test_summary_report_renders_and_writes_backtest_html(tmp_path) -> None:
         config=BacktestConfig(initial_capital=1_000, annualization=2),
     )
     output_path = tmp_path / "backtest_report.html"
+    missing_keys_path = tmp_path / "backtest_report_missing_price_keys.csv"
 
     html = summary_report(result, output_path=output_path, annualization=2)
 
     assert html.startswith("<!doctype html>")
     assert "Performance" in html
     assert "Trading Summary" in html
-    assert "Missing Price Keys" in html
+    assert "Missing Price Keys" not in html
     assert "Portfolio Cumulative Returns" in html
     assert "Plotly.newPlot" in html
     assert "<h3>Returns</h3>" not in html
     assert "<h3>Value</h3>" not in html
     assert "<h3>Transaction Costs</h3>" not in html
-    assert html.index("<h2>Missing Price Keys</h2>") > html.index("<h2>Plots</h2>")
     assert output_path.read_text(encoding="utf-8") == html
+    assert pl.read_csv(missing_keys_path).to_dicts() == [
+        {"time": "2024-01-04", "asset_id": "a"}
+    ]
 
 
 def test_summary_report_renders_factor_tables_and_plots() -> None:
@@ -92,7 +95,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "Long-Short Lag Analysis" in html
     assert "Spread Summary" in html
     assert "Quantile Performance" in html
-    assert "Missing Price Keys" in html
+    assert "Missing Price Keys" not in html
     assert "Information Coefficient" in html
     assert "IC Distribution" in html
     assert "TOP N Gross Lag Cumulative Returns" in html
@@ -105,7 +108,6 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
         html.index("<h2>TOP N</h2>"),
         html.index("<h2>Spread Performance</h2>"),
         html.index("<h2>Quantile Performance</h2>"),
-        html.index("<h2>Missing Price Keys</h2>"),
     ]
     assert section_order == sorted(section_order)
     assert html.index("<h3>IC Summary</h3>") < html.index("Information Coefficient")
@@ -115,3 +117,34 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert html.index("<h3>Spread Summary</h3>") < html.index(
         "Long-Short Cumulative Returns"
     )
+
+
+def test_summary_report_writes_missing_price_keys_to_explicit_csv(
+    tmp_path,
+) -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["a", "a", "a"],
+            "price": [1.0, 1.1, 1.2],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-04"],
+            "asset_id": ["a", "b"],
+            "weight": [1.0, 1.0],
+        }
+    )
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=1_000, annualization=2),
+    )
+    missing_keys_path = tmp_path / "missing_keys.csv"
+
+    summary_report(result, missing_price_keys_output_path=missing_keys_path)
+
+    assert pl.read_csv(missing_keys_path).to_dicts() == [
+        {"time": "2024-01-04", "asset_id": "b"}
+    ]
