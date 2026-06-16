@@ -11,7 +11,8 @@ from .inputs import ASSET_ID, TIME, validate_prices, validate_weights
 from .performance import summarize_performance
 from .results import BacktestResult, TransactionCostBreakdown
 from .returns import (
-    align_weights_to_forward_returns,
+    _expand_portfolio_weights,
+    asset_close_to_close_returns,
     cumulative_returns,
     portfolio_returns,
 )
@@ -45,10 +46,25 @@ def backtest_weight_frame(
 
     aligned_weights = validate_weights(weights)
     aligned_prices = validate_prices(prices)
-    executable_weights, forward_returns = align_weights_to_forward_returns(
+    forward_returns = asset_close_to_close_returns(aligned_prices)
+    return _backtest_weight_frame_with_forward_returns(
         aligned_weights,
         aligned_prices,
+        forward_returns,
+        config=config,
     )
+
+
+def _backtest_weight_frame_with_forward_returns(
+    weights: pl.DataFrame,
+    prices: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+) -> BacktestResult:
+    """Backtest a weight frame with a precomputed forward-return panel."""
+
+    executable_weights = _expand_portfolio_weights(weights, prices, forward_returns)
     if executable_weights.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
 
@@ -84,43 +100,31 @@ def _simulate_cost_adjusted_returns(
     gross_returns: pl.DataFrame,
     config: BacktestConfig,
 ) -> tuple[TransactionCostBreakdown, pl.DataFrame, pl.DataFrame]:
-    weights_by_time = {
-        _partition_key(time): {
-            str(row[ASSET_ID]): 0.0 if row["weight"] is None else float(row["weight"])
-            for row in group.iter_rows(named=True)
-        }
-        for time, group in weights.partition_by(TIME, as_dict=True).items()
-    }
+    trade_summary = _trade_summary(weights)
     gross_by_time = {
         row[TIME]: float(row["gross_return"] or 0.0)
         for row in gross_returns.iter_rows(named=True)
     }
 
     current_value = float(config.initial_capital)
-    previous_weights: dict[str, float] = {}
     cost_rows: list[dict[str, object]] = []
     return_rows: list[dict[str, object]] = []
     value_rows: list[dict[str, object]] = []
 
-    for time in sorted(weights_by_time):
-        current_weights = weights_by_time[time]
-        assets = set(previous_weights) | set(current_weights)
-        traded_asset_count = 0
-        traded_notional = 0.0
-        raw_fee = 0.0
-        total_fee = 0.0
-        for asset in assets:
-            delta = abs(
-                current_weights.get(asset, 0.0) - previous_weights.get(asset, 0.0)
+    for row in trade_summary.iter_rows(named=True):
+        time = row[TIME]
+        weight_deltas = [float(delta) for delta in row["weight_deltas"]]
+        traded_asset_count = len(weight_deltas)
+        weight_delta = sum(weight_deltas)
+        traded_notional = weight_delta * current_value
+        raw_fee = traded_notional * config.transaction_cost.rate
+        total_fee = sum(
+            max(
+                delta * current_value * config.transaction_cost.rate,
+                config.transaction_cost.min_fee,
             )
-            notional = delta * current_value
-            if notional <= 0.0:
-                continue
-            traded_asset_count += 1
-            traded_notional += notional
-            asset_raw_fee = notional * config.transaction_cost.rate
-            raw_fee += asset_raw_fee
-            total_fee += max(asset_raw_fee, config.transaction_cost.min_fee)
+            for delta in weight_deltas
+        )
 
         cost_return = total_fee / current_value if current_value else 0.0
         gross_return = gross_by_time.get(time, 0.0)
@@ -144,7 +148,6 @@ def _simulate_cost_adjusted_returns(
         value_rows.append(
             {TIME: time, "gross_value": gross_value, "net_value": current_value}
         )
-        previous_weights = current_weights
 
     returns = pl.DataFrame(return_rows).sort(TIME)
     value = (
@@ -160,6 +163,32 @@ def _simulate_cost_adjusted_returns(
         )
     )
     return TransactionCostBreakdown(pl.DataFrame(cost_rows).sort(TIME)), returns, value
+
+
+def _trade_summary(weights: pl.DataFrame) -> pl.DataFrame:
+    return (
+        weights.sort([ASSET_ID, TIME])
+        .with_columns(
+            pl.col("weight")
+            .fill_null(0.0)
+            .shift(1)
+            .over(ASSET_ID)
+            .fill_null(0.0)
+            .alias("previous_weight")
+        )
+        .with_columns(
+            (pl.col("weight").fill_null(0.0) - pl.col("previous_weight"))
+            .abs()
+            .alias("weight_delta")
+        )
+        .group_by(TIME)
+        .agg(
+            pl.col("weight_delta")
+            .filter(pl.col("weight_delta") > 0.0)
+            .alias("weight_deltas"),
+        )
+        .sort(TIME)
+    )
 
 
 def _require_config(config: BacktestConfig | None) -> BacktestConfig:

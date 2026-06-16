@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
+
 import polars as pl
 
 from .exceptions import InputValidationError
@@ -181,10 +183,10 @@ def _next_tradable_time(
     source_time: object,
     tradable_times: list[object],
 ) -> object | None:
-    for time in tradable_times:
-        if time >= source_time:
-            return time
-    return None
+    index = bisect_left(tradable_times, source_time)
+    if index >= len(tradable_times):
+        return None
+    return tradable_times[index]
 
 
 def _sorted_unique(values: list[object]) -> list[object]:

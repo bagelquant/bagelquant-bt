@@ -85,6 +85,39 @@ def test_low_frequency_weights_hold_until_next_rebalance() -> None:
     assert result.transaction_costs.data["total_fee"].to_list()[3] == 0.0
 
 
+def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"] * 2,
+            "asset_id": ["a", "a", "b", "b"],
+            "price": [10.0, 10.0, 20.0, 20.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b"],
+            "weight": [0.5, 0.5],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=1_000,
+            transaction_cost=TransactionCostConfig(rate=0.001, min_fee=5.0),
+        ),
+    )
+
+    cost = result.transaction_costs.data.to_dicts()[0]
+    assert cost["traded_asset_count"] == 2
+    assert cost["traded_notional"] == pytest.approx(1_000.0)
+    assert cost["raw_fee"] == pytest.approx(1.0)
+    assert cost["total_fee"] == pytest.approx(10.0)
+    assert cost["min_fee_adjustment"] == pytest.approx(9.0)
+
+
 def test_non_price_weight_date_executes_on_next_price_date() -> None:
     prices = pl.DataFrame(
         {
