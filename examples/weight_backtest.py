@@ -65,16 +65,18 @@ def make_weights(
     seed: int = 123,
 ) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
+    monthly_dates = prices.select("time").unique().filter(pl.col("time").dt.day() == 1)
+    assets = prices.select("asset_id").unique()
+    monthly_panel = monthly_dates.join(assets, how="cross")
 
     weights = (
-        prices
-        .select("time", "asset_id")
+        monthly_panel
         .with_columns(
             raw_weight=pl.Series(
                 rng.uniform(
                     low=0.0,
                     high=1.0,
-                    size=prices.height,
+                    size=monthly_panel.height,
                 )
             )
         )
@@ -104,10 +106,10 @@ def main() -> None:
     print("Prices:")
     print(prices.head())
 
-    print("\nWeights:")
+    print("\nMonthly weights:")
     print(weights.head())
 
-    print("\nReturns:")
+    print("\nDaily returns from held monthly weights:")
     print(result.returns.head())
 
     print("\nSummary:")
