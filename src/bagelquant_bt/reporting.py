@@ -167,37 +167,37 @@ def _factor_spread_section(
     annualization: int,
 ) -> str:
     tables: list[str] = []
-    if result.long_short_backtest is not None:
+    if result.spread_backtest is not None:
         tables.extend(
             [
                 _table_section(
                     "Spread Performance",
-                    _standard_performance_table(result.long_short_backtest),
+                    _standard_performance_table(result.spread_backtest),
                 ),
             ]
         )
     lag_returns = plot_lag_cumulative_return(result)
     figures = [_figure_to_html(plot_lag_sharpe(result))]
-    if result.long_short_backtest is not None:
+    if result.spread_backtest is not None:
         figures.extend(
             [
                 _figure_to_html(
                     plot_cumulative_returns(
-                        result.long_short_backtest,
-                        title="Long-Short Cumulative Returns",
+                        result.spread_backtest,
+                        title="Spread Cumulative Returns",
                     )
                 ),
-                _figure_to_html(plot_drawdown(result.long_short_backtest)),
-                _figure_to_html(plot_turnover_and_costs(result.long_short_backtest)),
+                _figure_to_html(plot_drawdown(result.spread_backtest)),
+                _figure_to_html(plot_turnover_and_costs(result.spread_backtest)),
                 _figure_to_html(
                     plot_rolling_sharpe(
-                        result.long_short_backtest,
+                        result.spread_backtest,
                         annualization=annualization,
                     )
                 ),
                 _figure_to_html(
                     plot_rolling_volatility(
-                        result.long_short_backtest,
+                        result.spread_backtest,
                         annualization=annualization,
                     )
                 ),
@@ -237,7 +237,7 @@ def _factor_summary(result: FactorEvaluationResult) -> pl.DataFrame:
     ic = {row["method"]: row for row in result.ic_summary.iter_rows(named=True)}
     pearson = ic.get("pearson", {})
     spearman = ic.get("spearman", {})
-    spread = result.long_short_backtest.summary if result.long_short_backtest else None
+    spread = result.spread_backtest.summary if result.spread_backtest else None
     top_n = result.top_n_backtest.summary
     return pl.DataFrame(
         [

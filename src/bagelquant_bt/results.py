@@ -68,11 +68,11 @@ class FactorEvaluationResult:
     ic_std: float
     icir: float
     quantile_returns: pl.DataFrame
-    top_minus_bottom: pl.DataFrame
+    spread_returns: pl.DataFrame
     top_n_weights: pl.DataFrame
     top_n_backtest: BacktestResult
-    long_short_weights: pl.DataFrame
-    long_short_backtest: BacktestResult | None
+    spread_weights: pl.DataFrame
+    spread_backtest: BacktestResult | None
     lag_analysis: pl.DataFrame
     lag_returns: pl.DataFrame
     ic_decay: pl.DataFrame

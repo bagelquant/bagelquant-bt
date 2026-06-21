@@ -50,14 +50,14 @@ compute cross-sectional IC, ICIR, and decay analytics
 build factor-derived portfolio weights
     |
     v
-run TOP N, quantile, long-short, and lag portfolios through the weight backtest
+run TOP N, quantile, spread, and lag portfolios through the weight backtest
 ```
 
 Factor values remain signal inputs for analytics. Any tradable factor output is
 converted into portfolio weights first, then routed through the same weight
 backtest engine. This keeps holding periods, turnover, transaction costs, and
 performance behavior consistent across direct weights, TOP N, quantile,
-long-short, lagged, and future portfolio styles.
+spread, lagged, and future portfolio styles.
 
 ## Validation Principles
 

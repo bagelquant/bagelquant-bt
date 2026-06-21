@@ -68,7 +68,7 @@ result = run_backtest(
 )
 
 result.ic_mean
-result.top_minus_bottom
+result.spread_returns
 ```
 
 ## Transaction Costs
@@ -84,4 +84,3 @@ config = BacktestConfig(
 
 Minimum fees require `initial_capital` so the engine can translate weight
 turnover into traded notional.
-

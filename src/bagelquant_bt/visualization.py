@@ -284,15 +284,15 @@ def plot_lag_cumulative_return(result: FactorEvaluationResult) -> list[go.Figure
         ),
         _plot_lag_return_path(
             result,
-            portfolio="long_short",
+            portfolio="spread",
             return_type="gross",
-            title="Long-Short Gross Lag Cumulative Returns",
+            title="Spread Gross Lag Cumulative Returns",
         ),
         _plot_lag_return_path(
             result,
-            portfolio="long_short",
+            portfolio="spread",
             return_type="net",
-            title="Long-Short Net Lag Cumulative Returns",
+            title="Spread Net Lag Cumulative Returns",
         ),
     ]
 

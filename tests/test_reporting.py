@@ -101,7 +101,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "TOP N Lag Analysis" in html
     assert "TOP N Performance" in html
     assert "<h3>Spread Performance</h3>" in html
-    assert "<h3>Long-Short Lag Analysis</h3>" not in html
+    assert "Long-Short" not in html
     assert "<h3>Spread Summary</h3>" not in html
     assert "Annualized Volatility" in html
     assert "Transaction Cost" in html
@@ -112,10 +112,10 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "Information Coefficient" in html
     assert "IC Distribution" in html
     assert "TOP N Gross Lag Cumulative Returns" in html
-    assert "Long-Short Net Lag Cumulative Returns" in html
+    assert "Spread Net Lag Cumulative Returns" in html
     assert "<h3>IC Series</h3>" not in html
     assert "<h3>Quantile Returns</h3>" not in html
-    assert "<h3>Top Minus Bottom</h3>" not in html
+    assert "Top Minus Bottom" not in html
     section_order = [
         html.index("<h2>IC and ICIR</h2>"),
         html.index("<h2>Quantile Performance</h2>"),
@@ -133,7 +133,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
         "TOP N Cumulative Returns"
     )
     assert html.index("<h3>Spread Performance</h3>") < html.index(
-        "Long-Short Cumulative Returns"
+        "Spread Cumulative Returns"
     )
 
 

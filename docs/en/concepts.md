@@ -57,7 +57,7 @@ changes, so holding days with unchanged weights do not create costs.
 
 For factor evaluation, factor values remain signal inputs for analytics such as
 IC, ICIR, and IC decay. Tradable factor outputs, including TOP N, quantile, and
-long-short portfolios, are first converted into portfolio weights and then sent
+spread portfolios, are first converted into portfolio weights and then sent
 through the same weight backtest engine.
 
 It rejects:

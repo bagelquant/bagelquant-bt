@@ -61,11 +61,11 @@ Important fields:
 - `icir`
 - `quantile_returns`
 - `quantile_cumulative_returns`
-- `top_minus_bottom`
+- `spread_returns`
 - `top_n_weights`
 - `top_n_backtest`
-- `long_short_weights`
-- `long_short_backtest`
+- `spread_weights`
+- `spread_backtest`
 - `lag_analysis`
 - `lag_returns`
 - `ic_decay`

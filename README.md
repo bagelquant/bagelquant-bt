@@ -40,7 +40,7 @@ print(result.summary)
 ```
 
 Factor evaluation computes daily cross-sectional IC, quantile returns, a
-top-minus-bottom spread, and a TOP N equal-weight backtest.
+`q1 - qN` spread, and a TOP N equal-weight backtest.
 
 Visualization helpers return Plotly figures:
 

@@ -84,7 +84,7 @@ def evaluate_factor_frame(
         quantiles=config.quantiles,
         forward_returns=forward_returns,
     )
-    top_minus_bottom = _top_minus_bottom(quantile_returns, config.quantiles)
+    spread_returns = _spread_returns(quantile_returns, config.quantiles)
     top_n_weights = top_n_equal_weights(factor, top_n=config.top_n)
     top_n_backtest = _backtest_weight_frame_with_forward_returns(
         top_n_weights,
@@ -92,18 +92,18 @@ def evaluate_factor_frame(
         forward_returns,
         config=config,
     )
-    long_short_weights = long_short_quantile_weights(
+    spread_weights = spread_quantile_weights(
         factor,
         quantiles=config.quantiles,
     )
-    long_short_backtest = (
+    spread_backtest = (
         _backtest_weight_frame_with_forward_returns(
-            long_short_weights,
+            spread_weights,
             aligned_prices,
             forward_returns,
             config=config,
         )
-        if long_short_weights.height
+        if spread_weights.height
         else None
     )
     lag_backtests = _lag_backtests(
@@ -130,11 +130,11 @@ def evaluate_factor_frame(
         ic_std=ic_std,
         icir=icir,
         quantile_returns=quantile_returns,
-        top_minus_bottom=top_minus_bottom,
+        spread_returns=spread_returns,
         top_n_weights=top_n_weights,
         top_n_backtest=top_n_backtest,
-        long_short_weights=long_short_weights,
-        long_short_backtest=long_short_backtest,
+        spread_weights=spread_weights,
+        spread_backtest=spread_backtest,
         lag_analysis=lag_analysis,
         lag_returns=lag_returns,
         ic_decay=ic_decay,
@@ -404,12 +404,12 @@ def top_n_equal_weights(factor: pl.DataFrame, *, top_n: int) -> pl.DataFrame:
     return selected.sort([TIME, ASSET_ID])
 
 
-def long_short_quantile_weights(
+def spread_quantile_weights(
     factor: pl.DataFrame,
     *,
     quantiles: int,
 ) -> pl.DataFrame:
-    """Convert factor scores into top-long and bottom-short weights."""
+    """Convert q1 and qN factor buckets into spread portfolio weights."""
 
     bucketed = _quantile_bucket_frame(factor.drop_nulls("factor"), quantiles=quantiles)
     selected = bucketed.filter(pl.col("bucket").is_in([1, quantiles]))
@@ -419,7 +419,7 @@ def long_short_quantile_weights(
         )
     return (
         selected.with_columns(
-            pl.when(pl.col("bucket") == quantiles)
+            pl.when(pl.col("bucket") == 1)
             .then(1.0 / pl.len().over(TIME, "bucket"))
             .otherwise(-1.0 / pl.len().over(TIME, "bucket"))
             .alias("weight")
@@ -436,7 +436,7 @@ def factor_lag_analysis(
     config: BacktestConfig,
     lags: tuple[int, ...] = FACTOR_LAGS,
 ) -> pl.DataFrame:
-    """Backtest lagged factor signals for TOP N and long-short portfolios."""
+    """Backtest lagged factor signals for TOP N and spread portfolios."""
 
     return _lag_analysis_from_backtests(
         _lag_backtests(factor, prices, config=config, lags=lags)
@@ -520,7 +520,7 @@ def _quantile_bucket_frame(frame: pl.DataFrame, *, quantiles: int) -> pl.DataFra
             pl.lit(False)
         )
     ranked = (
-        frame.sort([TIME, "factor"])
+        frame.sort([TIME, "factor"], descending=[False, True])
         .with_columns(
             pl.len().over(TIME).alias("_count"),
             pl.int_range(1, pl.len() + 1).over(TIME).alias("_rank"),
@@ -558,8 +558,8 @@ def _lag_backtests(
         portfolio_specs = (
             ("top_n", top_n_equal_weights(lagged, top_n=config.top_n)),
             (
-                "long_short",
-                long_short_quantile_weights(lagged, quantiles=config.quantiles),
+                "spread",
+                spread_quantile_weights(lagged, quantiles=config.quantiles),
             ),
         )
         for portfolio, weights in portfolio_specs:
@@ -641,15 +641,15 @@ def _lag_returns_from_backtests(
     return pl.concat(frames).sort(["portfolio", "lag", TIME])
 
 
-def _top_minus_bottom(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:
+def _spread_returns(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:
     top = "q1"
     bottom = f"q{quantiles}"
     return (
         quantile_returns.filter(pl.col("quantile").is_in([bottom, top]))
         .select(TIME, "quantile", "return")
         .pivot(index=TIME, on="quantile", values="return")
-        .with_columns((pl.col(top) - pl.col(bottom)).alias("top_minus_bottom"))
-        .select(TIME, "top_minus_bottom")
+        .with_columns((pl.col(top) - pl.col(bottom)).alias("spread_return"))
+        .select(TIME, "spread_return")
         .sort(TIME)
     )
 

@@ -62,7 +62,7 @@ result = run_backtest(
 )
 
 result.ic_mean
-result.top_minus_bottom
+result.spread_returns
 ```
 
 ## 交易成本
@@ -77,4 +77,3 @@ config = BacktestConfig(
 ```
 
 最小费用需要 `initial_capital`，因为引擎需要把权重换手转换为交易名义金额。
-

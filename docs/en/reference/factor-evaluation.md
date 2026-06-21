@@ -27,15 +27,16 @@ mean(IC) / standard_deviation(IC)
 
 ## Quantile Returns
 
-Each day, assets are sorted by factor score and split into quantiles.
+Each day, assets are sorted by factor score from highest to lowest and split
+into quantiles: `q1` contains the highest scores and `qN` the lowest.
 
 Each quantile return is the equal-weight average forward return of assets in
 that bucket.
 
-The top-minus-bottom spread is:
+The spread is:
 
 ```text
-highest_quantile_return - lowest_quantile_return
+q1_return - qN_return
 ```
 
 ## TOP N Backtest
@@ -49,12 +50,12 @@ top N assets each day -> 1 / N weight each
 The resulting weight frame is passed through the same backtest engine as a
 normal portfolio-weight DataFrame, including transaction costs.
 
-## Long-Short and Lag Analysis
+## Spread and Lag Analysis
 
-Factor evaluation also builds a top-quantile long, bottom-quantile short
-portfolio and passes it through the same cost-aware backtest engine.
+Factor evaluation also builds a spread portfolio: long `q1`, short `qN`, and
+passes it through the same cost-aware backtest engine.
 
-`lag_analysis` evaluates TOP N and long-short portfolios with factor signals
+`lag_analysis` evaluates TOP N and spread portfolios with factor signals
 lagged by 0, 1, 2, 3, 4, 5, 10, 20, 30, and 60 observations.
 
 `lag_returns` contains gross and net cumulative return time series for the same

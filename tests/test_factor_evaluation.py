@@ -7,7 +7,7 @@ from bagelquant_bt import BacktestConfig, run_factor_evaluation
 from bagelquant_bt.factor import (
     factor_quantile_returns,
     information_coefficients,
-    long_short_quantile_weights,
+    spread_quantile_weights,
 )
 
 
@@ -37,6 +37,9 @@ def test_factor_evaluation_uses_time_asset_id_inputs() -> None:
     assert result.ic.columns == ["time", "pearson_ic", "spearman_ic"]
     assert result.ic_summary["method"].to_list() == ["pearson", "spearman"]
     assert result.quantile_returns.select("time", "quantile", "return").height == 2
+    assert not hasattr(result, "top_minus_bottom")
+    assert not hasattr(result, "long_short_weights")
+    assert not hasattr(result, "long_short_backtest")
     assert result.top_n_weights.to_dicts()[0]["asset_id"] == "a"
     assert result.top_n_backtest.transaction_costs.data["total_fee"].sum() > 0
     assert (
@@ -45,7 +48,7 @@ def test_factor_evaluation_uses_time_asset_id_inputs() -> None:
     )
 
 
-def test_factor_evaluation_adds_long_short_and_lag_outputs() -> None:
+def test_factor_evaluation_adds_spread_and_lag_outputs() -> None:
     dates = (
         [f"2024-01-{day:02d}" for day in range(1, 29)]
         + [f"2024-02-{day:02d}" for day in range(1, 29)]
@@ -76,14 +79,14 @@ def test_factor_evaluation_adds_long_short_and_lag_outputs() -> None:
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
     )
 
-    assert result.long_short_weights.height > 0
-    assert result.long_short_backtest is not None
-    assert result.long_short_backtest.transaction_costs.data["total_fee"].sum() > 0
-    assert set(result.lag_analysis["portfolio"]) == {"top_n", "long_short"}
+    assert result.spread_weights.height > 0
+    assert result.spread_backtest is not None
+    assert result.spread_backtest.transaction_costs.data["total_fee"].sum() > 0
+    assert set(result.lag_analysis["portfolio"]) == {"top_n", "spread"}
     expected_lags = {0, 1, 2, 3, 4, 5, 10, 20, 30, 60}
     assert set(result.lag_analysis["lag"]) == expected_lags
     assert set(result.lag_returns["lag"]) == expected_lags
-    assert set(result.lag_returns["portfolio"]) == {"top_n", "long_short"}
+    assert set(result.lag_returns["portfolio"]) == {"top_n", "spread"}
     assert set(result.ic_decay["method"]) == {"pearson", "spearman"}
     assert result.lag_analysis.select("portfolio", "lag").to_dicts() == sorted(
         result.lag_analysis.select("portfolio", "lag").to_dicts(),
@@ -155,7 +158,7 @@ def test_sparse_factor_keeps_analytics_and_trades_daily_portfolios() -> None:
         "2024-01-04",
     ]
     assert set(result.quantile_returns["quantile"]) == {"q1", "q2"}
-    assert result.long_short_backtest is not None
+    assert result.spread_backtest is not None
     assert result.top_n_backtest.transaction_costs.data["total_fee"].to_list()[1] == 0.0
 
 
@@ -179,10 +182,43 @@ def test_factor_quantile_returns_preserve_bucket_semantics_and_low_counts() -> N
 
     returns = result.select("time", "quantile", "return").to_dicts()
     assert returns == [
-        {"time": returns[0]["time"], "quantile": "q1", "return": pytest.approx(0.015)},
-        {"time": returns[1]["time"], "quantile": "q2", "return": pytest.approx(0.035)},
+        {"time": returns[0]["time"], "quantile": "q1", "return": pytest.approx(0.035)},
+        {"time": returns[1]["time"], "quantile": "q2", "return": pytest.approx(0.015)},
         {"time": returns[2]["time"], "quantile": "q1", "return": None},
         {"time": returns[3]["time"], "quantile": "q2", "return": None},
+    ]
+
+
+def test_spread_is_q1_minus_qn_and_matches_the_spread_backtest() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"] * 2,
+            "asset_id": ["high", "high", "low", "low"],
+            "price": [100.0, 100.0, 100.0, 110.0],
+        }
+    )
+    factor = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["high", "low"],
+            "factor": [2.0, 1.0],
+        }
+    )
+
+    result = run_factor_evaluation(
+        factor,
+        prices,
+        config=BacktestConfig(initial_capital=1_000_000, quantiles=2, top_n=1),
+    )
+
+    assert result.quantile_returns.select("quantile", "return").to_dicts() == [
+        {"quantile": "q1", "return": pytest.approx(0.0)},
+        {"quantile": "q2", "return": pytest.approx(0.1)},
+    ]
+    assert result.spread_returns["spread_return"].to_list() == [pytest.approx(-0.1)]
+    assert result.spread_backtest is not None
+    assert result.spread_backtest.returns["gross_return"].to_list() == [
+        pytest.approx(-0.1)
     ]
 
 
@@ -209,7 +245,7 @@ def test_information_coefficients_keep_null_rows_for_unusable_dates() -> None:
     assert result["spearman_ic"].to_list() == [None]
 
 
-def test_long_short_quantile_weights_handle_nulls_and_bucket_sizes() -> None:
+def test_spread_quantile_weights_handle_nulls_and_bucket_sizes() -> None:
     factor = pl.DataFrame(
         {
             "time": ["2024-01-01"] * 4,
@@ -218,12 +254,12 @@ def test_long_short_quantile_weights_handle_nulls_and_bucket_sizes() -> None:
         }
     )
 
-    weights = long_short_quantile_weights(factor, quantiles=2)
+    weights = spread_quantile_weights(factor, quantiles=2)
 
     assert weights.select("asset_id", "weight").to_dicts() == [
-        {"asset_id": "b", "weight": -0.5},
-        {"asset_id": "c", "weight": -0.5},
-        {"asset_id": "d", "weight": 1.0},
+        {"asset_id": "b", "weight": -1.0},
+        {"asset_id": "c", "weight": 0.5},
+        {"asset_id": "d", "weight": 0.5},
     ]
 
 
@@ -255,7 +291,7 @@ def test_factor_evaluation_drops_missing_price_keys_and_uses_matches() -> None:
 
     assert set(result.factor["asset_id"]) == {"a", "b", "c"}
     assert set(result.top_n_weights["asset_id"]) == {"a"}
-    assert "d" not in set(result.long_short_weights["asset_id"])
+    assert "d" not in set(result.spread_weights["asset_id"])
     assert result.ic.height == 1
     assert set(result.quantile_returns["quantile"]) == {"q1", "q2"}
     assert result.missing_price_keys.with_columns(

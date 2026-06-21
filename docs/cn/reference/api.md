@@ -31,7 +31,7 @@ run_factor_evaluation(factor, prices, *, config)
 
 把 long-form Polars DataFrame 解释为因子分数并执行评估，返回 `FactorEvaluationResult`。
 
-重要字段包括 `factor`、`forward_returns`、`ic`、`ic_summary`、`ic_mean`、`ic_std`、`icir`、分位数组合收益、top-minus-bottom、TOP N 权重、TOP N 回测结果、long-short 回测结果、`lag_analysis`、`lag_returns`、`ic_decay` 和 `coverage`。
+重要字段包括 `factor`、`forward_returns`、`ic`、`ic_summary`、`ic_mean`、`ic_std`、`icir`、分位数组合收益、`spread_returns`、TOP N 权重、TOP N 回测结果、`spread_backtest`、`lag_analysis`、`lag_returns`、`ic_decay` 和 `coverage`。
 
 ## `summary_report`
 
