@@ -334,7 +334,7 @@ def _plot_lag_return_path(
             x=frame["time"],
             y=frame[value_column],
             mode="lines",
-            name=f"Lag {int(lag)} (Sharpe {sharpe_value:.4f})",
+            name=f"Lag {int(lag)} (Sharpe {sharpe_value:.4g})",
         )
     fig.update_layout(
         title=title,
@@ -377,7 +377,7 @@ def _label_with_mean(label: str, values: object) -> str:
     if not finite_values:
         return label
     mean = sum(finite_values) / len(finite_values)
-    return f"{label} (avg {mean:.4f})"
+    return f"{label} (avg {mean:.4g})"
 
 
 def _label_with_mean_std(label: str, values: object) -> str:
@@ -391,14 +391,12 @@ def _label_with_mean_std(label: str, values: object) -> str:
             len(finite_values) - 1
         )
         std = math.sqrt(variance)
-    return f"{label} (avg {mean:.4f}, std {std:.4f})"
+    return f"{label} (avg {mean:.4g}, std {std:.4g})"
 
 
 def _finite_values(values: object) -> list[float]:
     return [
-        float(value)
-        for value in values.drop_nulls()
-        if math.isfinite(float(value))
+        float(value) for value in values.drop_nulls() if math.isfinite(float(value))
     ]
 
 
