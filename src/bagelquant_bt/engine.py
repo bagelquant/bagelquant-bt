@@ -10,6 +10,7 @@ from .exceptions import BacktestConfigError, InputValidationError
 from .inputs import (
     ASSET_ID,
     TIME,
+    asset_coverage,
     missing_price_keys,
     validate_prices,
     validate_weights,
@@ -100,6 +101,11 @@ def _backtest_weight_frame_with_forward_returns(
         transaction_costs=costs,
         summary=summary,
         performance=performance,
+        coverage=asset_coverage(
+            weights,
+            prices,
+            asset_count_column="weight_asset_count",
+        ),
         missing_price_keys=(
             _empty_missing_price_keys()
             if missing_price_keys is None

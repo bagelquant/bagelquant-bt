@@ -40,12 +40,14 @@ def test_summary_report_renders_and_writes_backtest_html(tmp_path) -> None:
     assert html.startswith("<!doctype html>")
     assert "Performance" in html
     assert "Trading Summary" in html
+    assert "Weights Coverage" in html
     assert "Missing Price Keys" not in html
     assert "Portfolio Cumulative Returns" in html
     assert "Plotly.newPlot" in html
     assert "<h3>Returns</h3>" not in html
     assert "<h3>Value</h3>" not in html
     assert "<h3>Transaction Costs</h3>" not in html
+    assert html.index("Weights Coverage") < html.index("<h2>Plots</h2>")
     assert output_path.read_text(encoding="utf-8") == html
     assert pl.read_csv(missing_keys_path).to_dicts() == [
         {"time": "2024-01-04", "asset_id": "a"}
@@ -92,6 +94,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "<h3>Summary</h3>" in html
     assert "Spread SR" in html
     assert "rankICIR" in html
+    assert "Factor Signal Coverage" in html
     assert "N/A" in html
     assert "<h3>IC Summary</h3>" not in html
     assert "<h3>IC Decay</h3>" not in html
@@ -121,6 +124,11 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     ]
     assert section_order == sorted(section_order)
     assert html.index("<h3>Summary</h3>") < html.index("<h2>IC and ICIR</h2>")
+    assert (
+        html.index("<h3>Summary</h3>")
+        < html.index("Factor Signal Coverage")
+        < html.index("<h2>IC and ICIR</h2>")
+    )
     assert html.index("<h3>TOP N Performance</h3>") < html.index(
         "TOP N Cumulative Returns"
     )

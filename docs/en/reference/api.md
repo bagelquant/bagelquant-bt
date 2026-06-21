@@ -38,6 +38,7 @@ Important fields:
 - `transaction_costs`
 - `summary`
 - `performance`
+- `coverage`
 
 ## `run_factor_evaluation`
 
@@ -68,6 +69,7 @@ Important fields:
 - `lag_analysis`
 - `lag_returns`
 - `ic_decay`
+- `coverage`
 
 ## `summary_report`
 
@@ -93,6 +95,8 @@ provided.
 
 Factor reports are grouped into IC and ICIR, TOP N, spread performance, and
 quantile performance sections. Each section shows compact tables before plots.
+Both factor and backtest reports show a coverage chart directly below their
+top summary tables.
 
 ## Config
 

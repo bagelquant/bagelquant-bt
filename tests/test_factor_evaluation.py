@@ -39,15 +39,18 @@ def test_factor_evaluation_uses_time_asset_id_inputs() -> None:
     assert result.quantile_returns.select("time", "quantile", "return").height == 2
     assert result.top_n_weights.to_dicts()[0]["asset_id"] == "a"
     assert result.top_n_backtest.transaction_costs.data["total_fee"].sum() > 0
-    assert result.top_n_backtest.performance.filter(
-        pl.col("metric") == "sharpe"
-    ).height == 1
+    assert (
+        result.top_n_backtest.performance.filter(pl.col("metric") == "sharpe").height
+        == 1
+    )
 
 
 def test_factor_evaluation_adds_long_short_and_lag_outputs() -> None:
-    dates = [f"2024-01-{day:02d}" for day in range(1, 29)] + [
-        f"2024-02-{day:02d}" for day in range(1, 29)
-    ] + [f"2024-03-{day:02d}" for day in range(1, 11)]
+    dates = (
+        [f"2024-01-{day:02d}" for day in range(1, 29)]
+        + [f"2024-02-{day:02d}" for day in range(1, 29)]
+        + [f"2024-03-{day:02d}" for day in range(1, 11)]
+    )
     assets = ["a", "b", "c", "d"]
     prices = pl.DataFrame(
         {
@@ -260,6 +263,28 @@ def test_factor_evaluation_drops_missing_price_keys_and_uses_matches() -> None:
     ).to_dicts() == [
         {"time": "2024-01-01", "asset_id": "d"},
         {"time": "2024-01-04", "asset_id": "a"},
+    ]
+    assert result.coverage.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d")
+    ).to_dicts() == [
+        {
+            "time": "2024-01-01",
+            "factor_signal_asset_count": 4,
+            "universe_asset_count": 3,
+            "coverage_ratio": pytest.approx(4 / 3),
+        },
+        {
+            "time": "2024-01-02",
+            "factor_signal_asset_count": 0,
+            "universe_asset_count": 3,
+            "coverage_ratio": 0.0,
+        },
+        {
+            "time": "2024-01-03",
+            "factor_signal_asset_count": 0,
+            "universe_asset_count": 3,
+            "coverage_ratio": 0.0,
+        },
     ]
 
 

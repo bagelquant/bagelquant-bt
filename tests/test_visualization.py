@@ -5,6 +5,7 @@ import polars as pl
 
 from bagelquant_bt import BacktestConfig, run_factor_evaluation, run_weight_backtest
 from bagelquant_bt.visualization import (
+    plot_coverage,
     plot_cumulative_returns,
     plot_ic,
     plot_ic_decay,
@@ -86,6 +87,8 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
     ic_decay_alias = plot_ic_decay_heatmap(factor_result)
     ic = plot_ic(factor_result)
     figures = [
+        plot_coverage(backtest),
+        plot_coverage(factor_result),
         plot_rolling_sharpe(backtest, annualization=4),
         plot_rolling_volatility(backtest, annualization=4),
         ic_distribution,
@@ -104,9 +107,20 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
     assert ic.layout.annotations == ()
     assert len(ic_distribution.layout.shapes) == 2
     assert all(
-        "avg" in trace.name and "std" in trace.name
-        for trace in ic_distribution.data
+        "avg" in trace.name and "std" in trace.name for trace in ic_distribution.data
     )
     assert all(trace.type == "scatter" for trace in ic_decay.data)
     assert all(trace.type != "heatmap" for trace in ic_decay_alias.data)
     assert ic_decay.layout.shapes == ()
+    weight_coverage = plot_coverage(backtest)
+    factor_coverage = plot_coverage(factor_result)
+    assert [trace.name for trace in weight_coverage.data] == [
+        "Weights coverage",
+        "Total universe asset count",
+    ]
+    assert [trace.name for trace in factor_coverage.data] == [
+        "Factor signal coverage",
+        "Total universe asset count",
+    ]
+    assert weight_coverage.data[0].fill == "tozeroy"
+    assert factor_coverage.data[0].fill == "tozeroy"

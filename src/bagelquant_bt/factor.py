@@ -14,7 +14,14 @@ from .engine import (
     backtest_weight_frame,
 )
 from .exceptions import InputValidationError
-from .inputs import ASSET_ID, TIME, missing_price_keys, validate_factor, validate_prices
+from .inputs import (
+    ASSET_ID,
+    TIME,
+    asset_coverage,
+    missing_price_keys,
+    validate_factor,
+    validate_prices,
+)
 from .results import BacktestResult, FactorEvaluationResult
 from .returns import align_signal_to_forward_returns
 
@@ -49,6 +56,11 @@ def evaluate_factor_frame(
 
     aligned_factor = validate_factor(factor)
     aligned_prices = validate_prices(prices)
+    coverage = asset_coverage(
+        aligned_factor,
+        aligned_prices,
+        asset_count_column="factor_signal_asset_count",
+    )
     missing_keys = missing_price_keys(aligned_factor, aligned_prices)
     factor, forward_returns = align_signal_to_forward_returns(
         aligned_factor,
@@ -126,6 +138,7 @@ def evaluate_factor_frame(
         lag_analysis=lag_analysis,
         lag_returns=lag_returns,
         ic_decay=ic_decay,
+        coverage=coverage,
         missing_price_keys=missing_keys,
     )
 

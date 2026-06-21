@@ -137,7 +137,7 @@ def test_weight_backtest_raises_when_transaction_costs_exhaust_capital() -> None
     with pytest.raises(
         InputValidationError,
         match=(
-            "net portfolio value became non-positive.*"
+            r"net portfolio value became non-positive.*"
             "Increase initial_capital or reduce traded universe/turnover"
         ),
     ):
@@ -159,9 +159,7 @@ def test_non_price_weight_date_is_dropped() -> None:
             "price": [10.0, 11.0, 12.0],
         }
     )
-    weights = pl.DataFrame(
-        {"time": ["2024-01-02"], "asset_id": ["a"], "weight": [1.0]}
-    )
+    weights = pl.DataFrame({"time": ["2024-01-02"], "asset_id": ["a"], "weight": [1.0]})
 
     with pytest.raises(InputValidationError, match="at least two overlapping"):
         run_weight_backtest(
@@ -216,6 +214,28 @@ def test_weight_backtest_drops_missing_price_keys_and_trades_matches() -> None:
         0.0,
         pytest.approx(-0.0101),
     ]
+    assert result.coverage.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d")
+    ).to_dicts() == [
+        {
+            "time": "2024-01-01",
+            "weight_asset_count": 3,
+            "universe_asset_count": 2,
+            "coverage_ratio": 1.5,
+        },
+        {
+            "time": "2024-01-02",
+            "weight_asset_count": 0,
+            "universe_asset_count": 2,
+            "coverage_ratio": 0.0,
+        },
+        {
+            "time": "2024-01-03",
+            "weight_asset_count": 0,
+            "universe_asset_count": 2,
+            "coverage_ratio": 0.0,
+        },
+    ]
 
 
 def test_weight_backtest_removes_null_and_nan_rows_before_alignment() -> None:
@@ -240,8 +260,7 @@ def test_weight_backtest_removes_null_and_nan_rows_before_alignment() -> None:
         config=BacktestConfig(initial_capital=10_000),
     )
 
-    assert (
-        result.weights.with_columns(pl.col("time").dt.strftime("%Y-%m-%d")).to_dicts()
-        == [{"time": "2024-01-01", "asset_id": "a", "weight": 1.0}]
-    )
+    assert result.weights.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d")
+    ).to_dicts() == [{"time": "2024-01-01", "asset_id": "a", "weight": 1.0}]
     assert result.missing_price_keys.is_empty()

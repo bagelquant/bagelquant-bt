@@ -45,10 +45,13 @@ top-minus-bottom spread, and a TOP N equal-weight backtest.
 Visualization helpers return Plotly figures:
 
 ```python
-from bagelquant_bt.visualization import plot_cumulative_returns
+from bagelquant_bt.visualization import plot_coverage, plot_cumulative_returns
 
 fig = plot_cumulative_returns(result)
 fig.write_html("cumulative_returns.html")
+
+coverage_fig = plot_coverage(result)
+coverage_fig.write_html("coverage.html")
 ```
 
 ## Development
