@@ -629,8 +629,8 @@ def _lag_returns_from_backtests(
 
 
 def _top_minus_bottom(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:
-    bottom = "q1"
-    top = f"q{quantiles}"
+    top = "q1"
+    bottom = f"q{quantiles}"
     return (
         quantile_returns.filter(pl.col("quantile").is_in([bottom, top]))
         .select(TIME, "quantile", "return")

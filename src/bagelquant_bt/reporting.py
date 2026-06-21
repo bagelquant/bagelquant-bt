@@ -80,18 +80,16 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
         plot_rolling_sharpe(result, annualization=annualization),
         plot_rolling_volatility(result, annualization=annualization),
     ]
-    return (
-        _section("Tables", "".join(tables))
-        + _figures_section("Plots", figures)
-    )
+    return _section("Tables", "".join(tables)) + _figures_section("Plots", figures)
 
 
 def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str:
     sections = [
+        _table_section("Summary", _factor_summary(result), none_display="N/A"),
         _factor_ic_section(result),
-        _factor_top_n_section(result, annualization=annualization),
-        _factor_spread_section(result, annualization=annualization),
         _factor_quantile_section(result),
+        _factor_spread_section(result, annualization=annualization),
+        _factor_top_n_section(result, annualization=annualization),
     ]
     return "".join(sections)
 
@@ -110,8 +108,6 @@ def _write_missing_price_keys_csv(
 def _factor_ic_section(result: FactorEvaluationResult) -> str:
     body = "".join(
         [
-            _table_section("IC Summary", result.ic_summary),
-            _table_section("IC Decay", result.ic_decay),
             _figure_to_html(plot_ic(result)),
             _figure_to_html(plot_rolling_ic(result)),
             _figure_to_html(plot_ic_distribution(result)),
@@ -129,7 +125,10 @@ def _factor_top_n_section(
     lag_returns = plot_lag_cumulative_return(result)
     body = "".join(
         [
-            _table_section("TOP N Performance", result.top_n_backtest.performance),
+            _table_section(
+                "TOP N Performance",
+                _standard_performance_table(result.top_n_backtest),
+            ),
             _table_section("TOP N Lag Analysis", _lag_analysis(result, "top_n")),
             _figure_to_html(
                 plot_cumulative_returns(
@@ -163,17 +162,13 @@ def _factor_spread_section(
     *,
     annualization: int,
 ) -> str:
-    tables = [_table_section("Spread Summary", _spread_summary(result))]
+    tables: list[str] = []
     if result.long_short_backtest is not None:
         tables.extend(
             [
                 _table_section(
-                    "Long-Short Performance",
-                    result.long_short_backtest.performance,
-                ),
-                _table_section(
-                    "Long-Short Lag Analysis",
-                    _lag_analysis(result, "long_short"),
+                    "Spread Performance",
+                    _standard_performance_table(result.long_short_backtest),
                 ),
             ]
         )
@@ -232,24 +227,69 @@ def _lag_analysis(result: FactorEvaluationResult, portfolio: str) -> pl.DataFram
     return result.lag_analysis.filter(result.lag_analysis["portfolio"] == portfolio)
 
 
-def _spread_summary(result: FactorEvaluationResult) -> pl.DataFrame:
-    spread = result.top_minus_bottom["top_minus_bottom"].drop_nulls()
-    final_return = (
-        float((1.0 + spread.fill_null(0.0)).product() - 1.0) if len(spread) else None
-    )
+def _factor_summary(result: FactorEvaluationResult) -> pl.DataFrame:
+    """Return headline factor metrics in gross/net rows for the report."""
+
+    ic = {row["method"]: row for row in result.ic_summary.iter_rows(named=True)}
+    pearson = ic.get("pearson", {})
+    spearman = ic.get("spearman", {})
+    spread = result.long_short_backtest.summary if result.long_short_backtest else None
+    top_n = result.top_n_backtest.summary
     return pl.DataFrame(
         [
             {
-                "metric": "mean_return",
-                "value": float(spread.mean()) if len(spread) else None,  # type: ignore
+                "Portfolio": "Gross",
+                "Spread SR": spread.gross_sharpe if spread else None,
+                "IC": pearson.get("mean"),
+                "rankIC": spearman.get("mean"),
+                "ICIR": pearson.get("icir"),
+                "rankICIR": spearman.get("icir"),
+                "Spread EAR": spread.gross_annualized_return if spread else None,
+                "TOP N EAR": top_n.gross_annualized_return,
+                "TOP N SR": top_n.gross_sharpe,
             },
             {
-                "metric": "std_return",
-                "value": float(spread.std()) if len(spread) > 1 else None,  # type: ignore
+                "Portfolio": "Net",
+                "Spread SR": spread.net_sharpe if spread else None,
+                "IC": None,
+                "rankIC": None,
+                "ICIR": None,
+                "rankICIR": None,
+                "Spread EAR": spread.net_annualized_return if spread else None,
+                "TOP N EAR": top_n.net_annualized_return,
+                "TOP N SR": top_n.net_sharpe,
             },
-            {"metric": "final_cumulative_return", "value": final_return},
-        ],
-        schema={"metric": pl.String, "value": pl.Float64},
+        ]
+    )
+
+
+def _standard_performance_table(result: BacktestResult) -> pl.DataFrame:
+    """Return the common gross/net performance table used in factor reports."""
+
+    summary = result.summary
+    return pl.DataFrame(
+        [
+            {
+                "Portfolio": "Gross",
+                "Total Return": summary.gross_total_return,
+                "EAR": summary.gross_annualized_return,
+                "Annualized Volatility": summary.gross_annualized_volatility,
+                "SR": summary.gross_sharpe,
+                "Max Drawdown": summary.gross_max_drawdown,
+                "Average Turnover": summary.average_turnover,
+                "Transaction Cost": None,
+            },
+            {
+                "Portfolio": "Net",
+                "Total Return": summary.net_total_return,
+                "EAR": summary.net_annualized_return,
+                "Annualized Volatility": summary.net_annualized_volatility,
+                "SR": summary.net_sharpe,
+                "Max Drawdown": summary.net_max_drawdown,
+                "Average Turnover": summary.average_turnover,
+                "Transaction Cost": summary.total_transaction_cost,
+            },
+        ]
     )
 
 
@@ -357,11 +397,14 @@ def _section(title: str, body: str) -> str:
     return f"<section><h2>{escape(title)}</h2>{body}</section>"
 
 
-def _table_section(title: str, frame: pl.DataFrame) -> str:
-    return (
-        f"<h3>{escape(title)}</h3>"
-        f'<div class="table-wrap">{_dataframe_to_html(frame)}</div>'
-    )
+def _table_section(
+    title: str,
+    frame: pl.DataFrame,
+    *,
+    none_display: str = "",
+) -> str:
+    table = _dataframe_to_html(frame, none_display=none_display)
+    return f'<h3>{escape(title)}</h3><div class="table-wrap">{table}</div>'
 
 
 def _figures_section(title: str, figures: list[go.Figure]) -> str:
@@ -369,14 +412,15 @@ def _figures_section(title: str, figures: list[go.Figure]) -> str:
     return _section(title, body)
 
 
-def _dataframe_to_html(frame: pl.DataFrame) -> str:
+def _dataframe_to_html(frame: pl.DataFrame, *, none_display: str = "") -> str:
     if frame.is_empty():
         return "<p>No rows.</p>"
     header = "".join(f"<th>{escape(column)}</th>" for column in frame.columns)
     rows = []
     for row in frame.iter_rows(named=True):
         cells = "".join(
-            f"<td>{escape(_format_value(row[column]))}</td>" for column in frame.columns
+            f"<td>{escape(_format_value(row[column], none_display=none_display))}</td>"
+            for column in frame.columns
         )
         rows.append(f"<tr>{cells}</tr>")
     body = "".join(rows)
@@ -391,9 +435,9 @@ def _figure_to_html(figure: go.Figure) -> str:
     )
 
 
-def _format_value(value: object) -> str:
+def _format_value(value: object, *, none_display: str = "") -> str:
     if value is None:
-        return ""
+        return none_display
     if isinstance(value, float):
-        return f"{value:.6g}"
+        return f"{value:.4g}"
     return str(value)

@@ -8,6 +8,8 @@ from bagelquant_bt import (
     run_weight_backtest,
     summary_report,
 )
+from bagelquant_bt.reporting import _dataframe_to_html
+from bagelquant_bt.visualization import _label_with_mean
 
 
 def test_summary_report_renders_and_writes_backtest_html(tmp_path) -> None:
@@ -87,13 +89,21 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
 
     html = summary_report(result, annualization=4)
 
-    assert "IC Summary" in html
-    assert "IC Decay" in html
+    assert "<h3>Summary</h3>" in html
+    assert "Spread SR" in html
+    assert "rankICIR" in html
+    assert "N/A" in html
+    assert "<h3>IC Summary</h3>" not in html
+    assert "<h3>IC Decay</h3>" not in html
     assert "TOP N Lag Analysis" in html
     assert "TOP N Performance" in html
-    assert "Long-Short Performance" in html
-    assert "Long-Short Lag Analysis" in html
-    assert "Spread Summary" in html
+    assert "<h3>Spread Performance</h3>" in html
+    assert "<h3>Long-Short Lag Analysis</h3>" not in html
+    assert "<h3>Spread Summary</h3>" not in html
+    assert "Annualized Volatility" in html
+    assert "Transaction Cost" in html
+    assert "<th>EAR</th>" in html
+    assert "<th>SR</th>" in html
     assert "Quantile Performance" in html
     assert "Missing Price Keys" not in html
     assert "Information Coefficient" in html
@@ -105,18 +115,26 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "<h3>Top Minus Bottom</h3>" not in html
     section_order = [
         html.index("<h2>IC and ICIR</h2>"),
-        html.index("<h2>TOP N</h2>"),
-        html.index("<h2>Spread Performance</h2>"),
         html.index("<h2>Quantile Performance</h2>"),
+        html.index("<h2>Spread Performance</h2>"),
+        html.index("<h2>TOP N</h2>"),
     ]
     assert section_order == sorted(section_order)
-    assert html.index("<h3>IC Summary</h3>") < html.index("Information Coefficient")
+    assert html.index("<h3>Summary</h3>") < html.index("<h2>IC and ICIR</h2>")
     assert html.index("<h3>TOP N Performance</h3>") < html.index(
         "TOP N Cumulative Returns"
     )
-    assert html.index("<h3>Spread Summary</h3>") < html.index(
+    assert html.index("<h3>Spread Performance</h3>") < html.index(
         "Long-Short Cumulative Returns"
     )
+
+
+def test_report_numeric_text_uses_four_significant_digits() -> None:
+    table = _dataframe_to_html(pl.DataFrame({"value": [1.23456, 12345.6]}))
+
+    assert ">1.235<" in table
+    assert ">1.235e+04<" in table
+    assert _label_with_mean("Example", pl.Series([1.23456])) == "Example (avg 1.235)"
 
 
 def test_summary_report_writes_missing_price_keys_to_explicit_csv(
