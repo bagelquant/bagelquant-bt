@@ -50,6 +50,8 @@ config = BacktestConfig(
 - `transaction_costs`
 - `summary`
 - `performance`
+- `coverage`：按价格日期给出原始 `weight_asset_count`、`universe_asset_count` 和
+  `coverage_ratio`。
 - `missing_price_keys`
 
 `FactorEvaluationResult` 暴露：
@@ -71,7 +73,14 @@ config = BacktestConfig(
 - `lag_analysis`
 - `lag_returns`
 - `ic_decay`
+- `coverage`：按价格日期给出原始 `factor_signal_asset_count`、
+  `universe_asset_count` 和 `coverage_ratio`。
 - `missing_price_keys`
+
+## 可视化
+
+`plot_coverage(result)` 返回 Plotly 时间序列：以阴影面积展示原始因子信号或权重的
+资产覆盖数，并展示价格宇宙总资产数。
 
 ## 异常
 

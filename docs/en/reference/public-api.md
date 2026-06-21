@@ -54,6 +54,8 @@ config = BacktestConfig(
 - `transaction_costs`
 - `summary`
 - `performance`
+- `coverage`: per-price-date raw `weight_asset_count`, `universe_asset_count`,
+  and `coverage_ratio`.
 - `missing_price_keys`
 
 `FactorEvaluationResult` exposes:
@@ -75,7 +77,14 @@ config = BacktestConfig(
 - `lag_analysis`
 - `lag_returns`
 - `ic_decay`
+- `coverage`: per-price-date raw `factor_signal_asset_count`,
+  `universe_asset_count`, and `coverage_ratio`.
 - `missing_price_keys`
+
+## Visualization
+
+`plot_coverage(result)` returns a Plotly time series showing raw factor-signal
+or weight asset coverage as a shaded area and the total price-universe asset count.
 
 ## Exceptions
 

@@ -33,6 +33,36 @@ def plot_cumulative_returns(
     return fig
 
 
+def plot_coverage(result: BacktestResult | FactorEvaluationResult) -> go.Figure:
+    """Plot raw input coverage and available price-universe size over time."""
+
+    if isinstance(result, FactorEvaluationResult):
+        input_column = "factor_signal_asset_count"
+        input_label = "Factor signal coverage"
+        title = "Factor Signal Coverage"
+    else:
+        input_column = "weight_asset_count"
+        input_label = "Weights coverage"
+        title = "Weights Coverage"
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=result.coverage["time"],
+        y=result.coverage[input_column],
+        mode="lines",
+        name=input_label,
+        fill="tozeroy",
+    )
+    fig.add_scatter(
+        x=result.coverage["time"],
+        y=result.coverage["universe_asset_count"],
+        mode="lines",
+        name="Total universe asset count",
+    )
+    fig.update_layout(title=title, xaxis_title="Time", yaxis_title="Asset Count")
+    return fig
+
+
 def plot_drawdown(result: BacktestResult) -> go.Figure:
     gross = drawdown(result.returns, "gross_return")
     net = drawdown(result.returns, "net_return")

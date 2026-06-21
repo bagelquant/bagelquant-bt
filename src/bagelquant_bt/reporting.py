@@ -11,6 +11,7 @@ import polars as pl
 
 from .results import BacktestResult, FactorEvaluationResult
 from .visualization import (
+    plot_coverage,
     plot_cumulative_returns,
     plot_drawdown,
     plot_ic,
@@ -80,12 +81,15 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
         plot_rolling_sharpe(result, annualization=annualization),
         plot_rolling_volatility(result, annualization=annualization),
     ]
-    return _section("Tables", "".join(tables)) + _figures_section("Plots", figures)
+    return _section(
+        "Tables", "".join(tables) + _figure_to_html(plot_coverage(result))
+    ) + _figures_section("Plots", figures)
 
 
 def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str:
     sections = [
-        _table_section("Summary", _factor_summary(result), none_display="N/A"),
+        _table_section("Summary", _factor_summary(result), none_display="N/A")
+        + _figure_to_html(plot_coverage(result)),
         _factor_ic_section(result),
         _factor_quantile_section(result),
         _factor_spread_section(result, annualization=annualization),

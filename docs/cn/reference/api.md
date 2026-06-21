@@ -21,7 +21,7 @@ run_weight_backtest(weights, prices, *, config)
 
 把 long-form Polars DataFrame 解释为组合权重并执行回测，返回 `BacktestResult`。
 
-重要字段包括 `weights`、`asset_returns`、`gross_returns`、`net_returns`、累计收益、组合价值、换手、交易成本、`summary` 和 `performance`。
+重要字段包括 `weights`、`asset_returns`、`gross_returns`、`net_returns`、累计收益、组合价值、换手、交易成本、`summary`、`performance` 和 `coverage`。
 
 ## `run_factor_evaluation`
 
@@ -31,7 +31,7 @@ run_factor_evaluation(factor, prices, *, config)
 
 把 long-form Polars DataFrame 解释为因子分数并执行评估，返回 `FactorEvaluationResult`。
 
-重要字段包括 `factor`、`forward_returns`、`ic`、`ic_summary`、`ic_mean`、`ic_std`、`icir`、分位数组合收益、top-minus-bottom、TOP N 权重、TOP N 回测结果、long-short 回测结果、`lag_analysis`、`lag_returns` 和 `ic_decay`。
+重要字段包括 `factor`、`forward_returns`、`ic`、`ic_summary`、`ic_mean`、`ic_std`、`icir`、分位数组合收益、top-minus-bottom、TOP N 权重、TOP N 回测结果、long-short 回测结果、`lag_analysis`、`lag_returns`、`ic_decay` 和 `coverage`。
 
 ## `summary_report`
 
@@ -48,7 +48,7 @@ summary_report(
 
 为 `BacktestResult` 或 `FactorEvaluationResult` 生成静态 HTML 报告。报告包含精简汇总表格和 Plotly 图表；如果传入 `output_path`，会写入文件并同时返回 HTML 字符串。
 
-因子报告会分为 IC and ICIR、TOP N、spread performance 和 quantile performance 四个部分，每个部分先展示精简表格，再展示图表。
+因子报告会分为 IC and ICIR、TOP N、spread performance 和 quantile performance 四个部分，每个部分先展示精简表格，再展示图表。因子和回测报告都会在顶部汇总表格下方展示覆盖度图表。
 
 ## Config
 

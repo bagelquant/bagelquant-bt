@@ -64,6 +64,34 @@ def missing_price_keys(frame: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFram
     )
 
 
+def asset_coverage(
+    frame: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    asset_count_column: str,
+) -> pl.DataFrame:
+    """Count raw input assets against the available price universe by date."""
+
+    universe = (
+        prices.group_by(TIME).agg(pl.len().alias("universe_asset_count")).sort(TIME)
+    )
+    input_counts = frame.group_by(TIME).agg(pl.len().alias(asset_count_column))
+    return (
+        universe.join(input_counts, on=TIME, how="left")
+        .with_columns(
+            pl.col(asset_count_column).fill_null(0).cast(pl.Int64),
+            pl.col("universe_asset_count").cast(pl.Int64),
+        )
+        .with_columns(
+            (pl.col(asset_count_column) / pl.col("universe_asset_count")).alias(
+                "coverage_ratio"
+            )
+        )
+        .select(TIME, asset_count_column, "universe_asset_count", "coverage_ratio")
+        .sort(TIME)
+    )
+
+
 def align_signal_and_prices(
     signal: pl.DataFrame,
     prices: pl.DataFrame,
