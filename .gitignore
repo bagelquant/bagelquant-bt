@@ -216,3 +216,9 @@ __marimo__/
 
 cumulative_returns.html
 drawdown.html
+
+# Local/generated artifacts
+.DS_Store
+*.html
+*.csv
+*.ipynb
