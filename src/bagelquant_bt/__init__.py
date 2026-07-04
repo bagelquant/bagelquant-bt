@@ -7,7 +7,7 @@ from .exceptions import (
     BagelQuantBacktestError,
     InputValidationError,
 )
-from .factor import run_factor_evaluation
+from .factor import PreparedFactorMarketData, prepare_factor_market_data, run_factor_evaluation
 from .reporting import summary_report
 from .results import (
     BacktestResult,
@@ -24,9 +24,11 @@ __all__ = [
     "FactorEvaluationResult",
     "InputValidationError",
     "PerformanceSummary",
+    "PreparedFactorMarketData",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
     "run_factor_evaluation",
+    "prepare_factor_market_data",
     "run_weight_backtest",
     "summary_report",
 ]

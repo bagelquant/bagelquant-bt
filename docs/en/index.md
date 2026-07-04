@@ -34,6 +34,7 @@ Use `kind="factor"` when the first argument is factor scores.
 - [Concepts](concepts.md)
 - [Architecture](architecture.md)
 - [Quick start](quick-start.md)
+- [Performance notes](performance.md)
 - [API](reference/api.md)
 - [Public API](reference/public-api.md)
 - [Transaction costs](reference/transaction-costs.md)

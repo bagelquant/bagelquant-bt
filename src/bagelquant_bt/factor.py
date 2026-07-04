@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
@@ -23,9 +24,27 @@ from .inputs import (
     validate_prices,
 )
 from .results import BacktestResult, FactorEvaluationResult
-from .returns import align_signal_to_forward_returns
+from .returns import asset_close_to_close_returns
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedFactorMarketData:
+    """Validated market inputs reusable across factor evaluations."""
+
+    prices: pl.DataFrame
+    forward_returns: pl.DataFrame
+
+
+def prepare_factor_market_data(prices: pl.DataFrame) -> PreparedFactorMarketData:
+    """Validate prices and calculate forward returns once for a factor batch."""
+
+    aligned_prices = validate_prices(prices)
+    return PreparedFactorMarketData(
+        prices=aligned_prices,
+        forward_returns=asset_close_to_close_returns(aligned_prices),
+    )
 
 
 def run_factor_evaluation(
@@ -33,16 +52,18 @@ def run_factor_evaluation(
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
+    market_data: PreparedFactorMarketData | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate a factor score frame against forward returns."""
 
     resolved_config = _require_config(config)
     aligned_factor = validate_factor(factor)
-    aligned_prices = validate_prices(prices)
+    prepared = market_data or prepare_factor_market_data(prices)
     return evaluate_factor_frame(
         aligned_factor,
-        aligned_prices,
+        prepared.prices,
         config=resolved_config,
+        market_data=prepared,
     )
 
 
@@ -51,23 +72,27 @@ def evaluate_factor_frame(
     prices: pl.DataFrame,
     *,
     config: BacktestConfig,
+    market_data: PreparedFactorMarketData | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
     aligned_factor = validate_factor(factor)
-    aligned_prices = validate_prices(prices)
+    prepared = market_data or prepare_factor_market_data(prices)
+    aligned_prices = prepared.prices
     coverage = asset_coverage(
         aligned_factor,
         aligned_prices,
         asset_count_column="factor_signal_asset_count",
     )
     missing_keys = missing_price_keys(aligned_factor, aligned_prices)
-    factor, forward_returns = align_signal_to_forward_returns(
-        aligned_factor,
-        aligned_prices,
-        value_column="factor",
-        label="factor",
+    factor = (
+        aligned_factor.join(
+            aligned_prices.select(TIME, ASSET_ID), on=[TIME, ASSET_ID], how="inner"
+        )
+        .select(TIME, ASSET_ID, "factor")
+        .sort([TIME, ASSET_ID])
     )
+    forward_returns = prepared.forward_returns
     if factor.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
 
@@ -667,11 +692,3 @@ def _average_rank(values: np.ndarray) -> np.ndarray:
         ranks[order[start:end]] = rank
         start = end
     return ranks
-
-
-def _partition_key(key: object) -> object:
-    if isinstance(key, tuple):
-        return key[0]
-    if isinstance(key, list):
-        return key[0]
-    return key

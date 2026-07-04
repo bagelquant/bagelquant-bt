@@ -232,11 +232,3 @@ def _require_config(config: BacktestConfig | None) -> BacktestConfig:
             "config is required because initial_capital is needed for minimum fees"
         )
     return config
-
-
-def _partition_key(key: object) -> object:
-    if isinstance(key, tuple):
-        return key[0]
-    if isinstance(key, list):
-        return key[0]
-    return key
