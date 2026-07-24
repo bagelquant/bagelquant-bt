@@ -53,8 +53,9 @@ def run_factor_evaluation(
     *,
     config: BacktestConfig | None = None,
     market_data: PreparedFactorMarketData | None = None,
+    coverage_universe: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
-    """Evaluate a factor score frame against forward returns."""
+    """Evaluate a factor score frame against forward returns and membership."""
 
     resolved_config = _require_config(config)
     aligned_factor = validate_factor(factor)
@@ -64,6 +65,7 @@ def run_factor_evaluation(
         prepared.prices,
         config=resolved_config,
         market_data=prepared,
+        coverage_universe=coverage_universe,
     )
 
 
@@ -73,6 +75,7 @@ def evaluate_factor_frame(
     *,
     config: BacktestConfig,
     market_data: PreparedFactorMarketData | None = None,
+    coverage_universe: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
@@ -83,6 +86,7 @@ def evaluate_factor_frame(
         aligned_factor,
         aligned_prices,
         asset_count_column="factor_signal_asset_count",
+        coverage_universe=coverage_universe,
     )
     missing_keys = missing_price_keys(aligned_factor, aligned_prices)
     factor = (
