@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Protocol
@@ -29,6 +30,150 @@ from .visualization import (
 
 class SupportsWrite(Protocol):
     def write(self, data: str) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ReportFigure:
+    """One ordered, named Plotly figure in a backtest report."""
+
+    key: str
+    section: str
+    title: str
+    figure: go.Figure
+
+
+def factor_evaluation_report_figures(
+    result: FactorEvaluationResult,
+    *,
+    annualization: int = 252,
+) -> tuple[ReportFigure, ...]:
+    """Return the complete, ordered figure inventory for factor evaluation reports."""
+
+    lag_returns = plot_lag_cumulative_return(result)
+    figures = [
+        ReportFigure(
+            "coverage",
+            "Summary & Coverage",
+            "Factor Signal Coverage",
+            plot_coverage(result),
+        ),
+        ReportFigure("ic", "IC & ICIR", "Information Coefficient", plot_ic(result)),
+        ReportFigure("rolling_ic", "IC & ICIR", "Rolling IC", plot_rolling_ic(result)),
+        ReportFigure(
+            "ic_distribution",
+            "IC & ICIR",
+            "IC Distribution",
+            plot_ic_distribution(result),
+        ),
+        ReportFigure("ic_decay", "IC & ICIR", "IC Decay", plot_ic_decay(result)),
+        ReportFigure(
+            "quantile_cumulative_returns",
+            "Quantiles",
+            "Quantile Cumulative Returns",
+            plot_quantile_cumulative_returns(result),
+        ),
+        ReportFigure(
+            "top_n_cumulative_returns",
+            "TOP N",
+            "TOP N Cumulative Returns",
+            plot_cumulative_returns(
+                result.top_n_backtest, title="TOP N Cumulative Returns"
+            ),
+        ),
+        ReportFigure(
+            "top_n_drawdown", "TOP N", "Drawdown", plot_drawdown(result.top_n_backtest)
+        ),
+        ReportFigure(
+            "top_n_turnover_and_costs",
+            "TOP N",
+            "Turnover and Transaction Costs",
+            plot_turnover_and_costs(result.top_n_backtest),
+        ),
+        ReportFigure(
+            "top_n_rolling_sharpe",
+            "TOP N",
+            "Rolling Sharpe",
+            plot_rolling_sharpe(result.top_n_backtest, annualization=annualization),
+        ),
+        ReportFigure(
+            "top_n_rolling_volatility",
+            "TOP N",
+            "Rolling Volatility",
+            plot_rolling_volatility(result.top_n_backtest, annualization=annualization),
+        ),
+        ReportFigure(
+            "top_n_gross_lag_cumulative_returns",
+            "TOP N",
+            "TOP N Gross Lag Cumulative Returns",
+            lag_returns[0],
+        ),
+        ReportFigure(
+            "top_n_net_lag_cumulative_returns",
+            "TOP N",
+            "TOP N Net Lag Cumulative Returns",
+            lag_returns[1],
+        ),
+        ReportFigure(
+            "lag_sharpe",
+            "Spread Performance",
+            "Lag Analysis Sharpe",
+            plot_lag_sharpe(result),
+        ),
+    ]
+    if result.spread_backtest is not None:
+        figures.extend(
+            [
+                ReportFigure(
+                    "spread_cumulative_returns",
+                    "Spread Performance",
+                    "Spread Cumulative Returns",
+                    plot_cumulative_returns(
+                        result.spread_backtest, title="Spread Cumulative Returns"
+                    ),
+                ),
+                ReportFigure(
+                    "spread_drawdown",
+                    "Spread Performance",
+                    "Drawdown",
+                    plot_drawdown(result.spread_backtest),
+                ),
+                ReportFigure(
+                    "spread_turnover_and_costs",
+                    "Spread Performance",
+                    "Turnover and Transaction Costs",
+                    plot_turnover_and_costs(result.spread_backtest),
+                ),
+                ReportFigure(
+                    "spread_rolling_sharpe",
+                    "Spread Performance",
+                    "Rolling Sharpe",
+                    plot_rolling_sharpe(
+                        result.spread_backtest, annualization=annualization
+                    ),
+                ),
+                ReportFigure(
+                    "spread_rolling_volatility",
+                    "Spread Performance",
+                    "Rolling Volatility",
+                    plot_rolling_volatility(
+                        result.spread_backtest, annualization=annualization
+                    ),
+                ),
+                ReportFigure(
+                    "spread_gross_lag_cumulative_returns",
+                    "Spread Performance",
+                    "Spread Gross Lag Cumulative Returns",
+                    lag_returns[2],
+                ),
+                ReportFigure(
+                    "spread_net_lag_cumulative_returns",
+                    "Spread Performance",
+                    "Spread Net Lag Cumulative Returns",
+                    lag_returns[3],
+                ),
+            ]
+        )
+    return tuple(figures)
 
 
 def summary_report(
@@ -87,15 +232,27 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
 
 
 def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str:
+    figures_by_section = _figures_by_section(
+        factor_evaluation_report_figures(result, annualization=annualization)
+    )
     sections = [
         _table_section("Summary", _factor_summary(result), none_display="N/A")
-        + _figure_to_html(plot_coverage(result)),
-        _factor_ic_section(result),
-        _factor_quantile_section(result),
-        _factor_spread_section(result, annualization=annualization),
-        _factor_top_n_section(result, annualization=annualization),
+        + _figure_to_html(figures_by_section["Summary & Coverage"][0]),
+        _factor_ic_section(figures_by_section["IC & ICIR"]),
+        _factor_quantile_section(result, figures_by_section["Quantiles"]),
+        _factor_top_n_section(result, figures_by_section["TOP N"]),
+        _factor_spread_section(result, figures_by_section["Spread Performance"]),
     ]
     return "".join(sections)
+
+
+def _figures_by_section(
+    figures: tuple[ReportFigure, ...],
+) -> dict[str, list[go.Figure]]:
+    grouped: dict[str, list[go.Figure]] = {}
+    for item in figures:
+        grouped.setdefault(item.section, []).append(item.figure)
+    return grouped
 
 
 def _default_missing_price_keys_path(output_path: Path) -> Path:
@@ -109,24 +266,15 @@ def _write_missing_price_keys_csv(
     missing_price_keys.write_csv(Path(output_path))
 
 
-def _factor_ic_section(result: FactorEvaluationResult) -> str:
-    body = "".join(
-        [
-            _figure_to_html(plot_ic(result)),
-            _figure_to_html(plot_rolling_ic(result)),
-            _figure_to_html(plot_ic_distribution(result)),
-            _figure_to_html(plot_ic_decay(result)),
-        ]
-    )
+def _factor_ic_section(figures: list[go.Figure]) -> str:
+    body = "".join(_figure_to_html(figure) for figure in figures)
     return _section("IC and ICIR", body)
 
 
 def _factor_top_n_section(
     result: FactorEvaluationResult,
-    *,
-    annualization: int,
+    figures: list[go.Figure],
 ) -> str:
-    lag_returns = plot_lag_cumulative_return(result)
     body = "".join(
         [
             _table_section(
@@ -134,28 +282,7 @@ def _factor_top_n_section(
                 _standard_performance_table(result.top_n_backtest),
             ),
             _table_section("TOP N Lag Analysis", _lag_analysis(result, "top_n")),
-            _figure_to_html(
-                plot_cumulative_returns(
-                    result.top_n_backtest,
-                    title="TOP N Cumulative Returns",
-                )
-            ),
-            _figure_to_html(plot_drawdown(result.top_n_backtest)),
-            _figure_to_html(plot_turnover_and_costs(result.top_n_backtest)),
-            _figure_to_html(
-                plot_rolling_sharpe(
-                    result.top_n_backtest,
-                    annualization=annualization,
-                )
-            ),
-            _figure_to_html(
-                plot_rolling_volatility(
-                    result.top_n_backtest,
-                    annualization=annualization,
-                )
-            ),
-            _figure_to_html(lag_returns[0]),
-            _figure_to_html(lag_returns[1]),
+            *(_figure_to_html(figure) for figure in figures),
         ]
     )
     return _section("TOP N", body)
@@ -163,8 +290,7 @@ def _factor_top_n_section(
 
 def _factor_spread_section(
     result: FactorEvaluationResult,
-    *,
-    annualization: int,
+    figures: list[go.Figure],
 ) -> str:
     tables: list[str] = []
     if result.spread_backtest is not None:
@@ -176,39 +302,16 @@ def _factor_spread_section(
                 ),
             ]
         )
-    lag_returns = plot_lag_cumulative_return(result)
-    figures = [_figure_to_html(plot_lag_sharpe(result))]
-    if result.spread_backtest is not None:
-        figures.extend(
-            [
-                _figure_to_html(
-                    plot_cumulative_returns(
-                        result.spread_backtest,
-                        title="Spread Cumulative Returns",
-                    )
-                ),
-                _figure_to_html(plot_drawdown(result.spread_backtest)),
-                _figure_to_html(plot_turnover_and_costs(result.spread_backtest)),
-                _figure_to_html(
-                    plot_rolling_sharpe(
-                        result.spread_backtest,
-                        annualization=annualization,
-                    )
-                ),
-                _figure_to_html(
-                    plot_rolling_volatility(
-                        result.spread_backtest,
-                        annualization=annualization,
-                    )
-                ),
-                _figure_to_html(lag_returns[2]),
-                _figure_to_html(lag_returns[3]),
-            ]
-        )
-    return _section("Spread Performance", "".join(tables + figures))
+    return _section(
+        "Spread Performance",
+        "".join([*tables, *(_figure_to_html(figure) for figure in figures)]),
+    )
 
 
-def _factor_quantile_section(result: FactorEvaluationResult) -> str:
+def _factor_quantile_section(
+    result: FactorEvaluationResult,
+    figures: list[go.Figure],
+) -> str:
     quantile_summary = (
         result.quantile_returns.group_by("quantile")
         .agg(
@@ -221,7 +324,7 @@ def _factor_quantile_section(result: FactorEvaluationResult) -> str:
     body = "".join(
         [
             _table_section("Quantile Performance", quantile_summary),
-            _figure_to_html(plot_quantile_cumulative_returns(result)),
+            *(_figure_to_html(figure) for figure in figures),
         ]
     )
     return _section("Quantile Performance", body)
