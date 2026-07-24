@@ -4,6 +4,7 @@ import polars as pl
 
 from bagelquant_bt import (
     BacktestConfig,
+    factor_evaluation_report_figures,
     run_factor_evaluation,
     run_weight_backtest,
     summary_report,
@@ -119,8 +120,8 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     section_order = [
         html.index("<h2>IC and ICIR</h2>"),
         html.index("<h2>Quantile Performance</h2>"),
-        html.index("<h2>Spread Performance</h2>"),
         html.index("<h2>TOP N</h2>"),
+        html.index("<h2>Spread Performance</h2>"),
     ]
     assert section_order == sorted(section_order)
     assert html.index("<h3>Summary</h3>") < html.index("<h2>IC and ICIR</h2>")
@@ -135,6 +136,17 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert html.index("<h3>Spread Performance</h3>") < html.index(
         "Spread Cumulative Returns"
     )
+
+    figures = factor_evaluation_report_figures(result, annualization=4)
+    assert [item.section for item in figures] == [
+        "Summary & Coverage",
+        *["IC & ICIR"] * 4,
+        "Quantiles",
+        *["TOP N"] * 7,
+        *["Spread Performance"] * 8,
+    ]
+    assert len({item.key for item in figures}) == len(figures)
+    assert all(item.title in html for item in figures)
 
 
 def test_report_numeric_text_uses_four_significant_digits() -> None:

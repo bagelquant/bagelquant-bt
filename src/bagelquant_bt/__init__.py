@@ -7,8 +7,12 @@ from .exceptions import (
     BagelQuantBacktestError,
     InputValidationError,
 )
-from .factor import PreparedFactorMarketData, prepare_factor_market_data, run_factor_evaluation
-from .reporting import summary_report
+from .factor import (
+    PreparedFactorMarketData,
+    prepare_factor_market_data,
+    run_factor_evaluation,
+)
+from .reporting import ReportFigure, factor_evaluation_report_figures, summary_report
 from .results import (
     BacktestResult,
     FactorEvaluationResult,
@@ -25,10 +29,12 @@ __all__ = [
     "InputValidationError",
     "PerformanceSummary",
     "PreparedFactorMarketData",
+    "ReportFigure",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
-    "run_factor_evaluation",
+    "factor_evaluation_report_figures",
     "prepare_factor_market_data",
+    "run_factor_evaluation",
     "run_weight_backtest",
     "summary_report",
 ]
