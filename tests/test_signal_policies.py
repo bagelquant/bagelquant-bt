@@ -126,6 +126,18 @@ def test_signal_evaluation_uses_next_signal_horizon_and_daily_holding() -> None:
         date(2024, 1, 2),
         date(2024, 1, 3),
     ]
+    assert result.quantile_returns["time"].unique().to_list() == [
+        date(2024, 1, 1),
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+    ]
+    assert result.quantile_returns.filter(
+        pl.col("quantile") == "q1"
+    )["return"].to_list() == [
+        pytest.approx(0.1),
+        pytest.approx(0.0909090909090908),
+        pytest.approx(0.0),
+    ]
     assert result.top_n_backtest.transaction_costs.data["total_fee"].to_list()[1] == 0.0
 
 

@@ -39,8 +39,10 @@ print(result.returns)
 print(result.summary)
 ```
 
-Factor evaluation computes daily cross-sectional IC, quantile returns, a
-`q1 - qN` spread, and a TOP N equal-weight backtest.
+Factor evaluation computes cross-sectional IC at the signal cadence, plus
+daily marked-to-market quantile portfolios, a `q1 - qN` spread, and a TOP N
+equal-weight backtest. Sparse or monthly signal snapshots rebalance only on
+their snapshot dates; their weights are held across intervening daily returns.
 
 Visualization helpers return Plotly figures:
 

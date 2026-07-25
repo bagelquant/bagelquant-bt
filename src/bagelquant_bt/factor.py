@@ -142,16 +142,12 @@ def evaluate_factor_frame(
     ic_std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
     ic_mean = float(np.mean(values)) if len(values) else math.nan
     icir = ic_mean / ic_std if ic_std != 0 and not math.isnan(ic_std) else math.nan
-    quantile_returns = (
-        factor_quantile_returns(factor, metric_returns, quantiles=config.quantiles)
-        if evaluation_returns is not None
-        else _traded_factor_quantile_returns_with_forward_returns(
-            factor,
-            aligned_prices,
-            config=config,
-            quantiles=config.quantiles,
-            forward_returns=forward_returns,
-        )
+    quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
+        factor,
+        aligned_prices,
+        config=config,
+        quantiles=config.quantiles,
+        forward_returns=forward_returns,
     )
     spread_returns = _spread_returns(quantile_returns, config.quantiles)
     top_n_weights = _policy_weights(
@@ -450,7 +446,12 @@ def _traded_factor_quantile_returns_with_forward_returns(
     quantiles: int,
     forward_returns: pl.DataFrame | None,
 ) -> pl.DataFrame:
-    """Compute traded quantile returns, optionally reusing forward returns."""
+    """Compute daily held-portfolio quantile returns from signal snapshots.
+
+    Quantile memberships and weights change only on factor snapshot dates.
+    The backtest expands each snapshot across daily price returns until the next
+    snapshot, so a monthly signal remains a monthly-rebalanced portfolio.
+    """
 
     frames: list[pl.DataFrame] = []
     for quantile, weights in quantile_equal_weights(
