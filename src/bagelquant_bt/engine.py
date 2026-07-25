@@ -130,7 +130,8 @@ def _simulate_cost_adjusted_returns(
         for row in gross_returns.iter_rows(named=True)
     }
 
-    current_value = float(config.initial_capital)
+    current_gross_value = float(config.initial_capital)
+    current_net_value = float(config.initial_capital)
     cost_rows: list[dict[str, object]] = []
     return_rows: list[dict[str, object]] = []
     value_rows: list[dict[str, object]] = []
@@ -140,32 +141,32 @@ def _simulate_cost_adjusted_returns(
         weight_deltas = [float(delta) for delta in row["weight_deltas"]]
         traded_asset_count = len(weight_deltas)
         weight_delta = sum(weight_deltas)
-        traded_notional = weight_delta * current_value
+        traded_notional = weight_delta * current_net_value
         raw_fee = traded_notional * config.transaction_cost.rate
         total_fee = sum(
             max(
-                delta * current_value * config.transaction_cost.rate,
+                delta * current_net_value * config.transaction_cost.rate,
                 config.transaction_cost.min_fee,
             )
             for delta in weight_deltas
         )
 
-        cost_return = total_fee / current_value if current_value else 0.0
+        cost_return = total_fee / current_net_value if current_net_value else 0.0
         gross_return = gross_by_time.get(time, 0.0)
         net_return = gross_return - cost_return
-        next_value = current_value * (1.0 + net_return)
-        if next_value <= 0.0:
+        next_net_value = current_net_value * (1.0 + net_return)
+        if next_net_value <= 0.0:
             raise InputValidationError(
                 "net portfolio value became non-positive after transaction costs "
-                f"at {time}: current_value={current_value:.6g}, "
+                f"at {time}: current_value={current_net_value:.6g}, "
                 f"gross_return={gross_return:.6g}, "
                 f"cost_return={cost_return:.6g}, "
                 f"traded_asset_count={traded_asset_count}, "
                 f"total_fee={total_fee:.6g}. "
                 "Increase initial_capital or reduce traded universe/turnover."
             )
-        gross_value = current_value * (1.0 + gross_return)
-        current_value = next_value
+        current_gross_value *= 1.0 + gross_return
+        current_net_value = next_net_value
         cost_rows.append(
             {
                 TIME: time,
@@ -181,7 +182,11 @@ def _simulate_cost_adjusted_returns(
             {TIME: time, "gross_return": gross_return, "net_return": net_return}
         )
         value_rows.append(
-            {TIME: time, "gross_value": gross_value, "net_value": current_value}
+            {
+                TIME: time,
+                "gross_value": current_gross_value,
+                "net_value": current_net_value,
+            }
         )
 
     returns = pl.DataFrame(return_rows).sort(TIME)
