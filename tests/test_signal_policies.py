@@ -18,19 +18,11 @@ from bagelquant_bt.exceptions import InputValidationError
 
 def _calendar() -> pl.DataFrame:
     return pl.DataFrame(
-        {
-            "time": [
-                date(2024, 1, 30),
-                date(2024, 1, 31),
-                date(2024, 2, 1),
-                date(2024, 2, 29),
-                date(2024, 3, 1),
-            ]
-        }
-    )
+        {"time": pl.date_range(date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True)}
+    ).filter(pl.col("time").dt.weekday() <= 5)
 
 
-def test_month_end_signal_uses_next_open_session() -> None:
+def test_month_end_signal_uses_fifteenth_open_session() -> None:
     predictions = pl.DataFrame(
         {
             "time": [
@@ -46,9 +38,32 @@ def test_month_end_signal_uses_next_open_session() -> None:
 
     signals = resolve_signal_policy("month_end").transform(predictions, _calendar())
     assert signals.get_column("time").unique().to_list() == [
-        date(2024, 2, 1),
-        date(2024, 3, 1),
+        date(2024, 2, 21),
+        date(2024, 3, 21),
     ]
+
+
+def test_month_end_signal_skips_holidays_when_counting_execution_sessions() -> None:
+    predictions = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 31), date(2024, 1, 31)],
+            "asset_id": ["a", "b"],
+            "prediction": [2.0, 1.0],
+        }
+    )
+    calendar = _calendar().filter(pl.col("time") != date(2024, 2, 12))
+
+    signals = resolve_signal_policy("month_end").transform(predictions, calendar)
+
+    assert signals.get_column("time").unique().to_list() == [date(2024, 2, 22)]
+
+
+def test_month_end_schedule_omits_observations_without_future_sessions() -> None:
+    calendar = _calendar().filter(pl.col("time") <= date(2024, 2, 9))
+
+    schedule = resolve_signal_policy("month_end").schedule(calendar)
+
+    assert schedule.is_empty()
 
 
 def test_signal_policy_preserves_all_monthly_schedule_variants() -> None:

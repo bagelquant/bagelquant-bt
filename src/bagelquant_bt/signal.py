@@ -115,7 +115,12 @@ class SignalPolicy:
 
 _CANONICAL_SIGNAL_POLICIES = {
     "daily": SignalPolicy("daily", "daily", SignalAnchor.EVERY_TRADING_DAY),
-    "month_end": SignalPolicy("month_end", "monthly", SignalAnchor.LAST_TRADING_DAY),
+    "month_end": SignalPolicy(
+        "month_end",
+        "monthly",
+        SignalAnchor.LAST_TRADING_DAY,
+        execution_lag_sessions=15,
+    ),
     "monthly_mid": SignalPolicy("monthly_mid", "monthly", SignalAnchor.ON_OR_AFTER_CALENDAR_DAY, calendar_day=15, holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION),
     "monthly_first_monday": SignalPolicy("monthly_first_monday", "monthly", SignalAnchor.FIRST_WEEKDAY, weekday=0, holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION),
     "monthly_last_friday": SignalPolicy("monthly_last_friday", "monthly", SignalAnchor.LAST_WEEKDAY, weekday=4, holiday_adjustment=HolidayAdjustment.PREVIOUS_OPEN_SESSION),
