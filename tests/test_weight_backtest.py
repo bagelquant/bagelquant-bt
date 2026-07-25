@@ -85,6 +85,44 @@ def test_low_frequency_weights_hold_until_next_rebalance() -> None:
     assert result.transaction_costs.data["total_fee"].to_list()[3] == 0.0
 
 
+def test_gross_and_net_value_paths_follow_independent_daily_ledgers() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["a", "a", "a"],
+            "price": [100.0, 110.0, 121.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "a"],
+            "weight": [1.0, 1.0],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=1_000,
+            transaction_cost=TransactionCostConfig(rate=0.01, min_fee=0.0),
+        ),
+    )
+
+    # Independent hand ledger:
+    # gross = 1000 * 1.10 * 1.10
+    # net   = (1000 * 1.10 - 10 entry fee) * 1.10
+    assert result.value["gross_value"].to_list() == pytest.approx([1_100, 1_210])
+    assert result.value["net_value"].to_list() == pytest.approx([1_090, 1_199])
+    assert result.value["gross_return_cumulative"].to_list() == pytest.approx(
+        [0.10, 0.21]
+    )
+    assert result.value["net_return_cumulative"].to_list() == pytest.approx(
+        [0.09, 0.199]
+    )
+
+
 def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
     prices = pl.DataFrame(
         {
