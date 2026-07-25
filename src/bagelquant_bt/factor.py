@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,8 +22,10 @@ from .inputs import (
     asset_coverage,
     missing_price_keys,
     validate_factor,
+    validate_panel_frame,
     validate_prices,
 )
+from .portfolio import EqualWeightPolicy
 from .results import BacktestResult, FactorEvaluationResult
 from .returns import asset_close_to_close_returns
 
@@ -69,6 +72,33 @@ def run_factor_evaluation(
     )
 
 
+def run_signal_evaluation(
+    signals: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig | None = None,
+    portfolio_policy: object | None = None,
+    portfolio_inputs: Mapping[str, object] | None = None,
+    coverage_universe: pl.DataFrame | None = None,
+) -> FactorEvaluationResult:
+    """Evaluate executable signals against returns through the next signal."""
+
+    resolved_config = _require_config(config)
+    aligned = validate_panel_frame(signals, label="signals", value_columns=("signal",))
+    factor = aligned.select(TIME, ASSET_ID, pl.col("signal").alias("factor"))
+    prepared = prepare_factor_market_data(prices)
+    return evaluate_factor_frame(
+        factor,
+        prepared.prices,
+        config=resolved_config,
+        market_data=prepared,
+        coverage_universe=coverage_universe,
+        evaluation_returns=signal_forward_returns(factor, prepared.prices),
+        portfolio_policy=portfolio_policy,
+        portfolio_inputs=portfolio_inputs,
+    )
+
+
 def evaluate_factor_frame(
     factor: pl.DataFrame,
     prices: pl.DataFrame,
@@ -76,6 +106,9 @@ def evaluate_factor_frame(
     config: BacktestConfig,
     market_data: PreparedFactorMarketData | None = None,
     coverage_universe: pl.DataFrame | None = None,
+    evaluation_returns: pl.DataFrame | None = None,
+    portfolio_policy: object | None = None,
+    portfolio_inputs: Mapping[str, object] | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
@@ -97,24 +130,37 @@ def evaluate_factor_frame(
         .sort([TIME, ASSET_ID])
     )
     forward_returns = prepared.forward_returns
+    metric_returns = (
+        evaluation_returns if evaluation_returns is not None else forward_returns
+    )
     if factor.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
 
-    ic = information_coefficients(factor, forward_returns)
+    ic = information_coefficients(factor, metric_returns)
     ic_summary = summarize_ic(ic)
     values = np.array(ic["spearman_ic"].drop_nulls(), dtype=float)
     ic_std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
     ic_mean = float(np.mean(values)) if len(values) else math.nan
     icir = ic_mean / ic_std if ic_std != 0 and not math.isnan(ic_std) else math.nan
-    quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
-        factor,
-        aligned_prices,
-        config=config,
-        quantiles=config.quantiles,
-        forward_returns=forward_returns,
+    quantile_returns = (
+        factor_quantile_returns(factor, metric_returns, quantiles=config.quantiles)
+        if evaluation_returns is not None
+        else _traded_factor_quantile_returns_with_forward_returns(
+            factor,
+            aligned_prices,
+            config=config,
+            quantiles=config.quantiles,
+            forward_returns=forward_returns,
+        )
     )
     spread_returns = _spread_returns(quantile_returns, config.quantiles)
-    top_n_weights = top_n_equal_weights(factor, top_n=config.top_n)
+    top_n_weights = _policy_weights(
+        factor,
+        config,
+        portfolio_policy,
+        aligned_prices,
+        portfolio_inputs,
+    )
     top_n_backtest = _backtest_weight_frame_with_forward_returns(
         top_n_weights,
         aligned_prices,
@@ -146,13 +192,13 @@ def evaluate_factor_frame(
     lag_returns = _lag_returns_from_backtests(lag_backtests)
     ic_decay = factor_ic_decay(
         factor,
-        forward_returns,
+        metric_returns,
         lags=FACTOR_LAGS,
     )
 
     return FactorEvaluationResult(
         factor=factor,
-        forward_returns=forward_returns,
+        forward_returns=metric_returns,
         ic=ic,
         ic_summary=ic_summary,
         ic_mean=ic_mean,
@@ -170,6 +216,64 @@ def evaluate_factor_frame(
         coverage=coverage,
         missing_price_keys=missing_keys,
     )
+
+
+def signal_forward_returns(signals: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFrame:
+    """Return each signal's asset return through its next executable signal."""
+
+    schedule = (
+        signals.select(TIME)
+        .unique()
+        .sort(TIME)
+        .with_columns(pl.col(TIME).shift(-1).alias("next_time"))
+        .drop_nulls("next_time")
+    )
+    if schedule.is_empty():
+        return pl.DataFrame(
+            schema={TIME: pl.Date, ASSET_ID: pl.String, "forward_return": pl.Float64}
+        )
+    starts = signals.join(schedule, on=TIME, how="inner")
+    end_prices = prices.select(
+        pl.col(TIME).alias("next_time"),
+        ASSET_ID,
+        pl.col("price").alias("next_price"),
+    )
+    return (
+        starts.join(
+            prices.select(TIME, ASSET_ID, pl.col("price").alias("start_price")),
+            on=[TIME, ASSET_ID],
+            how="inner",
+        )
+        .join(end_prices, on=["next_time", ASSET_ID], how="inner")
+        .select(
+            TIME,
+            ASSET_ID,
+            (pl.col("next_price") / pl.col("start_price") - 1.0).alias(
+                "forward_return"
+            ),
+        )
+        .sort([TIME, ASSET_ID])
+    )
+
+
+def _policy_weights(
+    factor: pl.DataFrame,
+    config: BacktestConfig,
+    policy: object | None,
+    prices: pl.DataFrame,
+    inputs: Mapping[str, object] | None,
+) -> pl.DataFrame:
+    selected = policy or EqualWeightPolicy(config.top_n)
+    build = getattr(selected, "build", None)
+    if build is None:
+        raise TypeError("portfolio_policy must define build(signals, ...)")
+    output = build(
+        factor.select(TIME, ASSET_ID, pl.col("factor").alias("signal")),
+        prices=prices,
+        config=config,
+        **dict(inputs or {}),
+    )
+    return output.weights
 
 
 def information_coefficients(
