@@ -54,6 +54,27 @@ def validate_factor(factor: pl.DataFrame) -> pl.DataFrame:
     return validate_panel_frame(factor, label="factor", value_columns=("factor",))
 
 
+def validate_universe(universe: pl.DataFrame) -> pl.DataFrame:
+    """Validate a membership panel keyed by time and asset identifier."""
+
+    if not isinstance(universe, pl.DataFrame):
+        raise InputValidationError("coverage_universe must be a polars DataFrame")
+    missing = sorted({TIME, ASSET_ID} - set(universe.columns))
+    if missing:
+        raise InputValidationError(
+            f"coverage_universe is missing required columns: {missing}"
+        )
+    normalized = universe.select(TIME, ASSET_ID).with_columns(
+        pl.col(TIME).cast(pl.Date, strict=False),
+        pl.col(ASSET_ID).cast(pl.String),
+    ).drop_nulls([TIME, ASSET_ID])
+    if normalized.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
+        raise InputValidationError(
+            "coverage_universe must be unique by (time, asset_id)"
+        )
+    return normalized.sort([TIME, ASSET_ID])
+
+
 def missing_price_keys(frame: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFrame:
     """Return frame keys without an exact matching price key."""
 
@@ -69,12 +90,18 @@ def asset_coverage(
     prices: pl.DataFrame,
     *,
     asset_count_column: str,
+    coverage_universe: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Count raw input assets against the available price universe by date."""
+    """Count raw input assets against a supplied membership or price universe."""
 
-    universe = (
-        prices.group_by(TIME).agg(pl.len().alias("universe_asset_count")).sort(TIME)
+    universe_keys = (
+        validate_universe(coverage_universe)
+        if coverage_universe is not None
+        else prices.select(TIME, ASSET_ID)
     )
+    universe = universe_keys.group_by(TIME).agg(
+        pl.len().alias("universe_asset_count")
+    ).sort(TIME)
     input_counts = frame.group_by(TIME).agg(pl.len().alias(asset_count_column))
     return (
         universe.join(input_counts, on=TIME, how="left")

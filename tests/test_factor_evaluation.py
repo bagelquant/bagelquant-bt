@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import polars as pl
 import pytest
 
@@ -9,6 +11,51 @@ from bagelquant_bt.factor import (
     information_coefficients,
     spread_quantile_weights,
 )
+
+
+def test_factor_coverage_uses_explicit_membership_universe() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01"] * 4 + ["2024-01-02"] * 4,
+            "asset_id": ["a", "b", "c", "d"] * 2,
+            "price": [1.0, 2.0, 3.0, 4.0, 1.1, 2.1, 3.1, 4.1],
+        }
+    )
+    factor = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b"],
+            "factor": [1.0, 2.0],
+        }
+    )
+    membership = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "b", "a"],
+        }
+    )
+
+    result = run_factor_evaluation(
+        factor,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+        coverage_universe=membership,
+    )
+
+    assert result.coverage.to_dicts() == [
+        {
+            "time": date(2024, 1, 1),
+            "factor_signal_asset_count": 2,
+            "universe_asset_count": 2,
+            "coverage_ratio": 1.0,
+        },
+        {
+            "time": date(2024, 1, 2),
+            "factor_signal_asset_count": 0,
+            "universe_asset_count": 1,
+            "coverage_ratio": 0.0,
+        },
+    ]
 
 
 def test_factor_evaluation_uses_time_asset_id_inputs() -> None:
