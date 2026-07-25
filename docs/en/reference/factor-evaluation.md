@@ -25,6 +25,16 @@ The compatibility fields `ic_mean`, `ic_std`, and `icir` use Spearman IC.
 mean(IC) / standard_deviation(IC)
 ```
 
+## Signal policies
+
+`SignalPolicy("daily")` and `SignalPolicy("month_end")` transform a pre-filled
+prediction panel into executable signals using an explicit open-session
+calendar and a one-session execution lag. `run_signal_evaluation` measures IC
+against each signal's return through the next signal date, while the resulting
+portfolio remains marked to market daily between rebalances. Portfolio policies
+include equal weight, explicit float-market-cap weight, and a non-levered
+target-volatility overlay.
+
 ## Quantile Returns
 
 Each day, assets are sorted by factor score from highest to lowest and split
