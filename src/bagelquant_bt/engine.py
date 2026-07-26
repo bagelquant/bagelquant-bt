@@ -19,9 +19,10 @@ from .performance import summarize_performance
 from .results import BacktestResult, TransactionCostBreakdown
 from .returns import (
     _expand_portfolio_weights,
-    asset_close_to_close_returns,
     cumulative_returns,
     portfolio_returns,
+    prepare_price_data,
+    unexecuted_weight_keys,
 )
 
 
@@ -53,14 +54,15 @@ def backtest_weight_frame(
 
     aligned_weights = validate_weights(weights)
     aligned_prices = validate_prices(prices)
-    forward_returns = asset_close_to_close_returns(aligned_prices)
+    price_data = prepare_price_data(aligned_prices)
     missing_keys = missing_price_keys(aligned_weights, aligned_prices)
     return _backtest_weight_frame_with_forward_returns(
         aligned_weights,
         aligned_prices,
-        forward_returns,
+        price_data.forward_returns,
         config=config,
         missing_price_keys=missing_keys,
+        price_gaps=price_data.price_gaps,
     )
 
 
@@ -71,6 +73,7 @@ def _backtest_weight_frame_with_forward_returns(
     *,
     config: BacktestConfig,
     missing_price_keys: pl.DataFrame | None = None,
+    price_gaps: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest a weight frame with a precomputed forward-return panel."""
 
@@ -111,11 +114,28 @@ def _backtest_weight_frame_with_forward_returns(
             if missing_price_keys is None
             else missing_price_keys.sort([TIME, ASSET_ID])
         ),
+        price_gaps=(
+            _empty_price_gaps()
+            if price_gaps is None
+            else price_gaps.sort([TIME, ASSET_ID])
+        ),
+        unexecuted_weight_keys=unexecuted_weight_keys(weights, prices),
     )
 
 
 def _empty_missing_price_keys() -> pl.DataFrame:
     return pl.DataFrame(schema={TIME: pl.Date, ASSET_ID: pl.String})
+
+
+def _empty_price_gaps() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            TIME: pl.Date,
+            ASSET_ID: pl.String,
+            "last_observed_time": pl.Date,
+            "missing_session_count": pl.Int64,
+        }
+    )
 
 
 def _simulate_cost_adjusted_returns(

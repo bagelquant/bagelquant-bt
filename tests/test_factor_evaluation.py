@@ -5,10 +5,11 @@ from datetime import date
 import polars as pl
 import pytest
 
-from bagelquant_bt import BacktestConfig, run_factor_evaluation
+from bagelquant_bt import BacktestConfig, run_factor_evaluation, run_signal_evaluation
 from bagelquant_bt.factor import (
     factor_quantile_returns,
     information_coefficients,
+    lag_factor,
     spread_quantile_weights,
 )
 
@@ -207,6 +208,99 @@ def test_sparse_factor_keeps_analytics_and_trades_daily_portfolios() -> None:
     assert set(result.quantile_returns["quantile"]) == {"q1", "q2"}
     assert result.spread_backtest is not None
     assert result.top_n_backtest.transaction_costs.data["total_fee"].to_list()[1] == 0.0
+
+
+def test_lag_factor_counts_daily_price_sessions_for_monthly_signals() -> None:
+    sessions = pl.DataFrame(
+        {
+            "time": pl.date_range(
+                date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True
+            )
+        }
+    ).filter(pl.col("time").dt.weekday() <= 5)
+    sessions = sessions.filter(pl.col("time") != date(2024, 2, 12))
+    factor = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 31), date(2024, 1, 31)],
+            "asset_id": ["a", "b"],
+            "factor": [2.0, 1.0],
+        }
+    )
+
+    lagged = lag_factor(factor, lag=15, trading_sessions=sessions)
+
+    assert lagged.to_dicts() == [
+        {"time": date(2024, 2, 22), "asset_id": "a", "factor": 2.0},
+        {"time": date(2024, 2, 22), "asset_id": "b", "factor": 1.0},
+    ]
+
+
+def test_lag_factor_matches_observation_shift_for_daily_inputs() -> None:
+    sessions = pl.DataFrame(
+        {"time": [date(2024, 1, day) for day in range(2, 7)]}
+    )
+    factor = pl.DataFrame(
+        {
+            "time": [date(2024, 1, day) for day in range(2, 7)],
+            "asset_id": ["a"] * 5,
+            "factor": [10.0, 20.0, 30.0, 40.0, 50.0],
+        }
+    )
+
+    lagged = lag_factor(factor, lag=2, trading_sessions=sessions)
+
+    assert lagged.to_dicts() == [
+        {"time": date(2024, 1, 4), "asset_id": "a", "factor": 10.0},
+        {"time": date(2024, 1, 5), "asset_id": "a", "factor": 20.0},
+        {"time": date(2024, 1, 6), "asset_id": "a", "factor": 30.0},
+    ]
+
+
+def test_monthly_signal_lag_trades_daily_from_the_shifted_session() -> None:
+    sessions = pl.DataFrame(
+        {
+            "time": pl.date_range(
+                date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True
+            )
+        }
+    ).filter(pl.col("time").dt.weekday() <= 5)
+    sessions = sessions.filter(pl.col("time") != date(2024, 2, 12))
+    prices = (
+        sessions.join(pl.DataFrame({"asset_id": ["a", "b"]}), how="cross")
+        .with_columns(
+            pl.when(pl.col("asset_id") == "a")
+            .then(10.0 + pl.int_range(0, pl.len()).over("asset_id") * 0.1)
+            .otherwise(10.0 - pl.int_range(0, pl.len()).over("asset_id") * 0.1)
+            .alias("price")
+        )
+    )
+    signals = pl.DataFrame(
+        {
+            "time": [
+                date(2024, 1, 31),
+                date(2024, 1, 31),
+                date(2024, 2, 29),
+                date(2024, 2, 29),
+            ],
+            "asset_id": ["a", "b", "a", "b"],
+            "signal": [2.0, 1.0, 1.0, 2.0],
+        }
+    )
+
+    result = run_signal_evaluation(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+    )
+    delayed_returns = result.lag_returns.filter(
+        (pl.col("lag") == 20) & (pl.col("portfolio") == "top_n")
+    )
+
+    assert delayed_returns["time"].head(2).to_list() == [
+        date(2024, 2, 29),
+        date(2024, 3, 1),
+    ]
+    assert result.ic_decay.filter(pl.col("lag") == 20)["ic_mean"].null_count() == 0
 
 
 def test_factor_quantile_returns_preserve_bucket_semantics_and_low_counts() -> None:

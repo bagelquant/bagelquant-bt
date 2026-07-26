@@ -45,8 +45,8 @@ TOP N 回测会把因子分数转换成长-only 等权组合：
 
 因子评估还会构造 spread 组合：做多 `q1`、做空 `qN`，并通过同一个含交易成本的回测引擎计算结果。
 
-`lag_analysis` 会评估 TOP N 和 spread 组合在因子信号滞后 0、1、2、3、4、5、10、20、30、60 个观测后的累计收益和 Sharpe。
+`lag_analysis` 会评估 TOP N 和 spread 组合在因子信号滞后 0、1、2、3、4、5、10、20、30、60 个交易日后的累计收益和 Sharpe；月频信号的 Lag 15 是 15 个开市日，不是 15 个按月观测。
 
 `lag_returns` 包含相同组合和滞后下的 gross/net 累计收益时间序列。
 
-`ic_decay` 会在相同滞后上报告 Pearson 和 Spearman 的平均 IC，并以 IC decay 折线图展示。
+`ic_decay` 会在相同交易日滞后上报告 Pearson 和 Spearman 的平均 IC，并以 IC decay 折线图展示。

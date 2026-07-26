@@ -218,6 +218,7 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
     tables = [
         _table_section("Performance", result.performance),
         _table_section("Trading Summary", _trading_summary(result)),
+        _table_section("Price Availability", _price_availability_summary(result)),
     ]
     figures = [
         plot_cumulative_returns(result, title="Portfolio Cumulative Returns"),
@@ -281,6 +282,10 @@ def _factor_top_n_section(
                 "TOP N Performance",
                 _standard_performance_table(result.top_n_backtest),
             ),
+            _table_section(
+                "TOP N Price Availability",
+                _price_availability_summary(result.top_n_backtest),
+            ),
             _table_section("TOP N Lag Analysis", _lag_analysis(result, "top_n")),
             *(_figure_to_html(figure) for figure in figures),
         ]
@@ -299,6 +304,10 @@ def _factor_spread_section(
                 _table_section(
                     "Spread Performance",
                     _standard_performance_table(result.spread_backtest),
+                ),
+                _table_section(
+                    "Spread Price Availability",
+                    _price_availability_summary(result.spread_backtest),
                 ),
             ]
         )
@@ -416,6 +425,23 @@ def _trading_summary(result: BacktestResult) -> pl.DataFrame:
             {"metric": "total_transaction_cost", "value": total_fee},
         ],
         schema={"metric": pl.String, "value": pl.Float64},
+    )
+
+
+def _price_availability_summary(result: BacktestResult) -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            {"metric": "frozen_price_gap_rows", "value": result.price_gaps.height},
+            {
+                "metric": "unexecuted_target_weight_rows",
+                "value": result.unexecuted_weight_keys.height,
+            },
+            {
+                "metric": "raw_missing_price_key_rows",
+                "value": result.missing_price_keys.height,
+            },
+        ],
+        schema={"metric": pl.String, "value": pl.Int64},
     )
 
 

@@ -54,6 +54,8 @@ class BacktestResult:
     performance: pl.DataFrame
     coverage: pl.DataFrame
     missing_price_keys: pl.DataFrame
+    price_gaps: pl.DataFrame
+    unexecuted_weight_keys: pl.DataFrame
 
 
 @dataclass(frozen=True, slots=True)

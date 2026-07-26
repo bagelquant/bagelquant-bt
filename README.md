@@ -9,8 +9,9 @@ The public input shape is always explicit:
 - weights: `time`, `asset_id`, `weight`
 - factors: `time`, `asset_id`, `factor`
 
-Weights at `time=t` earn each asset's close-to-close return from `t` to the next
-available observation.
+Weights at `time=t` earn the next market-session return. During an asset-specific
+price gap, its holding is frozen at the last observed price; the gap sessions
+have zero return and the cumulative move is recognized when a new price arrives.
 
 ```python
 import polars as pl

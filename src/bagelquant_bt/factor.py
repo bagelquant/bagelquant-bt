@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -27,7 +27,7 @@ from .inputs import (
 )
 from .portfolio import EqualWeightPolicy
 from .results import BacktestResult, FactorEvaluationResult
-from .returns import asset_close_to_close_returns
+from .returns import PreparedPriceData, prepare_price_data
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
 
@@ -38,15 +38,18 @@ class PreparedFactorMarketData:
 
     prices: pl.DataFrame
     forward_returns: pl.DataFrame
+    price_data: PreparedPriceData | None = None
 
 
 def prepare_factor_market_data(prices: pl.DataFrame) -> PreparedFactorMarketData:
     """Validate prices and calculate forward returns once for a factor batch."""
 
     aligned_prices = validate_prices(prices)
+    price_data = prepare_price_data(aligned_prices)
     return PreparedFactorMarketData(
         prices=aligned_prices,
-        forward_returns=asset_close_to_close_returns(aligned_prices),
+        forward_returns=price_data.forward_returns,
+        price_data=price_data,
     )
 
 
@@ -94,6 +97,9 @@ def run_signal_evaluation(
         market_data=prepared,
         coverage_universe=coverage_universe,
         evaluation_returns=signal_forward_returns(factor, prepared.prices),
+        lag_return_provider=lambda lagged: signal_forward_returns(
+            lagged, prepared.prices
+        ),
         portfolio_policy=portfolio_policy,
         portfolio_inputs=portfolio_inputs,
     )
@@ -107,6 +113,7 @@ def evaluate_factor_frame(
     market_data: PreparedFactorMarketData | None = None,
     coverage_universe: pl.DataFrame | None = None,
     evaluation_returns: pl.DataFrame | None = None,
+    lag_return_provider: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
     portfolio_policy: object | None = None,
     portfolio_inputs: Mapping[str, object] | None = None,
 ) -> FactorEvaluationResult:
@@ -115,6 +122,7 @@ def evaluate_factor_frame(
     aligned_factor = validate_factor(factor)
     prepared = market_data or prepare_factor_market_data(prices)
     aligned_prices = prepared.prices
+    price_data = prepared.price_data or prepare_price_data(aligned_prices)
     coverage = asset_coverage(
         aligned_factor,
         aligned_prices,
@@ -148,6 +156,7 @@ def evaluate_factor_frame(
         config=config,
         quantiles=config.quantiles,
         forward_returns=forward_returns,
+        price_gaps=price_data.price_gaps,
     )
     spread_returns = _spread_returns(quantile_returns, config.quantiles)
     top_n_weights = _policy_weights(
@@ -162,6 +171,7 @@ def evaluate_factor_frame(
         aligned_prices,
         forward_returns,
         config=config,
+        price_gaps=price_data.price_gaps,
     )
     spread_weights = spread_quantile_weights(
         factor,
@@ -173,6 +183,7 @@ def evaluate_factor_frame(
             aligned_prices,
             forward_returns,
             config=config,
+            price_gaps=price_data.price_gaps,
         )
         if spread_weights.height
         else None
@@ -183,12 +194,15 @@ def evaluate_factor_frame(
         config=config,
         lags=FACTOR_LAGS,
         forward_returns=forward_returns,
+        price_gaps=price_data.price_gaps,
     )
     lag_analysis = _lag_analysis_from_backtests(lag_backtests)
     lag_returns = _lag_returns_from_backtests(lag_backtests)
     ic_decay = factor_ic_decay(
         factor,
         metric_returns,
+        trading_sessions=_trading_sessions(aligned_prices),
+        return_provider=lag_return_provider,
         lags=FACTOR_LAGS,
     )
 
@@ -445,6 +459,7 @@ def _traded_factor_quantile_returns_with_forward_returns(
     config: BacktestConfig,
     quantiles: int,
     forward_returns: pl.DataFrame | None,
+    price_gaps: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Compute daily held-portfolio quantile returns from signal snapshots.
 
@@ -466,6 +481,7 @@ def _traded_factor_quantile_returns_with_forward_returns(
                 prices,
                 forward_returns,
                 config=config,
+                price_gaps=price_gaps,
             )
             if forward_returns is not None
             else backtest_weight_frame(weights, prices, config=config)
@@ -570,7 +586,7 @@ def factor_lag_analysis(
     config: BacktestConfig,
     lags: tuple[int, ...] = FACTOR_LAGS,
 ) -> pl.DataFrame:
-    """Backtest lagged factor signals for TOP N and spread portfolios."""
+    """Backtest TOP N and spread signals delayed by trading sessions."""
 
     return _lag_analysis_from_backtests(
         _lag_backtests(factor, prices, config=config, lags=lags)
@@ -584,7 +600,7 @@ def factor_lag_returns(
     config: BacktestConfig,
     lags: tuple[int, ...] = FACTOR_LAGS,
 ) -> pl.DataFrame:
-    """Return cumulative lagged factor backtest time series."""
+    """Return cumulative returns for factor signals delayed by trading sessions."""
 
     return _lag_returns_from_backtests(
         _lag_backtests(factor, prices, config=config, lags=lags)
@@ -595,13 +611,20 @@ def factor_ic_decay(
     factor: pl.DataFrame,
     forward_returns: pl.DataFrame,
     *,
+    trading_sessions: pl.DataFrame | None = None,
+    return_provider: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
     lags: tuple[int, ...] = FACTOR_LAGS,
 ) -> pl.DataFrame:
-    """Compute mean Pearson and Spearman IC for lagged factor signals."""
+    """Compute IC decay for factor signals delayed by trading sessions."""
 
+    calendar = (
+        _trading_sessions(trading_sessions)
+        if trading_sessions is not None
+        else _trading_sessions(forward_returns)
+    )
     rows: list[dict[str, object]] = []
     for lag in lags:
-        lagged = lag_factor(factor, lag=lag)
+        lagged = lag_factor(factor, lag=lag, trading_sessions=calendar)
         if lagged.is_empty():
             rows.extend(
                 [
@@ -610,7 +633,10 @@ def factor_ic_decay(
                 ]
             )
             continue
-        ic = information_coefficients(lagged, forward_returns)
+        ic = information_coefficients(
+            lagged,
+            return_provider(lagged) if return_provider is not None else forward_returns,
+        )
         summary = summarize_ic(ic)
         for row in summary.iter_rows(named=True):
             rows.append(
@@ -623,16 +649,43 @@ def factor_ic_decay(
     return pl.DataFrame(rows).sort(["method", "lag"])
 
 
-def lag_factor(factor: pl.DataFrame, *, lag: int) -> pl.DataFrame:
-    """Shift each asset's factor signal forward by lag observations."""
+def lag_factor(
+    factor: pl.DataFrame,
+    *,
+    lag: int,
+    trading_sessions: pl.DataFrame,
+) -> pl.DataFrame:
+    """Move each factor snapshot forward by ``lag`` trading sessions."""
 
     if lag <= 0:
         return factor.sort([TIME, ASSET_ID])
+    sessions = _trading_sessions(trading_sessions).with_row_index("_session_index")
+    target_times = sessions.select(
+        (pl.col("_session_index") - lag).alias("_session_index"),
+        pl.col(TIME).alias("_lagged_time"),
+    )
     return (
-        factor.sort([ASSET_ID, TIME])
-        .with_columns(pl.col("factor").shift(lag).over(ASSET_ID).alias("factor"))
-        .drop_nulls("factor")
+        factor.join(sessions, on=TIME, how="inner")
+        .join(target_times, on="_session_index", how="inner")
+        .drop(TIME, "_session_index")
+        .rename({"_lagged_time": TIME})
+        .select(TIME, ASSET_ID, "factor")
         .sort([TIME, ASSET_ID])
+    )
+
+
+def _trading_sessions(frame: pl.DataFrame) -> pl.DataFrame:
+    """Return the ordered unique open sessions represented by market data."""
+
+    if TIME not in frame.columns:
+        raise InputValidationError(
+            f"trading sessions are missing required column: {TIME}"
+        )
+    return (
+        frame.select(pl.col(TIME).cast(pl.Date, strict=False))
+        .drop_nulls(TIME)
+        .unique()
+        .sort(TIME)
     )
 
 
@@ -685,10 +738,12 @@ def _lag_backtests(
     config: BacktestConfig,
     lags: tuple[int, ...],
     forward_returns: pl.DataFrame | None = None,
+    price_gaps: pl.DataFrame | None = None,
 ) -> list[tuple[int, str, BacktestResult | None]]:
     results: list[tuple[int, str, BacktestResult | None]] = []
+    trading_sessions = _trading_sessions(prices)
     for lag in lags:
-        lagged = lag_factor(factor, lag=lag)
+        lagged = lag_factor(factor, lag=lag, trading_sessions=trading_sessions)
         portfolio_specs = (
             ("top_n", top_n_equal_weights(lagged, top_n=config.top_n)),
             (
@@ -706,6 +761,7 @@ def _lag_backtests(
                             prices,
                             forward_returns,
                             config=config,
+                            price_gaps=price_gaps,
                         )
                         if forward_returns is not None
                         else backtest_weight_frame(weights, prices, config=config)

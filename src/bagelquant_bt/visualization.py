@@ -315,7 +315,7 @@ def plot_lag_sharpe(result: FactorEvaluationResult) -> go.Figure:
         )
     fig.update_layout(
         title="Lag Analysis Sharpe",
-        xaxis_title="Lag",
+        xaxis_title="Lag (trading sessions)",
         yaxis_title="Sharpe",
     )
     return fig
@@ -333,7 +333,7 @@ def plot_ic_decay(result: FactorEvaluationResult) -> go.Figure:
         )
     fig.update_layout(
         title="IC Decay",
-        xaxis_title="Lag",
+        xaxis_title="Lag (trading sessions)",
         yaxis_title="Mean IC",
     )
     return fig

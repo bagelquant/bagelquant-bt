@@ -66,10 +66,12 @@ Factor evaluation also builds a spread portfolio: long `q1`, short `qN`, and
 passes it through the same cost-aware backtest engine.
 
 `lag_analysis` evaluates TOP N and spread portfolios with factor signals
-lagged by 0, 1, 2, 3, 4, 5, 10, 20, 30, and 60 observations.
+delayed by 0, 1, 2, 3, 4, 5, 10, 20, 30, and 60 trading sessions. The delay is
+resolved on the daily price-session calendar, so a monthly signal delayed by 15
+is delayed by 15 open sessions rather than 15 monthly observations.
 
 `lag_returns` contains gross and net cumulative return time series for the same
 portfolio and lag combinations.
 
-`ic_decay` reports mean Pearson and Spearman IC at the same lags and is plotted
-as an IC decay line chart.
+`ic_decay` reports mean Pearson and Spearman IC at the same trading-session
+lags and is plotted as an IC decay line chart.

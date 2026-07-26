@@ -302,3 +302,172 @@ def test_weight_backtest_removes_null_and_nan_rows_before_alignment() -> None:
         pl.col("time").dt.strftime("%Y-%m-%d")
     ).to_dicts() == [{"time": "2024-01-01", "asset_id": "a", "weight": 1.0}]
     assert result.missing_price_keys.is_empty()
+
+
+def test_missing_asset_price_freezes_daily_mark_and_defers_cumulative_return() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": [
+                "2024-01-01",
+                "2024-01-02",
+                "2024-01-03",
+                "2024-01-04",
+                "2024-01-01",
+                "2024-01-04",
+            ],
+            "asset_id": ["a", "a", "a", "a", "b", "b"],
+            "price": [100.0, 110.0, 121.0, 133.1, 100.0, 120.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b"],
+            "weight": [0.5, 0.5],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+    )
+
+    assert result.returns["gross_return"].to_list() == pytest.approx([0.05, 0.05, 0.15])
+    frozen_returns = result.asset_returns.filter(pl.col("asset_id") == "b")
+    frozen_times = frozen_returns.with_columns(pl.col("time").dt.strftime("%Y-%m-%d"))[
+        "time"
+    ].to_list()
+    assert frozen_times == [
+        "2024-01-01",
+        "2024-01-02",
+        "2024-01-03",
+    ]
+    assert frozen_returns["forward_return"].to_list() == pytest.approx([0.0, 0.0, 0.2])
+    assert result.price_gaps.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d"),
+        pl.col("last_observed_time").dt.strftime("%Y-%m-%d"),
+    ).to_dicts() == [
+        {
+            "time": "2024-01-02",
+            "asset_id": "b",
+            "last_observed_time": "2024-01-01",
+            "missing_session_count": 1,
+        },
+        {
+            "time": "2024-01-03",
+            "asset_id": "b",
+            "last_observed_time": "2024-01-01",
+            "missing_session_count": 2,
+        },
+    ]
+
+
+def test_missing_price_rebalance_keeps_existing_weight_without_trade_cost() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": [
+                "2024-01-01",
+                "2024-01-02",
+                "2024-01-03",
+                "2024-01-01",
+                "2024-01-03",
+            ],
+            "asset_id": ["a", "a", "a", "b", "b"],
+            "price": [100.0, 100.0, 100.0, 100.0, 100.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "b", "a"],
+            "weight": [0.5, 0.5, 1.0],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=10_000,
+            transaction_cost=TransactionCostConfig(rate=0.01, min_fee=0.0),
+        ),
+    )
+
+    assert result.weights.filter(pl.col("time") == pl.date(2024, 1, 2)).sort(
+        "asset_id"
+    )["weight"].to_list() == [1.0, 0.5]
+    assert result.transaction_costs.data["traded_asset_count"].to_list() == [2, 1]
+    assert result.unexecuted_weight_keys.with_columns(
+        pl.col("time").dt.strftime("%Y-%m-%d")
+    ).to_dicts() == [
+        {
+            "time": "2024-01-02",
+            "asset_id": "b",
+            "target_weight": 0.0,
+            "retained_weight": 0.5,
+        }
+    ]
+
+
+def test_missing_price_does_not_open_new_target_weight() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": [
+                "2024-01-01",
+                "2024-01-02",
+                "2024-01-03",
+                "2024-01-01",
+                "2024-01-03",
+            ],
+            "asset_id": ["a", "a", "a", "b", "b"],
+            "price": [100.0, 100.0, 100.0, 100.0, 100.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "b"],
+            "weight": [1.0, 0.5],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+    )
+
+    assert result.weights.filter(
+        (pl.col("time") == pl.date(2024, 1, 2)) & (pl.col("asset_id") == "b")
+    )["weight"].to_list() == [0.0]
+    assert result.unexecuted_weight_keys.select(
+        "asset_id", "target_weight", "retained_weight"
+    ).to_dicts() == [{"asset_id": "b", "target_weight": 0.5, "retained_weight": 0.0}]
+
+
+def test_trailing_missing_price_keeps_last_valuation_and_is_auditable() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-01"],
+            "asset_id": ["a", "a", "a", "b"],
+            "price": [100.0, 100.0, 100.0, 50.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b"],
+            "weight": [0.5, 0.5],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+    )
+
+    assert result.returns["gross_return"].to_list() == pytest.approx([0.0, 0.0])
+    trailing_gaps = result.price_gaps.filter(pl.col("asset_id") == "b")
+    assert trailing_gaps["missing_session_count"].to_list() == [1, 2]

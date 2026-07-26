@@ -36,7 +36,7 @@ The package uses a no-lookahead convention:
 
 ```text
 weight or factor at date t -> uses the exact matching price date
-executed portfolio weights -> earn close-to-close return to the next price date
+executed portfolio weights -> earn the next market-session close-to-close return
 ```
 
 Signal and weight rows without an exact `(time, asset_id)` price key are dropped
@@ -54,6 +54,16 @@ backtest engine carries that target forward across price returns until the next
 target portfolio arrives. Assets omitted from a later target become zero weight.
 Turnover and transaction costs are calculated from these actual target-weight
 changes, so holding days with unchanged weights do not create costs.
+
+The daily valuation calendar is the union of observed price dates. When one
+asset has no actual price on a market session, an existing holding is frozen at
+its last observed price and earns zero for that session. Its cumulative price
+move is recognized only when an actual price resumes. A rebalance can change an
+asset's weight only on a date with its actual price: blocked existing positions
+retain their prior weight, blocked new positions are not opened, and the
+unexecuted target remains cash rather than being redistributed. Results expose
+`price_gaps` and `unexecuted_weight_keys` for audit; `missing_price_keys`
+continues to describe raw target keys without exact observed prices.
 
 For factor evaluation, factor values remain signal inputs for analytics such as
 IC, ICIR, and IC decay. Tradable factor outputs, including TOP N, quantile, and
