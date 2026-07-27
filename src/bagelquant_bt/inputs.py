@@ -75,6 +75,38 @@ def validate_universe(universe: pl.DataFrame) -> pl.DataFrame:
     return normalized.sort([TIME, ASSET_ID])
 
 
+def validate_execution_availability(frame: pl.DataFrame) -> pl.DataFrame:
+    """Validate sparse, caller-authored market execution constraints."""
+
+    if not isinstance(frame, pl.DataFrame):
+        raise InputValidationError(
+            "execution_availability must be a polars DataFrame"
+        )
+    required = {TIME, ASSET_ID, "can_buy", "can_sell", "reason"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise InputValidationError(
+            f"execution_availability is missing required columns: {missing}"
+        )
+    normalized = frame.select(
+        TIME, ASSET_ID, "can_buy", "can_sell", "reason"
+    ).with_columns(
+        pl.col(TIME).cast(pl.Date, strict=False),
+        pl.col(ASSET_ID).cast(pl.String),
+        pl.col("can_buy").cast(pl.Boolean, strict=False),
+        pl.col("can_sell").cast(pl.Boolean, strict=False),
+        pl.col("reason").cast(pl.String),
+    )
+    normalized = normalized.drop_nulls(
+        [TIME, ASSET_ID, "can_buy", "can_sell", "reason"]
+    )
+    if normalized.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
+        raise InputValidationError(
+            "execution_availability must be unique by (time, asset_id)"
+        )
+    return normalized.sort([TIME, ASSET_ID])
+
+
 def missing_price_keys(frame: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFrame:
     """Return frame keys without an exact matching price key."""
 

@@ -12,6 +12,7 @@ from .inputs import (
     TIME,
     asset_coverage,
     missing_price_keys,
+    validate_execution_availability,
     validate_prices,
     validate_weights,
 )
@@ -31,6 +32,7 @@ def run_weight_backtest(
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
+    execution_availability: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest a long-form portfolio weight frame."""
 
@@ -41,6 +43,7 @@ def run_weight_backtest(
         aligned_weights,
         aligned_prices,
         config=resolved_config,
+        execution_availability=execution_availability,
     )
 
 
@@ -49,6 +52,7 @@ def backtest_weight_frame(
     prices: pl.DataFrame,
     *,
     config: BacktestConfig,
+    execution_availability: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest an already materialized long-form weight frame."""
 
@@ -63,6 +67,7 @@ def backtest_weight_frame(
         config=config,
         missing_price_keys=missing_keys,
         price_gaps=price_data.price_gaps,
+        execution_availability=execution_availability,
     )
 
 
@@ -74,10 +79,14 @@ def _backtest_weight_frame_with_forward_returns(
     config: BacktestConfig,
     missing_price_keys: pl.DataFrame | None = None,
     price_gaps: pl.DataFrame | None = None,
+    execution_availability: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest a weight frame with a precomputed forward-return panel."""
 
     executable_weights = _expand_portfolio_weights(weights, prices, forward_returns)
+    executable_weights, execution_blocks = _apply_execution_availability(
+        executable_weights, execution_availability
+    )
     if executable_weights.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
 
@@ -120,6 +129,7 @@ def _backtest_weight_frame_with_forward_returns(
             else price_gaps.sort([TIME, ASSET_ID])
         ),
         unexecuted_weight_keys=unexecuted_weight_keys(weights, prices),
+        execution_blocks=execution_blocks,
     )
 
 
@@ -135,6 +145,75 @@ def _empty_price_gaps() -> pl.DataFrame:
             "last_observed_time": pl.Date,
             "missing_session_count": pl.Int64,
         }
+    )
+
+
+def _apply_execution_availability(
+    desired_weights: pl.DataFrame,
+    execution_availability: pl.DataFrame | None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Retain the last executed target while a caller-authored trade is blocked."""
+
+    empty = pl.DataFrame(
+        schema={
+            TIME: pl.Date,
+            ASSET_ID: pl.String,
+            "side": pl.String,
+            "target_weight": pl.Float64,
+            "retained_weight": pl.Float64,
+            "reason": pl.String,
+        }
+    )
+    if execution_availability is None:
+        return desired_weights, empty
+    availability = validate_execution_availability(execution_availability)
+    rules = {
+        (row[TIME], row[ASSET_ID]): row
+        for row in availability.iter_rows(named=True)
+    }
+    executed: dict[str, float] = {}
+    weight_rows: list[dict[str, object]] = []
+    blocked_rows: list[dict[str, object]] = []
+    for row in desired_weights.sort([TIME, ASSET_ID]).iter_rows(named=True):
+        time = row[TIME]
+        asset_id = str(row[ASSET_ID])
+        target = float(row["weight"])
+        retained = executed.get(asset_id, 0.0)
+        delta = target - retained
+        rule = rules.get((time, asset_id))
+        blocked_side = None
+        if rule is not None and delta > 0.0 and not bool(rule["can_buy"]):
+            blocked_side = "buy"
+        elif rule is not None and delta < 0.0 and not bool(rule["can_sell"]):
+            blocked_side = "sell"
+        if blocked_side is not None:
+            blocked_rows.append(
+                {
+                    TIME: time,
+                    ASSET_ID: asset_id,
+                    "side": blocked_side,
+                    "target_weight": target,
+                    "retained_weight": retained,
+                    "reason": str(rule["reason"]),
+                }
+            )
+            resolved = retained
+        else:
+            resolved = target
+            executed[asset_id] = resolved
+        weight_rows.append(
+            {TIME: time, ASSET_ID: asset_id, "weight": resolved}
+        )
+    return (
+        pl.DataFrame(
+            weight_rows,
+            schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64},
+        ).sort([TIME, ASSET_ID]),
+        (
+            pl.DataFrame(blocked_rows, schema=empty.schema)
+            if blocked_rows
+            else empty
+        ),
     )
 
 

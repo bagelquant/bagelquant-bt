@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import polars as pl
 import pytest
 
@@ -471,3 +473,152 @@ def test_trailing_missing_price_keeps_last_valuation_and_is_auditable() -> None:
     assert result.returns["gross_return"].to_list() == pytest.approx([0.0, 0.0])
     trailing_gaps = result.price_gaps.filter(pl.col("asset_id") == "b")
     assert trailing_gaps["missing_session_count"].to_list() == [1, 2]
+
+
+def test_sparse_market_rule_blocks_only_named_buy_and_retries_daily() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"]
+            * 2,
+            "asset_id": ["cn"] * 4 + ["global"] * 4,
+            "price": [100.0, 100.0, 100.0, 110.0] + [100.0] * 4,
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["cn", "global"],
+            "weight": [0.5, 0.5],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["cn", "cn"],
+            "can_buy": [False, False],
+            "can_sell": [True, True],
+            "reason": ["cn_a_share_price_limit", "cn_a_share_price_limit"],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=10_000,
+            transaction_cost=TransactionCostConfig(rate=0.01, min_fee=0.0),
+        ),
+        execution_availability=availability,
+    )
+
+    assert result.weights.sort(["time", "asset_id"]).select(
+        "asset_id", "weight"
+    ).to_dicts() == [
+        {"asset_id": "cn", "weight": 0.0},
+        {"asset_id": "global", "weight": 0.5},
+        {"asset_id": "cn", "weight": 0.0},
+        {"asset_id": "global", "weight": 0.5},
+        {"asset_id": "cn", "weight": 0.5},
+        {"asset_id": "global", "weight": 0.5},
+    ]
+    assert result.execution_blocks.select(
+        "asset_id", "side", "target_weight", "retained_weight", "reason"
+    ).to_dicts() == [
+        {
+            "asset_id": "cn",
+            "side": "buy",
+            "target_weight": 0.5,
+            "retained_weight": 0.0,
+            "reason": "cn_a_share_price_limit",
+        },
+        {
+            "asset_id": "cn",
+            "side": "buy",
+            "target_weight": 0.5,
+            "retained_weight": 0.0,
+            "reason": "cn_a_share_price_limit",
+        },
+    ]
+    assert result.returns["gross_return"].to_list() == pytest.approx(
+        [0.0, 0.0, 0.05]
+    )
+    assert result.transaction_costs.data.select(
+        pl.col("time").dt.strftime("%Y-%m-%d"), "traded_asset_count"
+    ).to_dicts() == [
+        {"time": "2024-01-01", "traded_asset_count": 1},
+        {"time": "2024-01-02", "traded_asset_count": 0},
+        {"time": "2024-01-03", "traded_asset_count": 1},
+    ]
+    assert result.turnover.get_column("turnover").to_list() == [0.5, 0.0, 0.5]
+
+
+def test_buy_constraint_does_not_block_sell_and_new_target_supersedes_pending() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["cn"] * 3,
+            "price": [100.0, 100.0, 100.0],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["cn", "cn"],
+            "can_buy": [False, False],
+            "can_sell": [True, True],
+            "reason": ["limit", "limit"],
+        }
+    )
+    pending_then_cancelled = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["cn", "cn"],
+            "weight": [1.0, 0.0],
+        }
+    )
+    cancelled = run_weight_backtest(
+        pending_then_cancelled,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+        execution_availability=availability,
+    )
+    assert cancelled.weights["weight"].to_list() == [0.0, 0.0]
+    assert cancelled.execution_blocks.height == 1
+
+    held_then_sold = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["cn", "cn"],
+            "weight": [1.0, 0.0],
+        }
+    )
+    sell_only_constraint = availability.filter(
+        pl.col("time").str.to_date() == date(2024, 1, 2)
+    )
+    sold = run_weight_backtest(
+        held_then_sold,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+        execution_availability=sell_only_constraint,
+    )
+    assert sold.weights["weight"].to_list() == [1.0, 0.0]
+    assert sold.execution_blocks.is_empty()
+
+    blocked_sell = run_weight_backtest(
+        held_then_sold,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+        execution_availability=pl.DataFrame(
+            {
+                "time": ["2024-01-02"],
+                "asset_id": ["cn"],
+                "can_buy": [True],
+                "can_sell": [False],
+                "reason": ["explicit_sell_block"],
+            }
+        ),
+    )
+    assert blocked_sell.weights["weight"].to_list() == [1.0, 1.0]
+    assert blocked_sell.execution_blocks.select("side", "reason").to_dicts() == [
+        {"side": "sell", "reason": "explicit_sell_block"}
+    ]

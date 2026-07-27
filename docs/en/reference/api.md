@@ -17,10 +17,24 @@ Dispatches to the correct evaluation path.
 ## `run_weight_backtest`
 
 ```python
-run_weight_backtest(weights, prices, *, config)
+run_weight_backtest(
+    weights,
+    prices,
+    *,
+    config,
+    execution_availability=None,
+)
 ```
 
 Evaluates a long-form Polars DataFrame as portfolio weights.
+
+`execution_availability` is an optional sparse table with `time`, `asset_id`,
+`can_buy`, `can_sell`, and `reason`. Missing rows are tradable. A blocked
+increment retains the prior executed weight and is retried on later price
+sessions until executable; a new target supersedes the pending target.
+`bagelquant-bt` never infers market rules from asset codes or exchanges. Costs
+and turnover are recorded on actual execution dates, and blocked attempts are
+available in `BacktestResult.execution_blocks`.
 
 Returns `BacktestResult`.
 
@@ -39,14 +53,30 @@ Important fields:
 - `summary`
 - `performance`
 - `coverage`
+- `execution_blocks`
 
 ## `run_factor_evaluation`
 
 ```python
-run_factor_evaluation(factor, prices, *, config)
+run_factor_evaluation(
+    factor,
+    prices,
+    *,
+    config,
+    coverage_universe=None,
+    benchmark_universe=None,
+    execution_availability=None,
+    benchmark_returns=None,
+    benchmark_coverage=None,
+)
 ```
 
 Evaluates a long-form Polars DataFrame as factor scores.
+
+The result always includes the cost-free `universe_equal_weight` benchmark.
+`benchmark_universe` supplies its point-in-time membership independently of
+factor coverage dates. Callers may append named benchmark returns and coverage;
+the package does not load market or capitalization data.
 
 Returns `FactorEvaluationResult`.
 
@@ -70,6 +100,10 @@ Important fields:
 - `lag_returns`
 - `ic_decay`
 - `coverage`
+- `benchmark_returns`
+- `benchmark_coverage`
+- `benchmark_performance`
+- `excess_returns`
 
 ## `summary_report`
 
@@ -93,8 +127,11 @@ default, the CSV is written next to the HTML as
 choose a different CSV path or to write the CSV when no HTML `output_path` is
 provided.
 
-Factor reports are grouped into IC and ICIR, TOP N, spread performance, and
-quantile performance sections. Each section shows compact tables before plots.
+Factor reports are grouped into IC and ICIR, TOP N, TOP N versus benchmarks,
+spread performance, and quantile performance sections. Benchmark excess output
+contains daily return differences, compounded daily differences, and relative
+wealth (`TOP N wealth / benchmark wealth - 1`) for both gross and net TOP N.
+Each section shows compact tables before plots.
 Both factor and backtest reports show a coverage chart directly below their
 top summary tables.
 

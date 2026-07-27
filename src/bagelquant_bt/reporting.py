@@ -12,9 +12,12 @@ import polars as pl
 
 from .results import BacktestResult, FactorEvaluationResult
 from .visualization import (
+    plot_benchmark_coverage,
+    plot_benchmark_cumulative_returns,
     plot_coverage,
     plot_cumulative_returns,
     plot_drawdown,
+    plot_excess_returns,
     plot_ic,
     plot_ic_decay,
     plot_ic_distribution,
@@ -113,13 +116,43 @@ def factor_evaluation_report_figures(
             "TOP N Net Lag Cumulative Returns",
             lag_returns[1],
         ),
+    ]
+    figures.extend(
+        [
+            ReportFigure(
+                "benchmark_cumulative_returns",
+                "TOP N vs Benchmarks",
+                "TOP N vs Benchmarks",
+                plot_benchmark_cumulative_returns(result),
+            ),
+            ReportFigure(
+                "benchmark_coverage",
+                "TOP N vs Benchmarks",
+                "Benchmark Coverage",
+                plot_benchmark_coverage(result),
+            ),
+        ]
+    )
+    for benchmark in result.benchmark_returns.get_column("benchmark").unique(
+        maintain_order=True
+    ):
+        key = str(benchmark).replace("-", "_").replace(" ", "_")
+        figures.append(
+            ReportFigure(
+                f"excess_return_{key}",
+                "TOP N vs Benchmarks",
+                f"TOP N Excess Return vs {benchmark}",
+                plot_excess_returns(result, str(benchmark)),
+            )
+        )
+    figures.append(
         ReportFigure(
             "lag_sharpe",
             "Spread Performance",
             "Lag Analysis Sharpe",
             plot_lag_sharpe(result),
-        ),
-    ]
+        )
+    )
     if result.spread_backtest is not None:
         figures.extend(
             [
@@ -242,6 +275,9 @@ def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str
         _factor_ic_section(figures_by_section["IC & ICIR"]),
         _factor_quantile_section(result, figures_by_section["Quantiles"]),
         _factor_top_n_section(result, figures_by_section["TOP N"]),
+        _factor_benchmark_section(
+            result, figures_by_section["TOP N vs Benchmarks"]
+        ),
         _factor_spread_section(result, figures_by_section["Spread Performance"]),
     ]
     return "".join(sections)
@@ -428,6 +464,44 @@ def _trading_summary(result: BacktestResult) -> pl.DataFrame:
     )
 
 
+def _factor_benchmark_section(
+    result: FactorEvaluationResult,
+    figures: list[go.Figure],
+) -> str:
+    coverage = (
+        result.benchmark_coverage.group_by("benchmark")
+        .agg(
+            pl.col("coverage_ratio").mean().alias("mean_coverage"),
+            pl.col("coverage_ratio").min().alias("minimum_coverage"),
+        )
+        .sort("benchmark")
+    )
+    incomplete = coverage.filter(pl.col("minimum_coverage") < 1.0)
+    warning = ""
+    if incomplete.height:
+        names = ", ".join(
+            escape(str(value))
+            for value in incomplete.get_column("benchmark").to_list()
+        )
+        warning = (
+            "<p><strong>Coverage warning:</strong> available samples were "
+            f"renormalized for {names}; index returns were not forward-filled.</p>"
+        )
+    return _section(
+        "TOP N vs Benchmarks",
+        "".join(
+            [
+                warning,
+                _table_section(
+                    "Benchmark Performance", result.benchmark_performance
+                ),
+                _table_section("Benchmark Coverage", coverage),
+                *(_figure_to_html(figure) for figure in figures),
+            ]
+        ),
+    )
+
+
 def _price_availability_summary(result: BacktestResult) -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -439,6 +513,10 @@ def _price_availability_summary(result: BacktestResult) -> pl.DataFrame:
             {
                 "metric": "raw_missing_price_key_rows",
                 "value": result.missing_price_keys.height,
+            },
+            {
+                "metric": "market_rule_blocked_trade_rows",
+                "value": result.execution_blocks.height,
             },
         ],
         schema={"metric": pl.String, "value": pl.Int64},

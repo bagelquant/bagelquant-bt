@@ -1,5 +1,6 @@
 """Backtesting and factor evaluation for the BagelQuant ecosystem."""
 
+from .benchmarks import build_universe_benchmark_returns
 from .config import BacktestConfig, TransactionCostConfig
 from .engine import run_weight_backtest
 from .exceptions import (
@@ -55,6 +56,7 @@ __all__ = [
     "TargetVolatilityPolicy",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
+    "build_universe_benchmark_returns",
     "factor_evaluation_report_figures",
     "prepare_factor_market_data",
     "resolve_signal_policy",

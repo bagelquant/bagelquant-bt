@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import plotly.graph_objects as go
+import polars as pl
 
 from .performance import rolling_performance
 from .results import BacktestResult, FactorEvaluationResult
@@ -30,6 +31,95 @@ def plot_cumulative_returns(
         name="Net",
     )
     fig.update_layout(title=title, yaxis_title="Return")
+    return fig
+
+
+def plot_benchmark_cumulative_returns(
+    result: FactorEvaluationResult,
+) -> go.Figure:
+    """Compare TOP N gross/net paths with all named cost-free benchmarks."""
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=result.top_n_backtest.value["time"],
+        y=result.top_n_backtest.value["gross_return_cumulative"],
+        mode="lines",
+        name="TOP N gross",
+    )
+    fig.add_scatter(
+        x=result.top_n_backtest.value["time"],
+        y=result.top_n_backtest.value["net_return_cumulative"],
+        mode="lines",
+        name="TOP N net",
+    )
+    cumulative = result.benchmark_returns.with_columns(
+        (
+            (1.0 + pl.col("return")).cum_prod().over("benchmark") - 1.0
+        ).alias("cumulative_return")
+    )
+    for frame in cumulative.partition_by("benchmark", maintain_order=True):
+        fig.add_scatter(
+            x=frame["time"],
+            y=frame["cumulative_return"],
+            mode="lines",
+            name=str(frame["benchmark"][0]),
+        )
+    fig.update_layout(
+        title="TOP N vs Benchmarks",
+        xaxis_title="Time",
+        yaxis_title="Cumulative Return",
+    )
+    return fig
+
+
+def plot_benchmark_coverage(result: FactorEvaluationResult) -> go.Figure:
+    """Plot the available-sample coverage ratio for each benchmark."""
+
+    fig = go.Figure()
+    for frame in result.benchmark_coverage.partition_by(
+        "benchmark", maintain_order=True
+    ):
+        fig.add_scatter(
+            x=frame["time"],
+            y=frame["coverage_ratio"],
+            mode="lines",
+            name=str(frame["benchmark"][0]),
+        )
+    fig.update_layout(
+        title="Benchmark Coverage",
+        xaxis_title="Time",
+        yaxis_title="Coverage Ratio",
+    )
+    return fig
+
+
+def plot_excess_returns(
+    result: FactorEvaluationResult, benchmark: str
+) -> go.Figure:
+    """Plot compounded daily-spread and relative-wealth excess paths."""
+
+    frame = result.excess_returns.filter(pl.col("benchmark") == benchmark)
+    fig = go.Figure()
+    for portfolio in ("gross", "net"):
+        selected = frame.filter(pl.col("portfolio") == portfolio)
+        fig.add_scatter(
+            x=selected["time"],
+            y=selected["compounded_excess_return"],
+            mode="lines",
+            name=f"{portfolio.title()} daily-spread compound",
+        )
+        fig.add_scatter(
+            x=selected["time"],
+            y=selected["relative_wealth_excess_return"],
+            mode="lines",
+            name=f"{portfolio.title()} relative wealth",
+            line={"dash": "dash"},
+        )
+    fig.update_layout(
+        title=f"TOP N Excess Return vs {benchmark}",
+        xaxis_title="Time",
+        yaxis_title="Excess Return",
+    )
     return fig
 
 

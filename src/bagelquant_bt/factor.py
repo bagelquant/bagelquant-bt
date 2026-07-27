@@ -9,6 +9,13 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
+from .benchmarks import (
+    DEFAULT_BENCHMARK,
+    benchmark_performance,
+    build_universe_benchmark_returns,
+    top_n_excess_returns,
+    validate_benchmark_returns,
+)
 from .config import BacktestConfig
 from .engine import (
     _backtest_weight_frame_with_forward_returns,
@@ -60,6 +67,10 @@ def run_factor_evaluation(
     config: BacktestConfig | None = None,
     market_data: PreparedFactorMarketData | None = None,
     coverage_universe: pl.DataFrame | None = None,
+    benchmark_universe: pl.DataFrame | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    benchmark_returns: pl.DataFrame | None = None,
+    benchmark_coverage: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate a factor score frame against forward returns and membership."""
 
@@ -72,6 +83,10 @@ def run_factor_evaluation(
         config=resolved_config,
         market_data=prepared,
         coverage_universe=coverage_universe,
+        benchmark_universe=benchmark_universe,
+        execution_availability=execution_availability,
+        benchmark_returns=benchmark_returns,
+        benchmark_coverage=benchmark_coverage,
     )
 
 
@@ -83,6 +98,10 @@ def run_signal_evaluation(
     portfolio_policy: object | None = None,
     portfolio_inputs: Mapping[str, object] | None = None,
     coverage_universe: pl.DataFrame | None = None,
+    benchmark_universe: pl.DataFrame | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    benchmark_returns: pl.DataFrame | None = None,
+    benchmark_coverage: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate executable signals against returns through the next signal."""
 
@@ -96,12 +115,16 @@ def run_signal_evaluation(
         config=resolved_config,
         market_data=prepared,
         coverage_universe=coverage_universe,
+        benchmark_universe=benchmark_universe,
         evaluation_returns=signal_forward_returns(factor, prepared.prices),
         lag_return_provider=lambda lagged: signal_forward_returns(
             lagged, prepared.prices
         ),
         portfolio_policy=portfolio_policy,
         portfolio_inputs=portfolio_inputs,
+        execution_availability=execution_availability,
+        benchmark_returns=benchmark_returns,
+        benchmark_coverage=benchmark_coverage,
     )
 
 
@@ -112,10 +135,14 @@ def evaluate_factor_frame(
     config: BacktestConfig,
     market_data: PreparedFactorMarketData | None = None,
     coverage_universe: pl.DataFrame | None = None,
+    benchmark_universe: pl.DataFrame | None = None,
     evaluation_returns: pl.DataFrame | None = None,
     lag_return_provider: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
     portfolio_policy: object | None = None,
     portfolio_inputs: Mapping[str, object] | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    benchmark_returns: pl.DataFrame | None = None,
+    benchmark_coverage: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
@@ -157,6 +184,7 @@ def evaluate_factor_frame(
         quantiles=config.quantiles,
         forward_returns=forward_returns,
         price_gaps=price_data.price_gaps,
+        execution_availability=execution_availability,
     )
     spread_returns = _spread_returns(quantile_returns, config.quantiles)
     top_n_weights = _policy_weights(
@@ -172,6 +200,7 @@ def evaluate_factor_frame(
         forward_returns,
         config=config,
         price_gaps=price_data.price_gaps,
+        execution_availability=execution_availability,
     )
     spread_weights = spread_quantile_weights(
         factor,
@@ -184,6 +213,7 @@ def evaluate_factor_frame(
             forward_returns,
             config=config,
             price_gaps=price_data.price_gaps,
+            execution_availability=execution_availability,
         )
         if spread_weights.height
         else None
@@ -195,6 +225,7 @@ def evaluate_factor_frame(
         lags=FACTOR_LAGS,
         forward_returns=forward_returns,
         price_gaps=price_data.price_gaps,
+        execution_availability=execution_availability,
     )
     lag_analysis = _lag_analysis_from_backtests(lag_backtests)
     lag_returns = _lag_returns_from_backtests(lag_backtests)
@@ -204,6 +235,40 @@ def evaluate_factor_frame(
         trading_sessions=_trading_sessions(aligned_prices),
         return_provider=lag_return_provider,
         lags=FACTOR_LAGS,
+    )
+    default_benchmark, default_coverage = build_universe_benchmark_returns(
+        forward_returns,
+        universe=(
+            benchmark_universe
+            if benchmark_universe is not None
+            else coverage_universe
+        ),
+        name=DEFAULT_BENCHMARK,
+    )
+    resolved_benchmarks = default_benchmark
+    resolved_coverage = default_coverage
+    if benchmark_returns is not None:
+        external = validate_benchmark_returns(benchmark_returns)
+        if DEFAULT_BENCHMARK in set(external.get_column("benchmark")):
+            raise InputValidationError(
+                f"external benchmark name conflicts with {DEFAULT_BENCHMARK!r}"
+            )
+        resolved_benchmarks = pl.concat([default_benchmark, external]).sort(
+            ["benchmark", TIME]
+        )
+        external_coverage = (
+            _validate_benchmark_coverage(benchmark_coverage)
+            if benchmark_coverage is not None
+            else _benchmark_return_coverage(external)
+        )
+        resolved_coverage = pl.concat(
+            [default_coverage, external_coverage]
+        ).sort(["benchmark", TIME])
+    benchmark_metrics = benchmark_performance(
+        resolved_benchmarks, annualization=config.annualization
+    )
+    excess_returns = top_n_excess_returns(
+        top_n_backtest.returns, resolved_benchmarks
     )
 
     return FactorEvaluationResult(
@@ -225,6 +290,59 @@ def evaluate_factor_frame(
         ic_decay=ic_decay,
         coverage=coverage,
         missing_price_keys=missing_keys,
+        benchmark_returns=resolved_benchmarks,
+        benchmark_coverage=resolved_coverage,
+        benchmark_performance=benchmark_metrics,
+        excess_returns=excess_returns,
+    )
+
+
+def _validate_benchmark_coverage(frame: pl.DataFrame) -> pl.DataFrame:
+    required = {
+        TIME,
+        "benchmark",
+        "expected_count",
+        "observed_count",
+        "coverage_ratio",
+    }
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise InputValidationError(
+            f"benchmark_coverage is missing required columns: {missing}"
+        )
+    normalized = frame.select(*sorted(required)).with_columns(
+        pl.col(TIME).cast(pl.Date, strict=False),
+        pl.col("benchmark").cast(pl.String),
+        pl.col("expected_count").cast(pl.Int64),
+        pl.col("observed_count").cast(pl.Int64),
+        pl.col("coverage_ratio").cast(pl.Float64),
+    ).drop_nulls()
+    if normalized.select(
+        pl.struct(TIME, "benchmark").is_duplicated().any()
+    ).item():
+        raise InputValidationError(
+            "benchmark_coverage must be unique by (time, benchmark)"
+        )
+    return normalized.select(
+        TIME,
+        "benchmark",
+        "expected_count",
+        "observed_count",
+        "coverage_ratio",
+    )
+
+
+def _benchmark_return_coverage(frame: pl.DataFrame) -> pl.DataFrame:
+    return frame.select(TIME, "benchmark").with_columns(
+        pl.lit(1, dtype=pl.Int64).alias("expected_count"),
+        pl.lit(1, dtype=pl.Int64).alias("observed_count"),
+        pl.lit(1.0).alias("coverage_ratio"),
+    ).select(
+        TIME,
+        "benchmark",
+        "expected_count",
+        "observed_count",
+        "coverage_ratio",
     )
 
 
@@ -440,6 +558,7 @@ def traded_factor_quantile_returns(
     *,
     config: BacktestConfig,
     quantiles: int,
+    execution_availability: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Compute quantile return series by trading quantile portfolios."""
 
@@ -449,6 +568,7 @@ def traded_factor_quantile_returns(
         config=config,
         quantiles=quantiles,
         forward_returns=None,
+        execution_availability=execution_availability,
     )
 
 
@@ -460,6 +580,7 @@ def _traded_factor_quantile_returns_with_forward_returns(
     quantiles: int,
     forward_returns: pl.DataFrame | None,
     price_gaps: pl.DataFrame | None = None,
+    execution_availability: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Compute daily held-portfolio quantile returns from signal snapshots.
 
@@ -482,9 +603,15 @@ def _traded_factor_quantile_returns_with_forward_returns(
                 forward_returns,
                 config=config,
                 price_gaps=price_gaps,
+                execution_availability=execution_availability,
             )
             if forward_returns is not None
-            else backtest_weight_frame(weights, prices, config=config)
+            else backtest_weight_frame(
+                weights,
+                prices,
+                config=config,
+                execution_availability=execution_availability,
+            )
         )
         frames.append(
             backtest.returns.select(
@@ -739,6 +866,7 @@ def _lag_backtests(
     lags: tuple[int, ...],
     forward_returns: pl.DataFrame | None = None,
     price_gaps: pl.DataFrame | None = None,
+    execution_availability: pl.DataFrame | None = None,
 ) -> list[tuple[int, str, BacktestResult | None]]:
     results: list[tuple[int, str, BacktestResult | None]] = []
     trading_sessions = _trading_sessions(prices)
@@ -762,9 +890,15 @@ def _lag_backtests(
                             forward_returns,
                             config=config,
                             price_gaps=price_gaps,
+                            execution_availability=execution_availability,
                         )
                         if forward_returns is not None
-                        else backtest_weight_frame(weights, prices, config=config)
+                        else backtest_weight_frame(
+                            weights,
+                            prices,
+                            config=config,
+                            execution_availability=execution_availability,
+                        )
                     )
                 except InputValidationError:
                     backtest = None

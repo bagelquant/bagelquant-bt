@@ -25,6 +25,10 @@ visualization helpers
 - Make transaction costs explicit and reproducible.
 - Return structured result objects instead of printing reports.
 - Keep visualization as a thin layer over result objects.
+- Keep exchange-specific execution rules caller-authored and opt-in. The core
+  consumes a generic availability table and never guesses a market from codes.
+- Build only the universe equal-weight benchmark internally; capitalization
+  and index benchmarks remain caller-provided data.
 
 ## Structure
 

@@ -140,11 +140,12 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     figures = factor_evaluation_report_figures(result, annualization=4)
     assert [item.section for item in figures] == [
         "Summary & Coverage",
-        *["IC & ICIR"] * 4,
-        "Quantiles",
-        *["TOP N"] * 7,
-        *["Spread Performance"] * 8,
-    ]
+            *["IC & ICIR"] * 4,
+            "Quantiles",
+            *["TOP N"] * 7,
+            *["TOP N vs Benchmarks"] * 3,
+            *["Spread Performance"] * 8,
+        ]
     assert len({item.key for item in figures}) == len(figures)
     assert all(item.title in html for item in figures)
 
