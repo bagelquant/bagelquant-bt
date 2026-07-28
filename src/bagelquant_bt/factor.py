@@ -35,6 +35,7 @@ from .inputs import (
 from .portfolio import EqualWeightPolicy
 from .results import BacktestResult, FactorEvaluationResult
 from .returns import PreparedPriceData, prepare_price_data
+from .signal import SignalSelection
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
 
@@ -91,7 +92,7 @@ def run_factor_evaluation(
 
 
 def run_signal_evaluation(
-    signals: pl.DataFrame,
+    signals: pl.DataFrame | SignalSelection,
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
@@ -106,7 +107,10 @@ def run_signal_evaluation(
     """Evaluate executable signals against returns through the next signal."""
 
     resolved_config = _require_config(config)
-    aligned = validate_panel_frame(signals, label="signals", value_columns=("signal",))
+    signal_frame = signals.signals if isinstance(signals, SignalSelection) else signals
+    aligned = validate_panel_frame(
+        signal_frame, label="signals", value_columns=("signal",)
+    )
     factor = aligned.select(TIME, ASSET_ID, pl.col("signal").alias("factor"))
     prepared = prepare_factor_market_data(prices)
     return evaluate_factor_frame(

@@ -44,6 +44,9 @@ Factor evaluation computes cross-sectional IC at the signal cadence, plus
 daily marked-to-market quantile portfolios, a `q1 - qN` spread, and a TOP N
 equal-weight backtest. Sparse or monthly signal snapshots rebalance only on
 their snapshot dates; their weights are held across intervening daily returns.
+Call `SignalPolicy.select` first and pass its `SignalSelection` to every
+evaluation entry point; `ExecutionPolicy("next_open")` keeps date selection
+separate from execution timing.
 
 Visualization helpers return Plotly figures:
 

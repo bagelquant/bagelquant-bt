@@ -21,6 +21,12 @@ result.ic.select("time", "pearson_ic", "spearman_ic")
 mean(IC) / standard_deviation(IC)
 ```
 
+## Signal 与 Execution Policy
+
+`SignalPolicy.select` 从日频预测 Panel 选择完整截面，并返回同时包含调度与可执行行的 `SignalSelection`。`month_end` 优先选择月末最后一个开市交易日；若整张截面不存在，只能回退到同一自然月内最近的此前完整截面，否则记录 skip。单个资产绝不会从此前日期回填。
+
+`ExecutionPolicy("next_open")` 独立把再平衡日映射到下一开市交易日。`run_signal_evaluation` 接收已经解析的统一 selection，IC 使用本次 execution date 到下一次 execution date 的收益，组合则在两次执行之间逐日估值；最后一条没有完整后续执行期的信号不进入 IC。
+
 ## 分位数组合收益
 
 每天按因子分数从高到低排序资产，并切分为若干分位数组：`q1` 为最高分数组，`qN` 为最低分数组。每个分位数组合收益是组内资产前向收益的等权平均。

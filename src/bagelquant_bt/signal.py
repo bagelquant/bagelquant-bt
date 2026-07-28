@@ -1,9 +1,9 @@
-"""Signal sampling policies with explicit observation and execution dates."""
-# ruff: noqa: E501
+"""Signal snapshot selection and execution scheduling."""
 
 from __future__ import annotations
 
 import calendar as month_calendar
+import hashlib
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -34,17 +34,85 @@ class HolidayAdjustment(StrEnum):
     PREVIOUS_OPEN_SESSION = "previous_open_session"
 
 
+class MissingSnapshotAction(StrEnum):
+    SKIP = "skip"
+    PREVIOUS_IN_PERIOD = "previous_in_period"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPolicy:
+    """Map a rebalance session to a later executable market session."""
+
+    id: str
+    lag_sessions: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("execution policy requires an id")
+        if self.lag_sessions <= 0:
+            raise ValueError("execution lag must be positive")
+
+    def resolve(
+        self,
+        rebalance_dates: pl.DataFrame,
+        calendar: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Attach an execution date counted from each rebalance date."""
+
+        if "rebalance_date" not in rebalance_dates.columns:
+            raise InputValidationError(
+                "rebalance schedule is missing required column: ['rebalance_date']"
+            )
+        sessions = _open_sessions(calendar)
+        positions = {session: index for index, session in enumerate(sessions)}
+        rows: list[dict[str, object]] = []
+        for row in rebalance_dates.iter_rows(named=True):
+            rebalance_date = row["rebalance_date"]
+            position = positions.get(rebalance_date)
+            execution_position = (
+                None if position is None else position + self.lag_sessions
+            )
+            output = dict(row)
+            output["execution_policy_id"] = self.id
+            output["execution_date"] = (
+                sessions[execution_position]
+                if execution_position is not None
+                and execution_position < len(sessions)
+                else None
+            )
+            rows.append(output)
+        return pl.DataFrame(rows) if rows else rebalance_dates.with_columns(
+            pl.lit(self.id, dtype=pl.String).alias("execution_policy_id"),
+            pl.lit(None, dtype=pl.Date).alias("execution_date"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SignalSelection:
+    """A resolved schedule and the executable signal rows selected by it."""
+
+    schedule: pl.DataFrame
+    signals: pl.DataFrame
+
+    @property
+    def identity(self) -> str:
+        """Return a deterministic identity shared by every downstream consumer."""
+
+        payload = self.schedule.sort("requested_rebalance_date").write_json()
+        return hashlib.blake2b(payload.encode(), digest_size=16).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class SignalPolicy:
-    """Choose prediction snapshots and make them executable on open sessions."""
+    """Choose Alpha snapshots without deciding when orders execute."""
 
     id: str
     frequency: Literal["daily", "monthly"]
     anchor: SignalAnchor
+    missing_snapshot: MissingSnapshotAction
     calendar_day: int | None = None
     weekday: int | None = None
     observation_offset_sessions: int = 0
-    execution_lag_sessions: int = 1
     holiday_adjustment: HolidayAdjustment = HolidayAdjustment.NOT_APPLICABLE
 
     def __post_init__(self) -> None:
@@ -52,8 +120,6 @@ class SignalPolicy:
             raise ValueError("signal policy requires an id")
         if self.observation_offset_sessions < 0:
             raise ValueError("observation offset cannot be negative")
-        if self.execution_lag_sessions <= 0:
-            raise ValueError("execution lag must be positive")
         if self.anchor == SignalAnchor.ON_OR_AFTER_CALENDAR_DAY:
             if self.calendar_day is None or not 1 <= self.calendar_day <= 28:
                 raise ValueError("calendar-day anchor requires a day from 1 through 28")
@@ -72,59 +138,215 @@ class SignalPolicy:
         start: date | None = None,
         end: date | None = None,
     ) -> pl.DataFrame:
-        """Resolve policy dates from an explicit exchange calendar."""
+        """Resolve requested rebalance sessions from an exchange calendar."""
 
         sessions = _open_sessions(calendar)
-        rows: list[dict[str, object]] = []
         positions = {session: index for index, session in enumerate(sessions)}
+        rows: list[dict[str, object]] = []
         for anchored in _observations(sessions, self):
-            observation_position = positions[anchored] - self.observation_offset_sessions
-            if observation_position < 0:
+            alpha_position = positions[anchored] - self.observation_offset_sessions
+            if alpha_position < 0:
                 continue
-            observation = sessions[observation_position]
-            execution_position = observation_position + self.execution_lag_sessions
-            if execution_position >= len(sessions):
+            requested = sessions[alpha_position]
+            if (start is not None and requested < start) or (
+                end is not None and requested > end
+            ):
                 continue
-            if (start is not None and observation < start) or (end is not None and observation > end):
-                continue
-            rows.append({
-                "policy_id": self.id,
-                "period": observation.isoformat() if self.frequency == "daily" else observation.strftime("%Y-%m"),
-                "observation_time": observation,
-                TIME: sessions[execution_position],
-            })
-        return pl.DataFrame(rows, schema={
-            "policy_id": pl.String, "period": pl.String,
-            "observation_time": pl.Date, TIME: pl.Date,
-        }).sort("observation_time")
+            rows.append(
+                {
+                    "policy_id": self.id,
+                    "period": (
+                        requested.isoformat()
+                        if self.frequency == "daily"
+                        else requested.strftime("%Y-%m")
+                    ),
+                    "requested_rebalance_date": requested,
+                    "rebalance_date": requested,
+                }
+            )
+        return pl.DataFrame(
+            rows,
+            schema={
+                "policy_id": pl.String,
+                "period": pl.String,
+                "requested_rebalance_date": pl.Date,
+                "rebalance_date": pl.Date,
+            },
+        ).sort("rebalance_date")
 
-    def transform(self, predictions: pl.DataFrame, calendar: pl.DataFrame) -> pl.DataFrame:
-        """Return executable signals from already-filled prediction snapshots."""
+    def select(
+        self,
+        predictions: pl.DataFrame,
+        calendar: pl.DataFrame,
+        *,
+        execution_policy: str | ExecutionPolicy = "next_open",
+        start: date | None = None,
+        end: date | None = None,
+    ) -> SignalSelection:
+        """Select whole Alpha snapshots, then map rebalances to execution dates."""
 
-        values = validate_panel_frame(predictions, label="predictions", value_columns=("prediction",))
-        schedule = self.schedule(calendar)
-        if schedule.is_empty():
-            return pl.DataFrame(schema={"observation_time": pl.Date, TIME: pl.Date, ASSET_ID: pl.String, "signal": pl.Float64})
-        return (
-            schedule.join(values, left_on="observation_time", right_on=TIME, how="left")
-            .drop_nulls("prediction")
-            .select("observation_time", TIME, ASSET_ID, pl.col("prediction").alias("signal"))
-            .sort([TIME, ASSET_ID])
+        values = validate_panel_frame(
+            predictions, label="predictions", value_columns=("prediction",)
+        ).drop_nulls("prediction")
+        requested = self.schedule(calendar, start=start, end=end)
+        execution = (
+            resolve_execution_policy(execution_policy)
+            if isinstance(execution_policy, str)
+            else execution_policy
         )
+        requested = execution.resolve(requested, calendar)
+        available_dates = (
+            values.select(pl.col(TIME).alias("alpha_date")).unique().sort("alpha_date")
+        )
+        schedule_rows: list[dict[str, object]] = []
+        signal_frames: list[pl.DataFrame] = []
+        for row in requested.iter_rows(named=True):
+            rebalance = row["rebalance_date"]
+            period = row["period"]
+            candidates = available_dates.filter(pl.col("alpha_date") <= rebalance)
+            if self.frequency == "monthly":
+                candidates = candidates.filter(
+                    pl.col("alpha_date").dt.strftime("%Y-%m") == period
+                )
+            exact = candidates.filter(pl.col("alpha_date") == rebalance)
+            selected_date = (
+                exact.get_column("alpha_date").max()
+                if not exact.is_empty()
+                else (
+                    candidates.get_column("alpha_date").max()
+                    if self.missing_snapshot
+                    == MissingSnapshotAction.PREVIOUS_IN_PERIOD
+                    and not candidates.is_empty()
+                    else None
+                )
+            )
+            schedule_row = {
+                **row,
+                "alpha_date": selected_date,
+                "selection_status": (
+                    "exact"
+                    if selected_date == rebalance
+                    else "previous_in_period"
+                    if selected_date is not None
+                    else "skipped"
+                ),
+                "skip_reason": (
+                    None if selected_date is not None else "missing_alpha_snapshot"
+                ),
+            }
+            if row["execution_date"] is None:
+                schedule_row["selection_status"] = "skipped"
+                schedule_row["skip_reason"] = "missing_execution_session"
+            schedule_rows.append(schedule_row)
+            if (
+                selected_date is None
+                or schedule_row["selection_status"] == "skipped"
+            ):
+                continue
+            signal_frames.append(
+                values.filter(pl.col(TIME) == selected_date).select(
+                    pl.lit(self.id).alias("policy_id"),
+                    pl.lit(execution.id).alias("execution_policy_id"),
+                    pl.lit(period).alias("period"),
+                    pl.lit(selected_date, dtype=pl.Date).alias("alpha_date"),
+                    pl.lit(rebalance, dtype=pl.Date).alias("rebalance_date"),
+                    pl.lit(row["execution_date"], dtype=pl.Date).alias(
+                        "execution_date"
+                    ),
+                    pl.col(TIME).alias("source_time"),
+                    pl.lit(row["execution_date"], dtype=pl.Date).alias(TIME),
+                    ASSET_ID,
+                    pl.col("prediction").alias("signal"),
+                )
+            )
+        schedule = pl.DataFrame(
+            schedule_rows,
+            schema={
+                "policy_id": pl.String,
+                "period": pl.String,
+                "requested_rebalance_date": pl.Date,
+                "rebalance_date": pl.Date,
+                "execution_policy_id": pl.String,
+                "execution_date": pl.Date,
+                "alpha_date": pl.Date,
+                "selection_status": pl.String,
+                "skip_reason": pl.String,
+            },
+        ).sort("rebalance_date")
+        signals = (
+            pl.concat(signal_frames).sort(TIME, ASSET_ID)
+            if signal_frames
+            else _empty_signals()
+        )
+        return SignalSelection(schedule=schedule, signals=signals)
 
+    def transform(
+        self,
+        predictions: pl.DataFrame,
+        calendar: pl.DataFrame,
+        *,
+        execution_policy: str | ExecutionPolicy = "next_open",
+    ) -> pl.DataFrame:
+        """Return executable rows; prefer :meth:`select` when lineage is needed."""
+
+        return self.select(
+            predictions, calendar, execution_policy=execution_policy
+        ).signals
+
+
+_CANONICAL_EXECUTION_POLICIES = {
+    "next_open": ExecutionPolicy("next_open", lag_sessions=1),
+}
 
 _CANONICAL_SIGNAL_POLICIES = {
-    "daily": SignalPolicy("daily", "daily", SignalAnchor.EVERY_TRADING_DAY),
+    "daily": SignalPolicy(
+        "daily",
+        "daily",
+        SignalAnchor.EVERY_TRADING_DAY,
+        MissingSnapshotAction.SKIP,
+    ),
     "month_end": SignalPolicy(
         "month_end",
         "monthly",
         SignalAnchor.LAST_TRADING_DAY,
-        execution_lag_sessions=15,
+        MissingSnapshotAction.PREVIOUS_IN_PERIOD,
     ),
-    "monthly_mid": SignalPolicy("monthly_mid", "monthly", SignalAnchor.ON_OR_AFTER_CALENDAR_DAY, calendar_day=15, holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION),
-    "monthly_first_monday": SignalPolicy("monthly_first_monday", "monthly", SignalAnchor.FIRST_WEEKDAY, weekday=0, holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION),
-    "monthly_last_friday": SignalPolicy("monthly_last_friday", "monthly", SignalAnchor.LAST_WEEKDAY, weekday=4, holiday_adjustment=HolidayAdjustment.PREVIOUS_OPEN_SESSION),
+    "monthly_mid": SignalPolicy(
+        "monthly_mid",
+        "monthly",
+        SignalAnchor.ON_OR_AFTER_CALENDAR_DAY,
+        MissingSnapshotAction.SKIP,
+        calendar_day=15,
+        holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION,
+    ),
+    "monthly_first_monday": SignalPolicy(
+        "monthly_first_monday",
+        "monthly",
+        SignalAnchor.FIRST_WEEKDAY,
+        MissingSnapshotAction.SKIP,
+        weekday=0,
+        holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION,
+    ),
+    "monthly_last_friday": SignalPolicy(
+        "monthly_last_friday",
+        "monthly",
+        SignalAnchor.LAST_WEEKDAY,
+        MissingSnapshotAction.SKIP,
+        weekday=4,
+        holiday_adjustment=HolidayAdjustment.PREVIOUS_OPEN_SESSION,
+    ),
 }
+
+
+def execution_policies() -> tuple[ExecutionPolicy, ...]:
+    return tuple(_CANONICAL_EXECUTION_POLICIES.values())
+
+
+def resolve_execution_policy(policy_id: str) -> ExecutionPolicy:
+    try:
+        return _CANONICAL_EXECUTION_POLICIES[policy_id]
+    except KeyError as error:
+        raise KeyError(f"unknown execution policy: {policy_id}") from error
 
 
 def signal_policies() -> tuple[SignalPolicy, ...]:
@@ -141,7 +363,9 @@ def resolve_signal_policy(policy_id: str) -> SignalPolicy:
 def _open_sessions(calendar: pl.DataFrame) -> list[date]:
     if TIME not in calendar.columns:
         raise InputValidationError("calendar is missing required column: ['time']")
-    sessions = calendar.with_columns(pl.col(TIME).cast(pl.Date, strict=False)).drop_nulls(TIME)
+    sessions = calendar.with_columns(
+        pl.col(TIME).cast(pl.Date, strict=False)
+    ).drop_nulls(TIME)
     if "is_open" in sessions.columns:
         sessions = sessions.filter(pl.col("is_open").cast(pl.Int64) == 1)
     result = sessions.select(TIME).unique().sort(TIME).get_column(TIME).to_list()
@@ -161,25 +385,59 @@ def _observations(sessions: list[date], policy: SignalPolicy) -> list[date]:
         if policy.anchor == SignalAnchor.LAST_TRADING_DAY:
             result.append(values[-1])
         elif policy.anchor == SignalAnchor.ON_OR_AFTER_CALENDAR_DAY:
-            match = next((value for value in values if value.day >= policy.calendar_day), None)
+            match = next(
+                (value for value in values if value.day >= policy.calendar_day), None
+            )
             if match is not None:
                 result.append(match)
         elif policy.anchor == SignalAnchor.FIRST_WEEKDAY:
             anchor = date(year, month, 1)
-            anchor = anchor.replace(day=1 + (int(policy.weekday) - anchor.weekday()) % 7)
+            anchor = anchor.replace(
+                day=1 + (int(policy.weekday) - anchor.weekday()) % 7
+            )
             match = next((value for value in values if value >= anchor), None)
             if match is not None:
                 result.append(match)
         elif policy.anchor == SignalAnchor.LAST_WEEKDAY:
             anchor = date(year, month, month_calendar.monthrange(year, month)[1])
-            anchor = anchor.replace(day=anchor.day - (anchor.weekday() - int(policy.weekday)) % 7)
-            match = next((value for value in reversed(values) if value <= anchor), None)
+            anchor = anchor.replace(
+                day=anchor.day - (anchor.weekday() - int(policy.weekday)) % 7
+            )
+            match = next(
+                (value for value in reversed(values) if value <= anchor), None
+            )
             if match is not None:
                 result.append(match)
     return result
 
 
+def _empty_signals() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "policy_id": pl.String,
+            "execution_policy_id": pl.String,
+            "period": pl.String,
+            "alpha_date": pl.Date,
+            "rebalance_date": pl.Date,
+            "execution_date": pl.Date,
+            "source_time": pl.Date,
+            TIME: pl.Date,
+            ASSET_ID: pl.String,
+            "signal": pl.Float64,
+        }
+    )
+
+
 __all__ = [
-    "HolidayAdjustment", "SignalAnchor", "SignalFrequency", "SignalPolicy",
-    "resolve_signal_policy", "signal_policies",
+    "ExecutionPolicy",
+    "HolidayAdjustment",
+    "MissingSnapshotAction",
+    "SignalAnchor",
+    "SignalFrequency",
+    "SignalPolicy",
+    "SignalSelection",
+    "execution_policies",
+    "resolve_execution_policy",
+    "resolve_signal_policy",
+    "signal_policies",
 ]

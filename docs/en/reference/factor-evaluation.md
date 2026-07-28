@@ -27,13 +27,17 @@ mean(IC) / standard_deviation(IC)
 
 ## Signal policies
 
-`SignalPolicy("daily")` and `SignalPolicy("month_end")` transform a pre-filled
-prediction panel into executable signals using an explicit open-session
-calendar and a one-session execution lag. `run_signal_evaluation` measures IC
-against each signal's return through the next signal date, while the resulting
-portfolio remains marked to market daily between rebalances. Portfolio policies
-include equal weight, explicit float-market-cap weight, and a non-levered
-target-volatility overlay.
+`SignalPolicy.select` chooses whole snapshots from a daily prediction panel and
+returns a `SignalSelection` containing both the resolved schedule and executable
+rows. `month_end` prefers the last open session, falls back only to an earlier
+whole snapshot in the same calendar month, and otherwise records a skip. It
+never fills one asset from an earlier date.
+
+`ExecutionPolicy("next_open")` separately maps rebalance dates to execution
+dates. `run_signal_evaluation` accepts the resolved `SignalSelection`, measures
+IC through the next execution date, and marks portfolios to market daily
+between executions. The final signal without a complete following execution
+period is excluded.
 
 ## Quantile Returns
 
