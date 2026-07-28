@@ -22,8 +22,13 @@ The compatibility fields `ic_mean`, `ic_std`, and `icir` use Spearman IC.
 `icir` is:
 
 ```text
-mean(IC) / standard_deviation(IC)
+mean(IC) / standard_deviation(IC) * sqrt(IC observations per year)
 ```
+
+`BacktestConfig.ic_annualization` sets IC observations per year. When omitted,
+it defaults to the daily-return `annualization` setting. This is distinct from
+portfolio returns: annualized return, volatility, Sharpe, rolling performance,
+benchmarks, and lag Sharpe use the daily-return annualization setting.
 
 ## Signal policies
 

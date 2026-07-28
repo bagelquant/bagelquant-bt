@@ -277,13 +277,14 @@ def plot_turnover_and_costs(result: BacktestResult) -> go.Figure:
 def plot_rolling_sharpe(
     result: BacktestResult,
     *,
-    annualization: int = 252,
+    annualization: int | None = None,
 ) -> go.Figure:
-    data = rolling_performance(result.returns, annualization=annualization)
+    resolved_annualization = annualization or result.annualization
+    data = rolling_performance(result.returns, annualization=resolved_annualization)
     fig = go.Figure()
     for window in data["window"].unique().sort():
         frame = data.filter(data["window"] == window)
-        label = _window_label(int(window), annualization)
+        label = _window_label(int(window), resolved_annualization)
         fig.add_scatter(
             x=frame["time"],
             y=frame["gross_sharpe"],
@@ -307,13 +308,14 @@ def plot_rolling_sharpe(
 def plot_rolling_volatility(
     result: BacktestResult,
     *,
-    annualization: int = 252,
+    annualization: int | None = None,
 ) -> go.Figure:
-    data = rolling_performance(result.returns, annualization=annualization)
+    resolved_annualization = annualization or result.annualization
+    data = rolling_performance(result.returns, annualization=resolved_annualization)
     fig = go.Figure()
     for window in data["window"].unique().sort():
         frame = data.filter(data["window"] == window)
-        label = _window_label(int(window), annualization)
+        label = _window_label(int(window), resolved_annualization)
         fig.add_scatter(
             x=frame["time"],
             y=frame["gross_volatility"],

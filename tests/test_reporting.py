@@ -150,6 +150,47 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert all(item.title in html for item in figures)
 
 
+def test_report_figures_default_to_backtest_annualization() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"]
+            * 3,
+            "asset_id": ["a"] * 4 + ["b"] * 4 + ["c"] * 4,
+            "price": [
+                1.0,
+                1.1,
+                1.2,
+                1.3,
+                1.0,
+                0.9,
+                0.8,
+                0.7,
+                1.0,
+                1.0,
+                1.1,
+                1.2,
+            ],
+        }
+    )
+    factor = prices.select("time", "asset_id").with_columns(
+        pl.col("asset_id")
+        .replace_strict({"a": 3.0, "b": 1.0, "c": 2.0})
+        .alias("factor")
+    )
+    result = run_factor_evaluation(
+        factor,
+        prices,
+        config=BacktestConfig(initial_capital=1_000, annualization=4, quantiles=3),
+    )
+
+    figures = factor_evaluation_report_figures(result)
+    rolling = next(
+        item.figure for item in figures if item.key == "top_n_rolling_sharpe"
+    )
+
+    assert any(value is not None for trace in rolling.data for value in trace.y)
+
+
 def test_report_numeric_text_uses_four_significant_digits() -> None:
     table = _dataframe_to_html(pl.DataFrame({"value": [1.23456, 12345.6]}))
 

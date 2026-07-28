@@ -30,6 +30,7 @@ class BacktestConfig:
         default_factory=TransactionCostConfig
     )
     annualization: int = 252
+    ic_annualization: int | None = None
     ic_method: str = "spearman"
     quantiles: int = 5
     top_n: int = 50
@@ -39,9 +40,17 @@ class BacktestConfig:
             raise BacktestConfigError("initial_capital must be positive")
         if self.annualization <= 0:
             raise BacktestConfigError("annualization must be positive")
+        if self.ic_annualization is not None and self.ic_annualization <= 0:
+            raise BacktestConfigError("ic_annualization must be positive")
         if self.ic_method not in {"spearman", "pearson"}:
             raise BacktestConfigError("ic_method must be 'spearman' or 'pearson'")
         if self.quantiles < 2:
             raise BacktestConfigError("quantiles must be at least 2")
         if self.top_n <= 0:
             raise BacktestConfigError("top_n must be positive")
+
+    @property
+    def resolved_ic_annualization(self) -> int:
+        """Return the number of IC observations represented by one year."""
+
+        return self.ic_annualization or self.annualization

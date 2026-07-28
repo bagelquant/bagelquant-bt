@@ -48,7 +48,7 @@ class ReportFigure:
 def factor_evaluation_report_figures(
     result: FactorEvaluationResult,
     *,
-    annualization: int = 252,
+    annualization: int | None = None,
 ) -> tuple[ReportFigure, ...]:
     """Return the complete, ordered figure inventory for factor evaluation reports."""
 
@@ -215,7 +215,7 @@ def summary_report(
     output_path: str | Path | None = None,
     missing_price_keys_output_path: str | Path | None = None,
     title: str | None = None,
-    annualization: int = 252,
+    annualization: int | None = None,
 ) -> str:
     """Build a self-contained HTML report for a backtest or factor result."""
 
@@ -247,7 +247,7 @@ def summary_report(
     return html
 
 
-def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
+def _backtest_report(result: BacktestResult, *, annualization: int | None) -> str:
     tables = [
         _table_section("Performance", result.performance),
         _table_section("Trading Summary", _trading_summary(result)),
@@ -265,7 +265,9 @@ def _backtest_report(result: BacktestResult, *, annualization: int) -> str:
     ) + _figures_section("Plots", figures)
 
 
-def _factor_report(result: FactorEvaluationResult, *, annualization: int) -> str:
+def _factor_report(
+    result: FactorEvaluationResult, *, annualization: int | None
+) -> str:
     figures_by_section = _figures_by_section(
         factor_evaluation_report_figures(result, annualization=annualization)
     )

@@ -18,8 +18,10 @@ result.ic.select("time", "pearson_ic", "spearman_ic")
 `icir` 定义为：
 
 ```text
-mean(IC) / standard_deviation(IC)
+mean(IC) / standard_deviation(IC) * sqrt(每年 IC 观测数)
 ```
+
+`BacktestConfig.ic_annualization` 用于指定每年的 IC 观测数；未指定时，默认使用日收益的 `annualization`。这与组合收益指标不同：年化收益率、波动率、Sharpe、滚动指标、基准和滞后 Sharpe 都使用日收益年化数。
 
 ## Signal 与 Execution Policy
 

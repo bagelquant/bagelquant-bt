@@ -113,6 +113,7 @@ def _backtest_weight_frame_with_forward_returns(
         transaction_costs=costs,
         summary=summary,
         performance=performance,
+        annualization=config.annualization,
         coverage=asset_coverage(
             weights,
             prices,

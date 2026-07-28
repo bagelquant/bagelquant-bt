@@ -52,6 +52,7 @@ class BacktestResult:
     transaction_costs: TransactionCostBreakdown
     summary: PerformanceSummary
     performance: pl.DataFrame
+    annualization: int
     coverage: pl.DataFrame
     missing_price_keys: pl.DataFrame
     price_gaps: pl.DataFrame
@@ -70,6 +71,7 @@ class FactorEvaluationResult:
     ic_mean: float
     ic_std: float
     icir: float
+    ic_annualization: int
     quantile_returns: pl.DataFrame
     spread_returns: pl.DataFrame
     top_n_weights: pl.DataFrame

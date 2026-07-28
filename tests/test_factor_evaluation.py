@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import polars as pl
@@ -11,7 +12,29 @@ from bagelquant_bt.factor import (
     information_coefficients,
     lag_factor,
     spread_quantile_weights,
+    summarize_ic,
 )
+
+
+def test_icir_is_annualized_with_configured_ic_observations() -> None:
+    ic = pl.DataFrame(
+        {
+            "pearson_ic": [0.1, 0.2, 0.3],
+            "spearman_ic": [0.3, 0.2, 0.1],
+        }
+    )
+
+    summary = summarize_ic(ic, annualization=240)
+
+    expected = 2.0 * math.sqrt(240)
+    pearson_icir = summary.filter(pl.col("method") == "pearson").item(
+        0, "icir"
+    )
+    spearman_icir = summary.filter(pl.col("method") == "spearman").item(
+        0, "icir"
+    )
+    assert pearson_icir == pytest.approx(expected)
+    assert spearman_icir == pytest.approx(expected)
 
 
 def test_factor_coverage_uses_explicit_membership_universe() -> None:

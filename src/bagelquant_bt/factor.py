@@ -176,11 +176,15 @@ def evaluate_factor_frame(
         raise InputValidationError("at least two overlapping price times are required")
 
     ic = information_coefficients(factor, metric_returns)
-    ic_summary = summarize_ic(ic)
+    ic_summary = summarize_ic(ic, annualization=config.resolved_ic_annualization)
     values = np.array(ic["spearman_ic"].drop_nulls(), dtype=float)
     ic_std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
     ic_mean = float(np.mean(values)) if len(values) else math.nan
-    icir = ic_mean / ic_std if ic_std != 0 and not math.isnan(ic_std) else math.nan
+    icir = (
+        ic_mean / ic_std * math.sqrt(config.resolved_ic_annualization)
+        if ic_std != 0 and not math.isnan(ic_std)
+        else math.nan
+    )
     quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
         factor,
         aligned_prices,
@@ -283,6 +287,7 @@ def evaluate_factor_frame(
         ic_mean=ic_mean,
         ic_std=ic_std,
         icir=icir,
+        ic_annualization=config.resolved_ic_annualization,
         quantile_returns=quantile_returns,
         spread_returns=spread_returns,
         top_n_weights=top_n_weights,
@@ -467,15 +472,19 @@ def information_coefficient(
     )
 
 
-def summarize_ic(ic: pl.DataFrame) -> pl.DataFrame:
-    """Summarize Pearson and Spearman IC series."""
+def summarize_ic(ic: pl.DataFrame, *, annualization: int) -> pl.DataFrame:
+    """Summarize annualized Pearson and Spearman IC information ratios."""
 
     rows: list[dict[str, object]] = []
     for method, column in (("pearson", "pearson_ic"), ("spearman", "spearman_ic")):
         values = np.array(ic[column].drop_nulls(), dtype=float)
         std = float(np.std(values, ddof=1)) if len(values) > 1 else math.nan
         mean = float(np.mean(values)) if len(values) else math.nan
-        icir = mean / std if std != 0 and not math.isnan(std) else math.nan
+        icir = (
+            mean / std * math.sqrt(annualization)
+            if std != 0 and not math.isnan(std)
+            else math.nan
+        )
         rows.append({"method": method, "mean": mean, "std": std, "icir": icir})
     return pl.DataFrame(rows)
 
@@ -768,7 +777,7 @@ def factor_ic_decay(
             lagged,
             return_provider(lagged) if return_provider is not None else forward_returns,
         )
-        summary = summarize_ic(ic)
+        summary = summarize_ic(ic, annualization=1)
         for row in summary.iter_rows(named=True):
             rows.append(
                 {
