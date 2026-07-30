@@ -6,11 +6,19 @@ from datetime import date
 import polars as pl
 import pytest
 
-from bagelquant_bt import BacktestConfig, run_factor_evaluation, run_signal_evaluation
+from bagelquant_bt import (
+    BacktestConfig,
+    materialize_signal_diagnostics,
+    run_factor_evaluation,
+    run_signal_evaluation,
+)
+from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.factor import (
     factor_quantile_returns,
     information_coefficients,
     lag_factor,
+    prepare_factor_market_data,
+    signal_forward_returns,
     spread_quantile_weights,
     summarize_ic,
 )
@@ -117,6 +125,78 @@ def test_factor_evaluation_uses_time_asset_id_inputs() -> None:
         result.top_n_backtest.performance.filter(pl.col("metric") == "sharpe").height
         == 1
     )
+
+
+def test_prepared_signal_returns_validate_schedule_and_price_keys() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-02-01"] * 2,
+            "asset_id": ["a", "a", "b", "b"],
+            "price": [1.0, 1.1, 2.0, 2.1],
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b"],
+            "signal": [2.0, 1.0],
+        }
+    )
+    config = BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1)
+
+    with pytest.raises(InputValidationError, match="outside the current signal"):
+        run_signal_evaluation(
+            signals,
+            prices,
+            config=config,
+            evaluation_returns=pl.DataFrame(
+                {
+                    "time": ["2024-02-01"],
+                    "asset_id": ["a"],
+                    "forward_return": [0.1],
+                }
+            ),
+        )
+
+    with pytest.raises(InputValidationError, match="outside the current signals"):
+        run_signal_evaluation(
+            signals,
+            prices,
+            config=config,
+            evaluation_returns=pl.DataFrame(
+                {
+                    "time": ["2024-01-01"],
+                    "asset_id": ["missing"],
+                    "forward_return": [0.1],
+                }
+            ),
+        )
+
+    signals_with_missing_price = pl.concat(
+        [
+            signals,
+            pl.DataFrame(
+                {
+                    "time": ["2024-01-01"],
+                    "asset_id": ["missing"],
+                    "signal": [0.0],
+                }
+            ),
+        ]
+    )
+    with pytest.raises(InputValidationError, match="absent from prepared prices"):
+        run_signal_evaluation(
+            signals_with_missing_price,
+            prices,
+            config=config,
+            evaluation_returns=pl.DataFrame(
+                {
+                    "time": ["2024-01-01"],
+                    "asset_id": ["missing"],
+                    "forward_return": [0.1],
+                }
+            ),
+        )
 
 
 def test_factor_evaluation_adds_spread_and_lag_outputs() -> None:
@@ -326,6 +406,49 @@ def test_monthly_signal_lag_trades_daily_from_the_shifted_session() -> None:
     assert result.ic_decay.filter(pl.col("lag") == 20)["ic_mean"].null_count() == 0
 
 
+def test_signal_evaluation_reuses_prepared_prices_and_scheduled_returns() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-02", "2024-02-01", "2024-03-01"] * 2,
+            "asset_id": ["a"] * 3 + ["b"] * 3,
+            "price": [10.0, 11.0, 12.0, 20.0, 18.0, 21.0],
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": ["2024-01-02", "2024-01-02", "2024-02-01", "2024-02-01"],
+            "asset_id": ["a", "b", "a", "b"],
+            "signal": [2.0, 1.0, 1.0, 2.0],
+        }
+    )
+    prepared = prepare_factor_market_data(prices)
+    scheduled = signal_forward_returns(
+        signals.select(
+            "time", "asset_id", pl.col("signal").alias("factor")
+        ).with_columns(pl.col("time").str.to_date()),
+        prepared.prices,
+    )
+
+    direct = run_signal_evaluation(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+    )
+    reused = run_signal_evaluation(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+        market_data=prepared,
+        evaluation_returns=scheduled,
+    )
+
+    assert reused.ic.equals(direct.ic)
+    assert reused.ic_summary.equals(direct.ic_summary)
+    assert reused.quantile_returns.equals(direct.quantile_returns)
+    assert reused.lag_analysis.equals(direct.lag_analysis)
+    assert reused.lag_returns.equals(direct.lag_returns)
+
+
 def test_factor_quantile_returns_preserve_bucket_semantics_and_low_counts() -> None:
     factor = pl.DataFrame(
         {
@@ -515,3 +638,52 @@ def test_factor_evaluation_removes_null_and_nan_rows_before_alignment() -> None:
         {"asset_id": "b", "factor": 1.0},
     ]
     assert result.missing_price_keys.is_empty()
+
+
+def test_signal_diagnostics_build_only_requested_paths() -> None:
+    times = [date(2024, 1, 2), date(2024, 2, 1), date(2024, 3, 1)]
+    prices = pl.DataFrame(
+        {
+            "time": [time for time in times for _ in range(4)],
+            "asset_id": ["a", "b", "c", "d"] * len(times),
+            "price": [
+                10.0,
+                20.0,
+                30.0,
+                40.0,
+                11.0,
+                18.0,
+                33.0,
+                38.0,
+                12.0,
+                17.0,
+                36.0,
+                37.0,
+            ],
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": [times[0]] * 4 + [times[1]] * 4,
+            "asset_id": ["a", "b", "c", "d"] * 2,
+            "signal": [4.0, 3.0, 2.0, 1.0, 4.0, 3.0, 2.0, 1.0],
+        }
+    )
+
+    quantiles = materialize_signal_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+        include_quantiles=True,
+    )
+    assert set(quantiles) == {"quantile_returns"}
+    assert set(quantiles["quantile_returns"]["quantile"]) == {"q1", "q2"}
+
+    spread = materialize_signal_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+        include_spread=True,
+    )
+    assert set(spread) == {"spread_returns"}
+    assert spread["spread_returns"].columns == ["time", "return"]

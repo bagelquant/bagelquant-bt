@@ -44,6 +44,15 @@ def build_universe_benchmark_returns(
         if universe is not None
         else returns.select(TIME, ASSET_ID).unique().sort([TIME, ASSET_ID])
     )
+    # A return labelled at ``time`` requires a later valuation observation.
+    # Universe membership can legitimately extend through the final session,
+    # which has no forward interval and therefore must not be reported as a
+    # zero-coverage benchmark sample.
+    members = members.join(
+        returns.select(TIME).unique(),
+        on=TIME,
+        how="inner",
+    )
     expected = members.group_by(TIME).agg(
         pl.len().cast(pl.Int64).alias("expected_count")
     )

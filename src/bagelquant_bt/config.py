@@ -34,6 +34,7 @@ class BacktestConfig:
     ic_method: str = "spearman"
     quantiles: int = 5
     top_n: int = 50
+    retry_blocked_orders: bool = True
 
     def __post_init__(self) -> None:
         if self.initial_capital <= 0:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 
@@ -137,8 +138,15 @@ def portfolio_returns(
                 * pl.col("forward_return").fill_null(0.0)
             ).alias("weighted_return")
         )
-        .group_by(TIME)
-        .agg(pl.col("weighted_return").sum().alias("gross_return"))
+        .sort([TIME, ASSET_ID])
+        .group_by(TIME, maintain_order=True)
+        .agg(pl.col("weighted_return").alias("_weighted_returns"))
+        .with_columns(
+            pl.col("_weighted_returns")
+            .map_elements(math.fsum, return_dtype=pl.Float64)
+            .alias("gross_return")
+        )
+        .drop("_weighted_returns")
         .sort(TIME)
     )
 
@@ -147,6 +155,8 @@ def _expand_portfolio_weights(
     weights: pl.DataFrame,
     prices: pl.DataFrame,
     forward_returns: pl.DataFrame,
+    *,
+    initial_target_weights: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     if weights.is_empty():
         return weights.select(TIME, ASSET_ID, "weight")
@@ -189,6 +199,20 @@ def _expand_portfolio_weights(
             on=TIME,
             by=ASSET_ID,
             strategy="backward",
+        )
+    if initial_target_weights is not None:
+        initial = initial_target_weights.select(
+            pl.col(ASSET_ID).cast(pl.String),
+            pl.col("weight").cast(pl.Float64).alias("_initial_weight"),
+        )
+        expanded = (
+            expanded.join(initial, on=ASSET_ID, how="left")
+            .with_columns(
+                pl.col("weight")
+                .fill_null(pl.col("_initial_weight"))
+                .alias("weight")
+            )
+            .drop("_initial_weight")
         )
     return (
         expanded

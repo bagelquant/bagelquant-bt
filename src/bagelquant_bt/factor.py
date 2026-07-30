@@ -19,6 +19,7 @@ from .benchmarks import (
 from .config import BacktestConfig
 from .engine import (
     _backtest_weight_frame_with_forward_returns,
+    _compact_backtest_weight_frame_with_forward_returns,
     _require_config,
     backtest_weight_frame,
 )
@@ -96,6 +97,8 @@ def run_signal_evaluation(
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
+    market_data: PreparedFactorMarketData | None = None,
+    evaluation_returns: pl.DataFrame | None = None,
     portfolio_policy: object | None = None,
     portfolio_inputs: Mapping[str, object] | None = None,
     coverage_universe: pl.DataFrame | None = None,
@@ -112,7 +115,16 @@ def run_signal_evaluation(
         signal_frame, label="signals", value_columns=("signal",)
     )
     factor = aligned.select(TIME, ASSET_ID, pl.col("signal").alias("factor"))
-    prepared = prepare_factor_market_data(prices)
+    prepared = market_data or prepare_factor_market_data(prices)
+    resolved_evaluation_returns = (
+        _validate_prepared_evaluation_returns(
+            evaluation_returns,
+            factor=factor,
+            prices=prepared.prices,
+        )
+        if evaluation_returns is not None
+        else signal_forward_returns(factor, prepared.prices)
+    )
     return evaluate_factor_frame(
         factor,
         prepared.prices,
@@ -120,7 +132,7 @@ def run_signal_evaluation(
         market_data=prepared,
         coverage_universe=coverage_universe,
         benchmark_universe=benchmark_universe,
-        evaluation_returns=signal_forward_returns(factor, prepared.prices),
+        evaluation_returns=resolved_evaluation_returns,
         lag_return_provider=lambda lagged: signal_forward_returns(
             lagged, prepared.prices
         ),
@@ -130,6 +142,114 @@ def run_signal_evaluation(
         benchmark_returns=benchmark_returns,
         benchmark_coverage=benchmark_coverage,
     )
+
+
+def materialize_signal_diagnostics(
+    signals: pl.DataFrame | SignalSelection,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig | None = None,
+    market_data: PreparedFactorMarketData | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    include_quantiles: bool = False,
+    include_spread: bool = False,
+    include_lags: bool = False,
+) -> Mapping[str, pl.DataFrame]:
+    """Build only requested heavyweight signal diagnostic paths."""
+
+    if not (include_quantiles or include_spread or include_lags):
+        return {}
+    resolved_config = _require_config(config)
+    signal_frame = signals.signals if isinstance(signals, SignalSelection) else signals
+    aligned = validate_panel_frame(
+        signal_frame,
+        label="signals",
+        value_columns=("signal",),
+    )
+    factor = aligned.select(TIME, ASSET_ID, pl.col("signal").alias("factor"))
+    prepared = market_data or prepare_factor_market_data(prices)
+    result: dict[str, pl.DataFrame] = {}
+    if include_quantiles or include_spread:
+        quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
+            factor,
+            prepared.prices,
+            config=resolved_config,
+            quantiles=resolved_config.quantiles,
+            forward_returns=prepared.forward_returns,
+            price_gaps=(
+                None
+                if prepared.price_data is None
+                else prepared.price_data.price_gaps
+            ),
+            execution_availability=execution_availability,
+        )
+        if include_quantiles:
+            result["quantile_returns"] = quantile_returns
+        if include_spread:
+            result["spread_returns"] = _spread_returns(
+                quantile_returns,
+                resolved_config.quantiles,
+            ).rename({"spread_return": "return"})
+    if include_lags:
+        lag_analysis, lag_returns = _lag_outputs(
+            factor,
+            prepared.prices,
+            config=resolved_config,
+            lags=FACTOR_LAGS,
+            forward_returns=prepared.forward_returns,
+            price_gaps=(
+                None
+                if prepared.price_data is None
+                else prepared.price_data.price_gaps
+            ),
+            execution_availability=execution_availability,
+        )
+        result["lag_analysis"] = lag_analysis
+        result["lag_returns"] = lag_returns
+    return result
+
+
+def _validate_prepared_evaluation_returns(
+    frame: pl.DataFrame,
+    *,
+    factor: pl.DataFrame,
+    prices: pl.DataFrame,
+) -> pl.DataFrame:
+    """Validate that cached returns belong to this signal schedule and market."""
+
+    normalized = validate_panel_frame(
+        frame,
+        label="evaluation_returns",
+        value_columns=("forward_return",),
+    ).select(TIME, ASSET_ID, "forward_return")
+    unexpected_times = normalized.select(TIME).unique().join(
+        factor.select(TIME).unique(),
+        on=TIME,
+        how="anti",
+    )
+    if unexpected_times.height:
+        raise InputValidationError(
+            "evaluation_returns contains dates outside the current signal schedule"
+        )
+    unexpected_signal_keys = normalized.select(TIME, ASSET_ID).join(
+        factor.select(TIME, ASSET_ID),
+        on=[TIME, ASSET_ID],
+        how="anti",
+    )
+    if unexpected_signal_keys.height:
+        raise InputValidationError(
+            "evaluation_returns contains asset keys outside the current signals"
+        )
+    unexpected_keys = normalized.select(TIME, ASSET_ID).join(
+        prices.select(TIME, ASSET_ID),
+        on=[TIME, ASSET_ID],
+        how="anti",
+    )
+    if unexpected_keys.height:
+        raise InputValidationError(
+            "evaluation_returns contains asset keys absent from prepared prices"
+        )
+    return normalized
 
 
 def evaluate_factor_frame(
@@ -226,7 +346,7 @@ def evaluate_factor_frame(
         if spread_weights.height
         else None
     )
-    lag_backtests = _lag_backtests(
+    lag_analysis, lag_returns = _lag_outputs(
         factor,
         aligned_prices,
         config=config,
@@ -234,9 +354,11 @@ def evaluate_factor_frame(
         forward_returns=forward_returns,
         price_gaps=price_data.price_gaps,
         execution_availability=execution_availability,
+        lag_zero={
+            "top_n": top_n_backtest,
+            "spread": spread_backtest,
+        },
     )
-    lag_analysis = _lag_analysis_from_backtests(lag_backtests)
-    lag_returns = _lag_returns_from_backtests(lag_backtests)
     ic_decay = factor_ic_decay(
         factor,
         metric_returns,
@@ -610,12 +732,11 @@ def _traded_factor_quantile_returns_with_forward_returns(
         if weights.is_empty():
             continue
         backtest = (
-            _backtest_weight_frame_with_forward_returns(
+            _compact_backtest_weight_frame_with_forward_returns(
                 weights,
                 prices,
                 forward_returns,
                 config=config,
-                price_gaps=price_gaps,
                 execution_availability=execution_availability,
             )
             if forward_returns is not None
@@ -728,9 +849,8 @@ def factor_lag_analysis(
 ) -> pl.DataFrame:
     """Backtest TOP N and spread signals delayed by trading sessions."""
 
-    return _lag_analysis_from_backtests(
-        _lag_backtests(factor, prices, config=config, lags=lags)
-    )
+    analysis, _ = _lag_outputs(factor, prices, config=config, lags=lags)
+    return analysis
 
 
 def factor_lag_returns(
@@ -742,9 +862,8 @@ def factor_lag_returns(
 ) -> pl.DataFrame:
     """Return cumulative returns for factor signals delayed by trading sessions."""
 
-    return _lag_returns_from_backtests(
-        _lag_backtests(factor, prices, config=config, lags=lags)
-    )
+    _, returns = _lag_outputs(factor, prices, config=config, lags=lags)
+    return returns
 
 
 def factor_ic_decay(
@@ -871,7 +990,7 @@ def _quantile_grid(times: pl.DataFrame, quantiles: int) -> pl.DataFrame:
     return times.select(TIME).unique().join(quantile_labels, how="cross")
 
 
-def _lag_backtests(
+def _lag_outputs(
     factor: pl.DataFrame,
     prices: pl.DataFrame,
     *,
@@ -880,8 +999,10 @@ def _lag_backtests(
     forward_returns: pl.DataFrame | None = None,
     price_gaps: pl.DataFrame | None = None,
     execution_availability: pl.DataFrame | None = None,
-) -> list[tuple[int, str, BacktestResult | None]]:
-    results: list[tuple[int, str, BacktestResult | None]] = []
+    lag_zero: Mapping[str, BacktestResult | None] | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    analysis_rows: list[dict[str, object]] = []
+    return_frames: list[pl.DataFrame] = []
     trading_sessions = _trading_sessions(prices)
     for lag in lags:
         lagged = lag_factor(factor, lag=lag, trading_sessions=trading_sessions)
@@ -893,16 +1014,15 @@ def _lag_backtests(
             ),
         )
         for portfolio, weights in portfolio_specs:
-            backtest = None
-            if weights.height:
+            backtest = lag_zero.get(portfolio) if lag == 0 and lag_zero else None
+            if backtest is None and weights.height:
                 try:
                     backtest = (
-                        _backtest_weight_frame_with_forward_returns(
+                        _compact_backtest_weight_frame_with_forward_returns(
                             weights,
                             prices,
                             forward_returns,
                             config=config,
-                            price_gaps=price_gaps,
                             execution_availability=execution_availability,
                         )
                         if forward_returns is not None
@@ -915,56 +1035,42 @@ def _lag_backtests(
                     )
                 except InputValidationError:
                     backtest = None
-            results.append((lag, portfolio, backtest))
-    return results
-
-
-def _lag_analysis_from_backtests(
-    lag_backtests: list[tuple[int, str, BacktestResult | None]],
-) -> pl.DataFrame:
-    rows: list[dict[str, object]] = []
-    for lag, portfolio, backtest in lag_backtests:
-        row: dict[str, object] = {
-            "lag": lag,
-            "portfolio": portfolio,
-            "gross_cumulative_return": math.nan,
-            "net_cumulative_return": math.nan,
-            "gross_sharpe": math.nan,
-            "net_sharpe": math.nan,
-        }
-        if backtest is not None:
-            row.update(
-                {
-                    "gross_cumulative_return": backtest.summary.gross_total_return,
-                    "net_cumulative_return": backtest.summary.net_total_return,
-                    "gross_sharpe": backtest.summary.gross_sharpe,
-                    "net_sharpe": backtest.summary.net_sharpe,
-                }
-            )
-        rows.append(row)
-    return pl.DataFrame(rows).sort(["portfolio", "lag"])
-
-
-def _lag_returns_from_backtests(
-    lag_backtests: list[tuple[int, str, BacktestResult | None]],
-) -> pl.DataFrame:
-    frames: list[pl.DataFrame] = []
-    for lag, portfolio, backtest in lag_backtests:
-        if backtest is None:
-            continue
-        frames.append(
-            backtest.value.select(
-                pl.lit(lag).alias("lag"),
-                pl.lit(portfolio).alias("portfolio"),
-                TIME,
-                pl.col("gross_return_cumulative").alias("gross_cumulative_return"),
-                pl.col("net_return_cumulative").alias("net_cumulative_return"),
-                pl.lit(backtest.summary.gross_sharpe).alias("gross_sharpe"),
-                pl.lit(backtest.summary.net_sharpe).alias("net_sharpe"),
-            )
-        )
-    if not frames:
-        return pl.DataFrame(
+            row: dict[str, object] = {
+                "lag": lag,
+                "portfolio": portfolio,
+                "gross_cumulative_return": math.nan,
+                "net_cumulative_return": math.nan,
+                "gross_sharpe": math.nan,
+                "net_sharpe": math.nan,
+            }
+            if backtest is not None:
+                row.update(
+                    {
+                        "gross_cumulative_return": backtest.summary.gross_total_return,
+                        "net_cumulative_return": backtest.summary.net_total_return,
+                        "gross_sharpe": backtest.summary.gross_sharpe,
+                        "net_sharpe": backtest.summary.net_sharpe,
+                    }
+                )
+                return_frames.append(
+                    backtest.value.select(
+                        pl.lit(lag).alias("lag"),
+                        pl.lit(portfolio).alias("portfolio"),
+                        TIME,
+                        pl.col("gross_return_cumulative").alias(
+                            "gross_cumulative_return"
+                        ),
+                        pl.col("net_return_cumulative").alias(
+                            "net_cumulative_return"
+                        ),
+                        pl.lit(backtest.summary.gross_sharpe).alias("gross_sharpe"),
+                        pl.lit(backtest.summary.net_sharpe).alias("net_sharpe"),
+                    )
+                )
+            analysis_rows.append(row)
+    analysis = pl.DataFrame(analysis_rows).sort(["portfolio", "lag"])
+    if not return_frames:
+        returns = pl.DataFrame(
             schema={
                 "lag": pl.Int64,
                 "portfolio": pl.String,
@@ -975,7 +1081,9 @@ def _lag_returns_from_backtests(
                 "net_sharpe": pl.Float64,
             }
         )
-    return pl.concat(frames).sort(["portfolio", "lag", TIME])
+    else:
+        returns = pl.concat(return_frames).sort(["portfolio", "lag", TIME])
+    return analysis, returns
 
 
 def _spread_returns(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:

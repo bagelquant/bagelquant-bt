@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from bagelquant_bt import BacktestConfig, TransactionCostConfig, run_weight_backtest
+from bagelquant_bt.engine import _apply_execution_availability
 from bagelquant_bt.exceptions import InputValidationError
 
 
@@ -622,3 +623,108 @@ def test_buy_constraint_does_not_block_sell_and_new_target_supersedes_pending() 
     assert blocked_sell.execution_blocks.select("side", "reason").to_dicts() == [
         {"side": "sell", "reason": "explicit_sell_block"}
     ]
+
+
+def test_blocked_order_can_be_cancelled_until_the_next_target_change() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": [
+                "2024-01-01",
+                "2024-01-02",
+                "2024-01-03",
+                "2024-01-04",
+            ],
+            "asset_id": ["cn"] * 4,
+            "price": [100.0] * 4,
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-03"],
+            "asset_id": ["cn", "cn"],
+            "weight": [1.0, 0.5],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "time": ["2024-01-01"],
+            "asset_id": ["cn"],
+            "can_buy": [False],
+            "can_sell": [True],
+            "reason": ["limit_up"],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=10_000,
+            retry_blocked_orders=False,
+        ),
+        execution_availability=availability,
+    )
+
+    assert result.weights["weight"].to_list() == [0.0, 0.0, 0.5]
+
+
+def test_event_driven_execution_constraints_match_row_by_row_reference() -> None:
+    desired = pl.DataFrame(
+        {
+            "time": [f"2024-01-0{day}" for day in range(1, 6)] * 2,
+            "asset_id": ["a"] * 5 + ["b"] * 5,
+            "weight": [1.0, 1.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.0, 1.0, 1.0],
+        }
+    ).with_columns(pl.col("time").str.to_date())
+    availability = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+            "asset_id": ["a", "a", "b", "b"],
+            "can_buy": [False, False, True, False],
+            "can_sell": [True, True, False, True],
+            "reason": ["buy_block", "buy_block", "sell_block", "buy_block"],
+        }
+    )
+
+    actual_weights, actual_blocks, event_count = _apply_execution_availability(
+        desired, availability
+    )
+    rules = {
+        (row["time"], row["asset_id"]): row
+        for row in availability.with_columns(pl.col("time").str.to_date()).iter_rows(
+            named=True
+        )
+    }
+    executed: dict[str, float] = {}
+    expected_weights = []
+    expected_blocks = []
+    for row in desired.sort(["time", "asset_id"]).iter_rows(named=True):
+        retained = executed.get(row["asset_id"], 0.0)
+        delta = row["weight"] - retained
+        rule = rules.get((row["time"], row["asset_id"]))
+        side = (
+            "buy"
+            if rule and delta > 0 and not rule["can_buy"]
+            else "sell"
+            if rule and delta < 0 and not rule["can_sell"]
+            else None
+        )
+        resolved = retained if side else row["weight"]
+        if side:
+            expected_blocks.append(
+                {
+                    "time": row["time"],
+                    "asset_id": row["asset_id"],
+                    "side": side,
+                    "target_weight": row["weight"],
+                    "retained_weight": retained,
+                    "reason": rule["reason"],
+                }
+            )
+        else:
+            executed[row["asset_id"]] = resolved
+        expected_weights.append({**row, "weight": resolved})
+
+    assert actual_weights.to_dicts() == expected_weights
+    assert actual_blocks.to_dicts() == expected_blocks
+    assert 0 < event_count < desired.height

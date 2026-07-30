@@ -58,6 +58,8 @@ class BacktestResult:
     price_gaps: pl.DataFrame
     unexecuted_weight_keys: pl.DataFrame
     execution_blocks: pl.DataFrame
+    target_weights: pl.DataFrame
+    execution_event_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
