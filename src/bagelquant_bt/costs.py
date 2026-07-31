@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import polars as pl
 
 from .inputs import ASSET_ID, TIME
@@ -16,17 +14,17 @@ def turnover(
 ) -> pl.DataFrame:
     """Compute daily absolute weight turnover."""
 
-    return (
+    return _turnover_from_weight_deltas(
         _weight_deltas(weights, initial_weights=initial_weights)
-        .sort([TIME, ASSET_ID])
-        .group_by(TIME, maintain_order=True)
-        .agg(pl.col("weight_delta").alias("_weight_deltas"))
-        .with_columns(
-            pl.col("_weight_deltas")
-            .map_elements(math.fsum, return_dtype=pl.Float64)
-            .alias("turnover")
-        )
-        .drop("_weight_deltas")
+    )
+
+
+def _turnover_from_weight_deltas(deltas: pl.DataFrame) -> pl.DataFrame:
+    """Aggregate a previously computed per-asset weight-delta frame."""
+
+    return (
+        deltas.group_by(TIME)
+        .agg(pl.col("weight_delta").sum().alias("turnover"))
         .sort(TIME)
     )
 
@@ -46,6 +44,16 @@ def _weight_deltas(
     *,
     initial_weights: pl.DataFrame | None,
 ) -> pl.DataFrame:
+    return _weight_delta_plan(weights, initial_weights=initial_weights).collect(
+        engine="auto"
+    )
+
+
+def _weight_delta_plan(
+    weights: pl.DataFrame,
+    *,
+    initial_weights: pl.DataFrame | None,
+) -> pl.LazyFrame:
     initial = (
         pl.DataFrame(schema={ASSET_ID: pl.String, "_initial_weight": pl.Float64})
         if initial_weights is None
@@ -55,8 +63,9 @@ def _weight_deltas(
         )
     )
     return (
-        weights.sort([ASSET_ID, TIME])
-        .join(initial, on=ASSET_ID, how="left")
+        weights.lazy()
+        .sort([ASSET_ID, TIME])
+        .join(initial.lazy(), on=ASSET_ID, how="left")
         .with_columns(
             pl.col("weight")
             .fill_null(0.0)
@@ -72,4 +81,18 @@ def _weight_deltas(
             .alias("weight_delta")
         )
         .drop("_initial_weight")
+    )
+
+
+def _sparse_weight_deltas(
+    weights: pl.DataFrame,
+    *,
+    initial_weights: pl.DataFrame | None,
+) -> pl.DataFrame:
+    """Return only non-zero weight changes for internal economic calculations."""
+
+    return (
+        _weight_delta_plan(weights, initial_weights=initial_weights)
+        .filter(pl.col("weight_delta") != 0.0)
+        .collect(engine="auto")
     )

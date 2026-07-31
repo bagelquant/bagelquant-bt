@@ -20,7 +20,7 @@ from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_prices, validate_weights
 from .performance import summarize_performance
 from .results import BacktestResult, PerformanceSummary, TransactionCostBreakdown
-from .returns import cumulative_returns, prepare_price_data
+from .returns import _prepare_price_data, cumulative_returns
 
 PORTFOLIO_PATH_VERSION = 1
 RESULT_SECTION_VERSION = 1
@@ -224,7 +224,7 @@ def resume_portfolio_path(
     aligned_weights = validate_weights(weights)
     aligned_prices = validate_prices(prices)
     price_data = (
-        prepare_price_data(aligned_prices)
+        _prepare_price_data(aligned_prices, inputs_sorted=True)
         if prepared_forward_returns is None
         else None
     )

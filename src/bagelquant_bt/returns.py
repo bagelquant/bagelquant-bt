@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import warnings
 from dataclasses import dataclass
 
@@ -17,9 +16,37 @@ class PreparedPriceData:
     """Observed prices, daily valuation prices, returns, and price-gap evidence."""
 
     observed_prices: pl.DataFrame
-    valuation_prices: pl.DataFrame
     forward_returns: pl.DataFrame
     price_gaps: pl.DataFrame
+    _valuation_prices: pl.DataFrame | None = None
+
+    @property
+    def valuation_prices(self) -> pl.DataFrame:
+        """Materialize daily valuation prices only when a caller requests them."""
+
+        cached = self._valuation_prices
+        if cached is None:
+            cached = _build_valuation_prices(self.observed_prices).select(
+                TIME, ASSET_ID, "price"
+            )
+            object.__setattr__(self, "_valuation_prices", cached)
+        return cached
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpandedPortfolioWeights:
+    """Daily target weights plus their sparse state-change events."""
+
+    weights: pl.DataFrame
+    target_events: pl.DataFrame
+
+
+@dataclass(frozen=True, slots=True)
+class _PortfolioTargets:
+    """Tradable snapshots and their non-redundant state changes."""
+
+    snapshots: pl.DataFrame
+    events: pl.DataFrame
 
 
 def prepare_price_data(prices: pl.DataFrame) -> PreparedPriceData:
@@ -30,32 +57,18 @@ def prepare_price_data(prices: pl.DataFrame) -> PreparedPriceData:
     zero return and the cumulative move is recognized only on resumption.
     """
 
-    observed_prices = prices.sort([TIME, ASSET_ID])
-    sessions = observed_prices.select(TIME).unique().sort(TIME).with_row_index(
-        "_session_index"
-    )
-    assets = observed_prices.select(ASSET_ID).unique()
-    valuation_prices = (
-        sessions.join(assets, how="cross")
-        .join(observed_prices, on=[TIME, ASSET_ID], how="left")
-        .with_columns(
-            pl.col("price").alias("_observed_price"),
-            pl.when(pl.col("price").is_not_null())
-            .then(pl.col("_session_index"))
-            .otherwise(None)
-            .forward_fill()
-            .over(ASSET_ID)
-            .alias("_last_observed_session"),
-            pl.when(pl.col("price").is_not_null())
-            .then(pl.col(TIME))
-            .otherwise(None)
-            .forward_fill()
-            .over(ASSET_ID)
-            .alias("_last_observed_time"),
-        )
-        .with_columns(pl.col("price").forward_fill().over(ASSET_ID))
-        .sort([ASSET_ID, TIME])
-    )
+    return _prepare_price_data(prices, inputs_sorted=False)
+
+
+def _prepare_price_data(
+    prices: pl.DataFrame,
+    *,
+    inputs_sorted: bool,
+) -> PreparedPriceData:
+    """Internal variant that can reuse an already validated key order."""
+
+    observed_prices = prices if inputs_sorted else prices.sort([TIME, ASSET_ID])
+    valuation_prices = _build_valuation_prices(observed_prices)
     price_gaps = (
         valuation_prices.filter(
             pl.col("price").is_not_null() & pl.col("_observed_price").is_null()
@@ -82,9 +95,38 @@ def prepare_price_data(prices: pl.DataFrame) -> PreparedPriceData:
     )
     return PreparedPriceData(
         observed_prices=observed_prices,
-        valuation_prices=valuation_prices.select(TIME, ASSET_ID, "price"),
         forward_returns=forward_returns,
         price_gaps=price_gaps,
+    )
+
+
+def _build_valuation_prices(observed_prices: pl.DataFrame) -> pl.DataFrame:
+    sessions = observed_prices.select(TIME).unique().sort(TIME).with_row_index(
+        "_session_index"
+    )
+    assets = observed_prices.select(ASSET_ID).unique()
+    return (
+        sessions.lazy()
+        .join(assets.lazy(), how="cross")
+        .join(observed_prices.lazy(), on=[TIME, ASSET_ID], how="left")
+        .sort([ASSET_ID, TIME])
+        .with_columns(
+            pl.col("price").alias("_observed_price"),
+            pl.when(pl.col("price").is_not_null())
+            .then(pl.col("_session_index"))
+            .otherwise(None)
+            .forward_fill()
+            .over(ASSET_ID)
+            .alias("_last_observed_session"),
+            pl.when(pl.col("price").is_not_null())
+            .then(pl.col(TIME))
+            .otherwise(None)
+            .forward_fill()
+            .over(ASSET_ID)
+            .alias("_last_observed_time"),
+            pl.col("price").forward_fill().over(ASSET_ID),
+        )
+        .collect(engine="streaming")
     )
 
 
@@ -138,15 +180,8 @@ def portfolio_returns(
                 * pl.col("forward_return").fill_null(0.0)
             ).alias("weighted_return")
         )
-        .sort([TIME, ASSET_ID])
-        .group_by(TIME, maintain_order=True)
-        .agg(pl.col("weighted_return").alias("_weighted_returns"))
-        .with_columns(
-            pl.col("_weighted_returns")
-            .map_elements(math.fsum, return_dtype=pl.Float64)
-            .alias("gross_return")
-        )
-        .drop("_weighted_returns")
+        .group_by(TIME)
+        .agg(pl.col("weighted_return").sum().alias("gross_return"))
         .sort(TIME)
     )
 
@@ -158,18 +193,102 @@ def _expand_portfolio_weights(
     *,
     initial_target_weights: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
+    return _expand_portfolio_weight_data(
+        weights,
+        prices,
+        forward_returns,
+        initial_target_weights=initial_target_weights,
+        include_target_events=False,
+    ).weights
+
+
+def _expand_portfolio_weight_data(
+    weights: pl.DataFrame,
+    prices: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    initial_target_weights: pl.DataFrame | None = None,
+    include_target_events: bool = True,
+    execution_keys: pl.DataFrame | None = None,
+) -> _ExpandedPortfolioWeights:
     if weights.is_empty():
-        return weights.select(TIME, ASSET_ID, "weight")
+        empty = weights.select(TIME, ASSET_ID, "weight")
+        return _ExpandedPortfolioWeights(empty, empty)
     if prices.is_empty():
         raise InputValidationError("weights has no covered price range")
 
     first_execution_time = weights.get_column(TIME).min()
-    execution_keys = (
-        forward_returns.select(TIME, ASSET_ID)
-        .filter(pl.col(TIME) >= first_execution_time)
-        .unique()
-        .sort([ASSET_ID, TIME])
+    resolved_execution_keys = (
+        (
+            forward_returns.select(TIME, ASSET_ID)
+            .unique()
+            .sort([ASSET_ID, TIME])
+        )
+        if execution_keys is None
+        else execution_keys
     )
+    resolved_execution_keys = (
+        resolved_execution_keys
+        .filter(pl.col(TIME) >= first_execution_time)
+    )
+    targets = _portfolio_targets(
+        weights,
+        prices,
+        initial_target_weights=initial_target_weights,
+        include_events=include_target_events,
+    )
+    tradable_targets = targets.snapshots
+    target_events = targets.events
+    initial = (
+        pl.DataFrame(
+            schema={ASSET_ID: pl.String, "_initial_weight": pl.Float64}
+        )
+        if initial_target_weights is None
+        else initial_target_weights.select(
+            pl.col(ASSET_ID).cast(pl.String),
+            pl.col("weight").cast(pl.Float64).alias("_initial_weight"),
+        )
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sortedness of columns cannot be checked when 'by' groups provided",
+            category=UserWarning,
+        )
+        expanded = resolved_execution_keys.join_asof(
+            tradable_targets.select(TIME, ASSET_ID, "weight"),
+            on=TIME,
+            by=ASSET_ID,
+            strategy="backward",
+        )
+    if initial_target_weights is not None:
+        expanded = (
+            expanded.join(initial, on=ASSET_ID, how="left")
+            .with_columns(
+                pl.col("weight")
+                .fill_null(pl.col("_initial_weight"))
+                .alias("weight")
+            )
+            .drop("_initial_weight")
+        )
+    return _ExpandedPortfolioWeights(
+        expanded
+        .drop_nulls("weight")
+        .select(TIME, ASSET_ID, "weight")
+        .sort([TIME, ASSET_ID]),
+        target_events,
+    )
+
+
+def _portfolio_targets(
+    weights: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    initial_target_weights: pl.DataFrame | None = None,
+    include_events: bool = True,
+) -> _PortfolioTargets:
+    """Build the snapshot grid without expanding it across daily returns."""
+
     snapshot_times = (
         weights.select(TIME)
         .unique()
@@ -188,37 +307,38 @@ def _expand_portfolio_weights(
         .sort([ASSET_ID, TIME])
     )
     tradable_targets = target_snapshots.filter(pl.col("_observed_price").is_not_null())
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="Sortedness of columns cannot be checked when 'by' groups provided",
-            category=UserWarning,
+    initial = (
+        pl.DataFrame(
+            schema={ASSET_ID: pl.String, "_initial_weight": pl.Float64}
         )
-        expanded = execution_keys.join_asof(
-            tradable_targets.select(TIME, ASSET_ID, "weight"),
-            on=TIME,
-            by=ASSET_ID,
-            strategy="backward",
-        )
-    if initial_target_weights is not None:
-        initial = initial_target_weights.select(
+        if initial_target_weights is None
+        else initial_target_weights.select(
             pl.col(ASSET_ID).cast(pl.String),
             pl.col("weight").cast(pl.Float64).alias("_initial_weight"),
         )
-        expanded = (
-            expanded.join(initial, on=ASSET_ID, how="left")
+    )
+    target_events = (
+        (
+            tradable_targets.select(TIME, ASSET_ID, "weight")
+            .join(initial, on=ASSET_ID, how="left")
             .with_columns(
                 pl.col("weight")
+                .shift(1)
+                .over(ASSET_ID)
                 .fill_null(pl.col("_initial_weight"))
-                .alias("weight")
+                .fill_null(0.0)
+                .alias("_previous_weight")
             )
-            .drop("_initial_weight")
+            .filter(pl.col("weight") != pl.col("_previous_weight"))
+            .select(TIME, ASSET_ID, "weight")
+            .sort([TIME, ASSET_ID])
         )
-    return (
-        expanded
-        .drop_nulls("weight")
-        .select(TIME, ASSET_ID, "weight")
-        .sort([TIME, ASSET_ID])
+        if include_events
+        else weights.head(0).select(TIME, ASSET_ID, "weight")
+    )
+    return _PortfolioTargets(
+        tradable_targets.select(TIME, ASSET_ID, "weight"),
+        target_events,
     )
 
 

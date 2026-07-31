@@ -5,6 +5,7 @@ from datetime import date
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
     BacktestConfig,
@@ -12,12 +13,17 @@ from bagelquant_bt import (
     run_factor_evaluation,
     run_signal_evaluation,
 )
+from bagelquant_bt.engine import (
+    _legacy_compact_backtest_weight_frame_with_active_market,
+)
 from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.factor import (
+    _traded_factor_quantile_returns_with_forward_returns,
     factor_quantile_returns,
     information_coefficients,
     lag_factor,
     prepare_factor_market_data,
+    quantile_equal_weights,
     signal_forward_returns,
     spread_quantile_weights,
     summarize_ic,
@@ -124,6 +130,85 @@ def test_factor_evaluation_uses_time_asset_id_inputs() -> None:
     assert (
         result.top_n_backtest.performance.filter(pl.col("metric") == "sharpe").height
         == 1
+    )
+
+
+@pytest.mark.parametrize("retry_blocked", [True, False])
+def test_batched_quantiles_match_sequential_portfolios(
+    retry_blocked: bool,
+) -> None:
+    times = [date(2024, 1, day) for day in range(1, 9)]
+    assets = ["a", "b", "c", "d"]
+    prices = pl.DataFrame(
+        {
+            "time": [time for asset in assets for time in times],
+            "asset_id": [asset for asset in assets for _ in times],
+            "price": [
+                100.0 + asset_index * 3.0 + day_index * (asset_index - 1.5)
+                for asset_index, _ in enumerate(assets)
+                for day_index, _ in enumerate(times)
+            ],
+        }
+    )
+    factor = pl.DataFrame(
+        {
+            "time": [times[0]] * 4 + [times[3]] * 4,
+            "asset_id": assets * 2,
+            "factor": [4.0, 3.0, 2.0, 1.0, 1.0, 4.0, 2.0, 3.0],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "time": [times[0], times[1], times[3], times[4]],
+            "asset_id": ["a", "a", "d", "d"],
+            "can_buy": [False, False, True, True],
+            "can_sell": [True, True, False, False],
+            "reason": ["limit"] * 4,
+        }
+    )
+    config = BacktestConfig(
+        initial_capital=100_000,
+        quantiles=2,
+        top_n=1,
+        retry_blocked_orders=retry_blocked,
+    )
+    market = prepare_factor_market_data(prices)
+    actual = _traded_factor_quantile_returns_with_forward_returns(
+        factor,
+        market.prices,
+        config=config,
+        quantiles=2,
+        forward_returns=market.forward_returns,
+        price_gaps=market.price_data.price_gaps if market.price_data else None,
+        execution_availability=availability,
+    ).select("time", "quantile", "return")
+
+    expected_frames = []
+    for label, weights in quantile_equal_weights(
+        factor, quantiles=2
+    ).items():
+        backtest = _legacy_compact_backtest_weight_frame_with_active_market(
+            weights,
+            market.prices,
+            market.forward_returns,
+            config=config,
+            execution_availability=availability,
+            execution_availability_validated=False,
+        )
+        expected_frames.append(
+            backtest.returns.select(
+                "time",
+                pl.lit(label).alias("quantile"),
+                pl.col("gross_return").alias("return"),
+            )
+        )
+    expected = pl.concat(expected_frames).sort(["time", "quantile"])
+    assert_frame_equal(
+        actual,
+        expected,
+        check_exact=False,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
     )
 
 

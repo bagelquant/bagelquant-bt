@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -18,10 +19,10 @@ from .benchmarks import (
 )
 from .config import BacktestConfig
 from .engine import (
+    _active_market_inputs,
     _backtest_weight_frame_with_forward_returns,
-    _compact_backtest_weight_frame_with_forward_returns,
+    _compact_backtest_weight_frame_with_active_market,
     _require_config,
-    backtest_weight_frame,
 )
 from .exceptions import InputValidationError
 from .inputs import (
@@ -29,13 +30,14 @@ from .inputs import (
     TIME,
     asset_coverage,
     missing_price_keys,
+    validate_execution_availability,
     validate_factor,
     validate_panel_frame,
     validate_prices,
 )
 from .portfolio import EqualWeightPolicy
 from .results import BacktestResult, FactorEvaluationResult
-from .returns import PreparedPriceData, prepare_price_data
+from .returns import PreparedPriceData, _prepare_price_data, prepare_price_data
 from .signal import SignalSelection
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
@@ -54,7 +56,7 @@ def prepare_factor_market_data(prices: pl.DataFrame) -> PreparedFactorMarketData
     """Validate prices and calculate forward returns once for a factor batch."""
 
     aligned_prices = validate_prices(prices)
-    price_data = prepare_price_data(aligned_prices)
+    price_data = _prepare_price_data(aligned_prices, inputs_sorted=True)
     return PreparedFactorMarketData(
         prices=aligned_prices,
         forward_returns=price_data.forward_returns,
@@ -168,6 +170,11 @@ def materialize_signal_diagnostics(
     )
     factor = aligned.select(TIME, ASSET_ID, pl.col("signal").alias("factor"))
     prepared = market_data or prepare_factor_market_data(prices)
+    resolved_execution_availability = (
+        None
+        if execution_availability is None
+        else validate_execution_availability(execution_availability)
+    )
     result: dict[str, pl.DataFrame] = {}
     if include_quantiles or include_spread:
         quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
@@ -181,7 +188,8 @@ def materialize_signal_diagnostics(
                 if prepared.price_data is None
                 else prepared.price_data.price_gaps
             ),
-            execution_availability=execution_availability,
+            execution_availability=resolved_execution_availability,
+            execution_availability_validated=True,
         )
         if include_quantiles:
             result["quantile_returns"] = quantile_returns
@@ -202,7 +210,8 @@ def materialize_signal_diagnostics(
                 if prepared.price_data is None
                 else prepared.price_data.price_gaps
             ),
-            execution_availability=execution_availability,
+            execution_availability=resolved_execution_availability,
+            execution_availability_validated=True,
         )
         result["lag_analysis"] = lag_analysis
         result["lag_returns"] = lag_returns
@@ -272,8 +281,15 @@ def evaluate_factor_frame(
 
     aligned_factor = validate_factor(factor)
     prepared = market_data or prepare_factor_market_data(prices)
+    resolved_execution_availability = (
+        None
+        if execution_availability is None
+        else validate_execution_availability(execution_availability)
+    )
     aligned_prices = prepared.prices
-    price_data = prepared.price_data or prepare_price_data(aligned_prices)
+    price_data = prepared.price_data or _prepare_price_data(
+        aligned_prices, inputs_sorted=True
+    )
     coverage = asset_coverage(
         aligned_factor,
         aligned_prices,
@@ -312,9 +328,27 @@ def evaluate_factor_frame(
         quantiles=config.quantiles,
         forward_returns=forward_returns,
         price_gaps=price_data.price_gaps,
-        execution_availability=execution_availability,
+        execution_availability=resolved_execution_availability,
+        execution_availability_validated=True,
     )
     spread_returns = _spread_returns(quantile_returns, config.quantiles)
+    lag_analysis, lag_returns = _lag_outputs(
+        factor,
+        aligned_prices,
+        config=config,
+        lags=FACTOR_LAGS,
+        forward_returns=forward_returns,
+        price_gaps=price_data.price_gaps,
+        execution_availability=resolved_execution_availability,
+        execution_availability_validated=True,
+    )
+    ic_decay = factor_ic_decay(
+        factor,
+        metric_returns,
+        trading_sessions=_trading_sessions(aligned_prices),
+        return_provider=lag_return_provider,
+        lags=FACTOR_LAGS,
+    )
     top_n_weights = _policy_weights(
         factor,
         config,
@@ -328,7 +362,8 @@ def evaluate_factor_frame(
         forward_returns,
         config=config,
         price_gaps=price_data.price_gaps,
-        execution_availability=execution_availability,
+        execution_availability=resolved_execution_availability,
+        execution_availability_validated=True,
     )
     spread_weights = spread_quantile_weights(
         factor,
@@ -341,30 +376,11 @@ def evaluate_factor_frame(
             forward_returns,
             config=config,
             price_gaps=price_data.price_gaps,
-            execution_availability=execution_availability,
+            execution_availability=resolved_execution_availability,
+            execution_availability_validated=True,
         )
         if spread_weights.height
         else None
-    )
-    lag_analysis, lag_returns = _lag_outputs(
-        factor,
-        aligned_prices,
-        config=config,
-        lags=FACTOR_LAGS,
-        forward_returns=forward_returns,
-        price_gaps=price_data.price_gaps,
-        execution_availability=execution_availability,
-        lag_zero={
-            "top_n": top_n_backtest,
-            "spread": spread_backtest,
-        },
-    )
-    ic_decay = factor_ic_decay(
-        factor,
-        metric_returns,
-        trading_sessions=_trading_sessions(aligned_prices),
-        return_provider=lag_return_provider,
-        lags=FACTOR_LAGS,
     )
     default_benchmark, default_coverage = build_universe_benchmark_returns(
         forward_returns,
@@ -716,6 +732,7 @@ def _traded_factor_quantile_returns_with_forward_returns(
     forward_returns: pl.DataFrame | None,
     price_gaps: pl.DataFrame | None = None,
     execution_availability: pl.DataFrame | None = None,
+    execution_availability_validated: bool = False,
 ) -> pl.DataFrame:
     """Compute daily held-portfolio quantile returns from signal snapshots.
 
@@ -724,37 +741,25 @@ def _traded_factor_quantile_returns_with_forward_returns(
     snapshot, so a monthly signal remains a monthly-rebalanced portfolio.
     """
 
-    frames: list[pl.DataFrame] = []
-    for quantile, weights in quantile_equal_weights(
+    quantile_weights = quantile_equal_weights(
         factor,
         quantiles=quantiles,
-    ).items():
-        if weights.is_empty():
-            continue
-        backtest = (
-            _compact_backtest_weight_frame_with_forward_returns(
-                weights,
-                prices,
-                forward_returns,
-                config=config,
-                execution_availability=execution_availability,
-            )
-            if forward_returns is not None
-            else backtest_weight_frame(
-                weights,
-                prices,
-                config=config,
-                execution_availability=execution_availability,
-            )
-        )
-        frames.append(
-            backtest.returns.select(
-                TIME,
-                pl.lit(quantile).alias("quantile"),
-                pl.col("gross_return").alias("return"),
-            )
-        )
-    if not frames:
+    )
+    nonempty_weights = [
+        weights for weights in quantile_weights.values() if not weights.is_empty()
+    ]
+    resolved_forward_returns = (
+        prepare_price_data(prices).forward_returns
+        if forward_returns is None
+        else forward_returns
+    )
+    resolved_availability = (
+        validate_execution_availability(execution_availability)
+        if execution_availability is not None
+        and not execution_availability_validated
+        else execution_availability
+    )
+    if not nonempty_weights:
         return pl.DataFrame(
             schema={
                 TIME: pl.Date,
@@ -763,11 +768,314 @@ def _traded_factor_quantile_returns_with_forward_returns(
                 "cumulative_return": pl.Float64,
             }
         )
-    returns = pl.concat(frames).sort([TIME, "quantile"])
+    returns = _batched_quantile_gross_returns(
+        quantile_weights,
+        prices,
+        resolved_forward_returns,
+        execution_availability=resolved_availability,
+        retry_blocked=config.retry_blocked_orders,
+    ).rename({"gross_return": "return"})
     return returns.with_columns(
         (
             (1.0 + pl.col("return").fill_null(0.0)).cum_prod().over("quantile") - 1.0
         ).alias("cumulative_return")
+    )
+
+
+def _batched_quantile_gross_returns(
+    quantile_weights: Mapping[str, pl.DataFrame],
+    prices: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    execution_availability: pl.DataFrame | None,
+    retry_blocked: bool,
+) -> pl.DataFrame:
+    """Evaluate mutually exclusive quantile memberships in one market scan."""
+
+    labeled = pl.concat(
+        [
+            weights.with_columns(pl.lit(label).alias("quantile"))
+            for label, weights in quantile_weights.items()
+            if not weights.is_empty()
+        ]
+    ).select(TIME, ASSET_ID, "quantile", "weight")
+    first_time = labeled.get_column(TIME).min()
+    active_assets = labeled.select(ASSET_ID).unique()
+    market_returns = (
+        forward_returns.join(active_assets, on=ASSET_ID, how="inner")
+        .filter(pl.col(TIME) >= first_time)
+        .sort([ASSET_ID, TIME])
+    )
+    assignments = (
+        labeled.select(TIME)
+        .unique()
+        .join(active_assets, how="cross")
+        .join(prices.select(TIME, ASSET_ID), on=[TIME, ASSET_ID], how="inner")
+        .join(labeled, on=[TIME, ASSET_ID], how="left")
+        .with_columns(pl.col("weight").fill_null(0.0))
+        .sort([ASSET_ID, TIME])
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sortedness of columns cannot be checked when 'by' groups provided",
+            category=UserWarning,
+        )
+        held = market_returns.join_asof(
+            assignments,
+            on=TIME,
+            by=ASSET_ID,
+            strategy="backward",
+        )
+    base = (
+        held.drop_nulls("quantile")
+        .with_columns(
+            (pl.col("weight") * pl.col("forward_return")).alias("_weighted_return")
+        )
+        .group_by(TIME, "quantile")
+        .agg(pl.col("_weighted_return").sum().alias("_base_return"))
+    )
+    corrections = _quantile_execution_corrections(
+        assignments,
+        market_returns,
+        execution_availability,
+        retry_blocked=retry_blocked,
+    )
+    return (
+        market_returns.select(TIME)
+        .unique()
+        .join(
+            pl.DataFrame(
+                {"quantile": list(quantile_weights)},
+                schema={"quantile": pl.String},
+            ),
+            how="cross",
+        )
+        .join(base, on=[TIME, "quantile"], how="left")
+        .join(corrections, on=[TIME, "quantile"], how="left")
+        .with_columns(
+            (
+                pl.col("_base_return").fill_null(0.0)
+                + pl.col("_correction").fill_null(0.0)
+            ).alias("gross_return")
+        )
+        .select(TIME, "quantile", "gross_return")
+        .sort([TIME, "quantile"])
+    )
+
+
+def _quantile_execution_corrections(
+    assignments: pl.DataFrame,
+    market_returns: pl.DataFrame,
+    execution_availability: pl.DataFrame | None,
+    *,
+    retry_blocked: bool,
+) -> pl.DataFrame:
+    """Return sparse corrections between desired and constrained holdings."""
+
+    empty = pl.DataFrame(
+        schema={
+            TIME: pl.Date,
+            "quantile": pl.String,
+            "_correction": pl.Float64,
+        }
+    )
+    if execution_availability is None or execution_availability.is_empty():
+        return empty
+
+    transitions = assignments.with_columns(
+        pl.col("quantile").shift(1).over(ASSET_ID).alias("_previous_quantile")
+    )
+    target_candidates = pl.concat(
+        [
+            transitions.drop_nulls("quantile").select(
+                TIME, ASSET_ID, "quantile", "weight"
+            ),
+            transitions.filter(
+                pl.col("_previous_quantile").is_not_null()
+                & (
+                    pl.col("quantile").is_null()
+                    | (pl.col("quantile") != pl.col("_previous_quantile"))
+                )
+            ).select(
+                TIME,
+                ASSET_ID,
+                pl.col("_previous_quantile").alias("quantile"),
+                pl.lit(0.0).alias("weight"),
+            ),
+        ]
+    ).sort(["quantile", ASSET_ID, TIME])
+    target_events = (
+        target_candidates.with_columns(
+            pl.col("weight")
+            .shift(1)
+            .over("quantile", ASSET_ID)
+            .fill_null(0.0)
+            .alias("_previous_weight")
+        )
+        .filter(pl.col("weight") != pl.col("_previous_weight"))
+        .drop("_previous_weight")
+    )
+    active_pairs = target_events.select("quantile", ASSET_ID).unique()
+    rule_keys = execution_availability.select(TIME, ASSET_ID).join(
+        active_pairs, on=ASSET_ID, how="inner"
+    )
+    market_keys = market_returns.select(TIME, ASSET_ID)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sortedness of columns cannot be checked when 'by' groups provided",
+            category=UserWarning,
+        )
+        after_rules = (
+            execution_availability.select(
+                pl.col(TIME).alias("_rule_time"), ASSET_ID
+            )
+            .sort([ASSET_ID, "_rule_time"])
+            .join_asof(
+                market_keys.select(
+                    pl.col(TIME).alias("_next_time"), ASSET_ID
+                ).sort([ASSET_ID, "_next_time"]),
+                left_on="_rule_time",
+                right_on="_next_time",
+                by=ASSET_ID,
+                strategy="forward",
+                allow_exact_matches=False,
+            )
+            .drop_nulls("_next_time")
+            .select(pl.col("_next_time").alias(TIME), ASSET_ID)
+            .join(active_pairs, on=ASSET_ID, how="inner")
+        )
+    event_keys = (
+        pl.concat(
+            [
+                target_events.select(TIME, ASSET_ID, "quantile").with_columns(
+                    pl.lit(True).alias("_target_changed")
+                ),
+                rule_keys.with_columns(pl.lit(False).alias("_target_changed")),
+                after_rules.with_columns(pl.lit(False).alias("_target_changed")),
+            ]
+        )
+        .group_by(TIME, ASSET_ID, "quantile")
+        .agg(pl.col("_target_changed").any())
+        .sort(["quantile", ASSET_ID, TIME])
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sortedness of columns cannot be checked when 'by' groups provided",
+            category=UserWarning,
+        )
+        events = event_keys.join_asof(
+            target_events,
+            on=TIME,
+            by=["quantile", ASSET_ID],
+            strategy="backward",
+        )
+    events = (
+        events.drop_nulls("weight")
+        .join(
+            execution_availability.rename(
+                {
+                    "can_buy": "_can_buy",
+                    "can_sell": "_can_sell",
+                    "reason": "_reason",
+                }
+            ),
+            on=[TIME, ASSET_ID],
+            how="left",
+        )
+        .with_columns(pl.col("_reason").is_not_null().alias("_has_rule"))
+        .sort([TIME, "quantile", ASSET_ID])
+    )
+    if events.is_empty():
+        return empty
+
+    state_lookup = (
+        events.select("quantile", ASSET_ID)
+        .unique()
+        .sort(["quantile", ASSET_ID])
+        .with_row_index("_state_index")
+    )
+    events = events.join(state_lookup, on=["quantile", ASSET_ID], how="left")
+    executed = np.zeros(state_lookup.height, dtype=np.float64)
+    state_indices = events.get_column("_state_index").to_numpy()
+    targets = events.get_column("weight").to_numpy()
+    has_rule = events.get_column("_has_rule").to_numpy()
+    target_changed = events.get_column("_target_changed").to_numpy()
+    can_buy = events.get_column("_can_buy").fill_null(True).to_numpy()
+    can_sell = events.get_column("_can_sell").fill_null(True).to_numpy()
+    resolved = np.empty(events.height, dtype=np.float64)
+    cancelled_targets = np.zeros(state_lookup.height, dtype=np.bool_)
+    for position in range(events.height):
+        state_index = int(state_indices[position])
+        retained = float(executed[state_index])
+        target = float(targets[position])
+        if bool(target_changed[position]):
+            cancelled_targets[state_index] = False
+        delta = target - retained
+        blocked = (
+            has_rule[position]
+            and (
+                (delta > 0.0 and not can_buy[position])
+                or (delta < 0.0 and not can_sell[position])
+            )
+        )
+        if blocked:
+            resolved[position] = retained
+            if not retry_blocked:
+                cancelled_targets[state_index] = True
+        elif (
+            not retry_blocked
+            and cancelled_targets[state_index]
+            and not target_changed[position]
+        ):
+            resolved[position] = retained
+        else:
+            resolved[position] = target
+            executed[state_index] = target
+
+    difference_events = (
+        events.select(TIME, ASSET_ID, "quantile", "weight")
+        .with_columns(
+            (pl.Series("_executed", resolved) - pl.col("weight")).alias(
+                "_weight_difference"
+            )
+        )
+        .select(TIME, ASSET_ID, "quantile", "_weight_difference")
+        .sort(["quantile", ASSET_ID, TIME])
+    )
+    affected_pairs = (
+        difference_events.filter(pl.col("_weight_difference") != 0.0)
+        .select("quantile", ASSET_ID)
+        .unique()
+    )
+    if affected_pairs.is_empty():
+        return empty
+    correction_market = market_returns.join(
+        affected_pairs, on=ASSET_ID, how="inner"
+    ).sort(["quantile", ASSET_ID, TIME])
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Sortedness of columns cannot be checked when 'by' groups provided",
+            category=UserWarning,
+        )
+        corrected = correction_market.join_asof(
+            difference_events,
+            on=TIME,
+            by=["quantile", ASSET_ID],
+            strategy="backward",
+        )
+    return (
+        corrected.with_columns(
+            (
+                pl.col("_weight_difference").fill_null(0.0)
+                * pl.col("forward_return")
+            ).alias("_correction")
+        )
+        .group_by(TIME, "quantile")
+        .agg(pl.col("_correction").sum())
     )
 
 
@@ -881,6 +1189,13 @@ def factor_ic_decay(
         if trading_sessions is not None
         else _trading_sessions(forward_returns)
     )
+    if return_provider is None:
+        return _batched_factor_ic_decay(
+            factor,
+            forward_returns,
+            trading_sessions=calendar,
+            lags=lags,
+        )
     rows: list[dict[str, object]] = []
     for lag in lags:
         lagged = lag_factor(factor, lag=lag, trading_sessions=calendar)
@@ -906,6 +1221,87 @@ def factor_ic_decay(
                 }
             )
     return pl.DataFrame(rows).sort(["method", "lag"])
+
+
+def _batched_factor_ic_decay(
+    factor: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    trading_sessions: pl.DataFrame,
+    lags: tuple[int, ...],
+) -> pl.DataFrame:
+    """Map and aggregate every fixed-horizon IC lag in one Polars plan."""
+
+    lag_frame = pl.DataFrame({"lag": lags}, schema={"lag": pl.Int64})
+    result_grid = lag_frame.join(
+        pl.DataFrame(
+            {"method": ["pearson", "spearman"]},
+            schema={"method": pl.String},
+        ),
+        how="cross",
+    )
+    if factor.is_empty() or not lags:
+        return result_grid.with_columns(
+            pl.lit(float("nan")).alias("ic_mean")
+        ).sort(["method", "lag"])
+
+    sessions = trading_sessions.with_row_index("_session_index")
+    lag_mapping = (
+        sessions.lazy()
+        .join(lag_frame.lazy(), how="cross")
+        .select(
+            (pl.col("_session_index") - pl.col("lag")).alias("_source_index"),
+            pl.col(TIME).alias("_lagged_time"),
+            "lag",
+        )
+    )
+    lagged = (
+        factor.lazy()
+        .join(sessions.lazy(), on=TIME, how="inner")
+        .join(
+            lag_mapping,
+            left_on="_session_index",
+            right_on="_source_index",
+            how="inner",
+        )
+        .select(
+            pl.col("_lagged_time").alias(TIME),
+            ASSET_ID,
+            "factor",
+            "lag",
+        )
+        .join(forward_returns.lazy(), on=[TIME, ASSET_ID], how="inner")
+        .drop_nulls(["factor", "forward_return"])
+        .with_columns(
+            pl.col("factor")
+            .rank("average")
+            .over("lag", TIME)
+            .alias("_factor_rank"),
+            pl.col("forward_return")
+            .rank("average")
+            .over("lag", TIME)
+            .alias("_return_rank"),
+        )
+        .group_by("lag", TIME)
+        .agg(
+            _corr_expr("factor", "forward_return").alias("pearson"),
+            _corr_expr("_factor_rank", "_return_rank").alias("spearman"),
+        )
+        .unpivot(
+            index=["lag", TIME],
+            on=["pearson", "spearman"],
+            variable_name="method",
+            value_name="ic",
+        )
+        .group_by("lag", "method")
+        .agg(pl.col("ic").mean().alias("ic_mean"))
+        .collect(engine="streaming")
+    )
+    return (
+        result_grid.join(lagged, on=["lag", "method"], how="left")
+        .with_columns(pl.col("ic_mean").fill_null(float("nan")))
+        .sort(["method", "lag"])
+    )
 
 
 def lag_factor(
@@ -1000,38 +1396,72 @@ def _lag_outputs(
     price_gaps: pl.DataFrame | None = None,
     execution_availability: pl.DataFrame | None = None,
     lag_zero: Mapping[str, BacktestResult | None] | None = None,
+    execution_availability_validated: bool = False,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     analysis_rows: list[dict[str, object]] = []
     return_frames: list[pl.DataFrame] = []
     trading_sessions = _trading_sessions(prices)
+    resolved_forward_returns = (
+        prepare_price_data(prices).forward_returns
+        if forward_returns is None
+        else forward_returns
+    )
+    resolved_availability = (
+        validate_execution_availability(execution_availability)
+        if execution_availability is not None
+        and not execution_availability_validated
+        else execution_availability
+    )
+    portfolio_weights: dict[str, list[tuple[int, pl.DataFrame]]] = {
+        "top_n": [],
+        "spread": [],
+    }
     for lag in lags:
         lagged = lag_factor(factor, lag=lag, trading_sessions=trading_sessions)
-        portfolio_specs = (
-            ("top_n", top_n_equal_weights(lagged, top_n=config.top_n)),
-            (
-                "spread",
-                spread_quantile_weights(lagged, quantiles=config.quantiles),
-            ),
+        portfolio_weights["top_n"].append(
+            (lag, top_n_equal_weights(lagged, top_n=config.top_n))
         )
-        for portfolio, weights in portfolio_specs:
+        portfolio_weights["spread"].append(
+            (
+                lag,
+                spread_quantile_weights(lagged, quantiles=config.quantiles),
+            )
+        )
+
+    for portfolio, lagged_weights in portfolio_weights.items():
+        nonempty_weights = [
+            weights for _, weights in lagged_weights if not weights.is_empty()
+        ]
+        active_market = (
+            None
+            if not nonempty_weights
+            else _active_market_inputs(
+                pl.concat(nonempty_weights),
+                prices,
+                resolved_forward_returns,
+                resolved_availability,
+            )
+        )
+        execution_keys = (
+            None
+            if active_market is None
+            else active_market[1]
+            .select(TIME, ASSET_ID)
+            .unique()
+            .sort([ASSET_ID, TIME])
+        )
+        for lag, weights in lagged_weights:
             backtest = lag_zero.get(portfolio) if lag == 0 and lag_zero else None
-            if backtest is None and weights.height:
+            if backtest is None and weights.height and active_market is not None:
                 try:
-                    backtest = (
-                        _compact_backtest_weight_frame_with_forward_returns(
-                            weights,
-                            prices,
-                            forward_returns,
-                            config=config,
-                            execution_availability=execution_availability,
-                        )
-                        if forward_returns is not None
-                        else backtest_weight_frame(
-                            weights,
-                            prices,
-                            config=config,
-                            execution_availability=execution_availability,
-                        )
+                    backtest = _compact_backtest_weight_frame_with_active_market(
+                        weights,
+                        active_market[0],
+                        active_market[1],
+                        config=config,
+                        execution_availability=active_market[2],
+                        execution_availability_validated=True,
+                        execution_keys=execution_keys,
                     )
                 except InputValidationError:
                     backtest = None

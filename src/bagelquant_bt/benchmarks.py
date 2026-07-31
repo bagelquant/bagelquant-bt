@@ -39,6 +39,32 @@ def build_universe_benchmark_returns(
         pl.col(ASSET_ID).cast(pl.String),
         pl.col("forward_return").cast(pl.Float64, strict=False),
     )
+    if universe is None and sizes is None:
+        valid = pl.col("forward_return").is_not_null() & pl.col(
+            "forward_return"
+        ).is_finite()
+        aggregated = (
+            returns.group_by(TIME)
+            .agg(
+                pl.len().cast(pl.Int64).alias("expected_count"),
+                valid.sum().cast(pl.Int64).alias("observed_count"),
+                pl.col("forward_return").filter(valid).mean().alias("return"),
+            )
+            .sort(TIME)
+        )
+        benchmark = aggregated.filter(pl.col("observed_count") > 0).select(
+            TIME, pl.lit(name).alias("benchmark"), "return"
+        )
+        coverage = aggregated.select(
+            TIME,
+            pl.lit(name).alias("benchmark"),
+            "expected_count",
+            "observed_count",
+            (
+                pl.col("observed_count") / pl.col("expected_count")
+            ).alias("coverage_ratio"),
+        )
+        return benchmark, coverage
     members = (
         validate_universe(universe)
         if universe is not None
