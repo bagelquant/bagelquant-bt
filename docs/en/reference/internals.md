@@ -8,29 +8,32 @@ This page describes implementation details for maintainers.
 validate weights and prices
     |
     v
-align target snapshots to tradable price dates
+encode target snapshots as sparse state events
     |
     v
-carry target weights forward across price returns
+apply execution constraints to integer-indexed state
     |
     v
-compute asset returns
+scan the session-by-asset return matrix
     |
     v
-compute gross portfolio returns
+compute all portfolio returns in one matrix pass
     |
     v
 compute turnover and transaction costs
     |
     v
-build BacktestResult
+build BacktestResult with deferred daily weight frames
 ```
 
 Weights are interpreted as complete target portfolios at each timestamp. If a
 timestamp falls between price observations, it executes on the next available
 tradable price date inside the covered range. The engine carries the latest
 target weights forward until the next target arrives. The cost model uses actual
-target-weight changes and capital to estimate traded notional.
+target-weight changes and capital to estimate traded notional. Lag portfolios
+share one market matrix and one session scan; only sparse target and execution
+events carry a portfolio identifier. Complete daily target and executed weights
+are expanded only when their result fields are accessed.
 
 ## Factor Evaluation Flow
 

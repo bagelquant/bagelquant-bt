@@ -54,6 +54,10 @@ config = BacktestConfig(
   `coverage_ratio`。
 - `missing_price_keys`
 
+`weights` 和 `target_weights` 在首次访问时从已校验的稀疏状态事件展开，
+随后缓存在结果对象中。两者仍返回具有原有 schema 和稳定排序的 long-form
+Polars DataFrame；读取其他结果字段或执行 `repr(result)` 不会触发这两张日频表。
+
 `FactorEvaluationResult` 暴露：
 
 - `factor`

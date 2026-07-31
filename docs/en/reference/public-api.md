@@ -58,6 +58,11 @@ config = BacktestConfig(
   and `coverage_ratio`.
 - `missing_price_keys`
 
+`weights` and `target_weights` are expanded from validated sparse state events
+on first access and then cached. They still return ordinary long-form Polars
+DataFrames with the documented schema and stable ordering. Reading other result
+fields, including `repr(result)`, does not materialize these two daily frames.
+
 `FactorEvaluationResult` exposes:
 
 - `factor`

@@ -19,10 +19,9 @@ from .benchmarks import (
 )
 from .config import BacktestConfig
 from .engine import (
-    _active_market_inputs,
-    _backtest_weight_frame_with_forward_returns,
-    _compact_backtest_weight_frame_with_active_market,
+    _backtest_weight_frames_with_forward_returns,
     _require_config,
+    _run_sparse_compact_backtests,
 )
 from .exceptions import InputValidationError
 from .inputs import (
@@ -356,8 +355,15 @@ def evaluate_factor_frame(
         aligned_prices,
         portfolio_inputs,
     )
-    top_n_backtest = _backtest_weight_frame_with_forward_returns(
-        top_n_weights,
+    spread_weights = spread_quantile_weights(
+        factor,
+        quantiles=config.quantiles,
+    )
+    primary_backtests = _backtest_weight_frames_with_forward_returns(
+        {
+            "top_n": top_n_weights,
+            **({"spread": spread_weights} if spread_weights.height else {}),
+        },
         aligned_prices,
         forward_returns,
         config=config,
@@ -365,23 +371,8 @@ def evaluate_factor_frame(
         execution_availability=resolved_execution_availability,
         execution_availability_validated=True,
     )
-    spread_weights = spread_quantile_weights(
-        factor,
-        quantiles=config.quantiles,
-    )
-    spread_backtest = (
-        _backtest_weight_frame_with_forward_returns(
-            spread_weights,
-            aligned_prices,
-            forward_returns,
-            config=config,
-            price_gaps=price_data.price_gaps,
-            execution_availability=resolved_execution_availability,
-            execution_availability_validated=True,
-        )
-        if spread_weights.height
-        else None
-    )
+    top_n_backtest = primary_backtests["top_n"]
+    spread_backtest = primary_backtests.get("spread")
     default_benchmark, default_coverage = build_universe_benchmark_returns(
         forward_returns,
         universe=(
@@ -1246,57 +1237,61 @@ def _batched_factor_ic_decay(
         ).sort(["method", "lag"])
 
     sessions = trading_sessions.with_row_index("_session_index")
-    lag_mapping = (
-        sessions.lazy()
-        .join(lag_frame.lazy(), how="cross")
-        .select(
+    lagged_parts: list[pl.DataFrame] = []
+    chunk_size = len(lags) if factor.height <= 100_000 else 1
+    for start in range(0, len(lags), chunk_size):
+        chunk = pl.DataFrame(
+            {"lag": lags[start : start + chunk_size]},
+            schema={"lag": pl.Int64},
+        )
+        lag_mapping = sessions.lazy().join(chunk.lazy(), how="cross").select(
             (pl.col("_session_index") - pl.col("lag")).alias("_source_index"),
             pl.col(TIME).alias("_lagged_time"),
             "lag",
         )
-    )
-    lagged = (
-        factor.lazy()
-        .join(sessions.lazy(), on=TIME, how="inner")
-        .join(
-            lag_mapping,
-            left_on="_session_index",
-            right_on="_source_index",
-            how="inner",
+        lagged_parts.append(
+            factor.lazy()
+            .join(sessions.lazy(), on=TIME, how="inner")
+            .join(
+                lag_mapping,
+                left_on="_session_index",
+                right_on="_source_index",
+                how="inner",
+            )
+            .select(
+                pl.col("_lagged_time").alias(TIME),
+                ASSET_ID,
+                "factor",
+                "lag",
+            )
+            .join(forward_returns.lazy(), on=[TIME, ASSET_ID], how="inner")
+            .drop_nulls(["factor", "forward_return"])
+            .with_columns(
+                pl.col("factor")
+                .rank("average")
+                .over("lag", TIME)
+                .alias("_factor_rank"),
+                pl.col("forward_return")
+                .rank("average")
+                .over("lag", TIME)
+                .alias("_return_rank"),
+            )
+            .group_by("lag", TIME)
+            .agg(
+                _corr_expr("factor", "forward_return").alias("pearson"),
+                _corr_expr("_factor_rank", "_return_rank").alias("spearman"),
+            )
+            .unpivot(
+                index=["lag", TIME],
+                on=["pearson", "spearman"],
+                variable_name="method",
+                value_name="ic",
+            )
+            .group_by("lag", "method")
+            .agg(pl.col("ic").mean().alias("ic_mean"))
+            .collect(engine="streaming")
         )
-        .select(
-            pl.col("_lagged_time").alias(TIME),
-            ASSET_ID,
-            "factor",
-            "lag",
-        )
-        .join(forward_returns.lazy(), on=[TIME, ASSET_ID], how="inner")
-        .drop_nulls(["factor", "forward_return"])
-        .with_columns(
-            pl.col("factor")
-            .rank("average")
-            .over("lag", TIME)
-            .alias("_factor_rank"),
-            pl.col("forward_return")
-            .rank("average")
-            .over("lag", TIME)
-            .alias("_return_rank"),
-        )
-        .group_by("lag", TIME)
-        .agg(
-            _corr_expr("factor", "forward_return").alias("pearson"),
-            _corr_expr("_factor_rank", "_return_rank").alias("spearman"),
-        )
-        .unpivot(
-            index=["lag", TIME],
-            on=["pearson", "spearman"],
-            variable_name="method",
-            value_name="ic",
-        )
-        .group_by("lag", "method")
-        .agg(pl.col("ic").mean().alias("ic_mean"))
-        .collect(engine="streaming")
-    )
+    lagged = pl.concat(lagged_parts)
     return (
         result_grid.join(lagged, on=["lag", "method"], how="left")
         .with_columns(pl.col("ic_mean").fill_null(float("nan")))
@@ -1312,19 +1307,36 @@ def lag_factor(
 ) -> pl.DataFrame:
     """Move each factor snapshot forward by ``lag`` trading sessions."""
 
+    return _lag_frame(
+        factor,
+        lag=lag,
+        trading_sessions=trading_sessions,
+        value_columns=("factor",),
+    )
+
+
+def _lag_frame(
+    frame: pl.DataFrame,
+    *,
+    lag: int,
+    trading_sessions: pl.DataFrame,
+    value_columns: tuple[str, ...],
+) -> pl.DataFrame:
+    """Move a keyed snapshot frame forward by trading sessions."""
+
     if lag <= 0:
-        return factor.sort([TIME, ASSET_ID])
+        return frame.select(TIME, ASSET_ID, *value_columns).sort([TIME, ASSET_ID])
     sessions = _trading_sessions(trading_sessions).with_row_index("_session_index")
     target_times = sessions.select(
         (pl.col("_session_index") - lag).alias("_session_index"),
         pl.col(TIME).alias("_lagged_time"),
     )
     return (
-        factor.join(sessions, on=TIME, how="inner")
+        frame.join(sessions, on=TIME, how="inner")
         .join(target_times, on="_session_index", how="inner")
         .drop(TIME, "_session_index")
         .rename({"_lagged_time": TIME})
-        .select(TIME, ASSET_ID, "factor")
+        .select(TIME, ASSET_ID, *value_columns)
         .sort([TIME, ASSET_ID])
     )
 
@@ -1427,44 +1439,36 @@ def _lag_outputs(
                 spread_quantile_weights(lagged, quantiles=config.quantiles),
             )
         )
-
+    batch_inputs = {
+        f"{portfolio}:{lag}": weights
+        for portfolio, lagged_weights in portfolio_weights.items()
+        for lag, weights in lagged_weights
+        if not weights.is_empty()
+        and not (lag == 0 and lag_zero and lag_zero.get(portfolio) is not None)
+    }
+    execution_keys = (
+        resolved_forward_returns.select(TIME, ASSET_ID)
+        .unique()
+        .sort([ASSET_ID, TIME])
+    )
+    batch_results = (
+        _run_sparse_compact_backtests(
+            batch_inputs,
+            prices,
+            resolved_forward_returns,
+            config=config,
+            execution_availability=resolved_availability,
+            execution_availability_validated=True,
+            execution_keys=execution_keys,
+        )
+        if batch_inputs
+        else {}
+    )
     for portfolio, lagged_weights in portfolio_weights.items():
-        nonempty_weights = [
-            weights for _, weights in lagged_weights if not weights.is_empty()
-        ]
-        active_market = (
-            None
-            if not nonempty_weights
-            else _active_market_inputs(
-                pl.concat(nonempty_weights),
-                prices,
-                resolved_forward_returns,
-                resolved_availability,
-            )
-        )
-        execution_keys = (
-            None
-            if active_market is None
-            else active_market[1]
-            .select(TIME, ASSET_ID)
-            .unique()
-            .sort([ASSET_ID, TIME])
-        )
         for lag, weights in lagged_weights:
             backtest = lag_zero.get(portfolio) if lag == 0 and lag_zero else None
-            if backtest is None and weights.height and active_market is not None:
-                try:
-                    backtest = _compact_backtest_weight_frame_with_active_market(
-                        weights,
-                        active_market[0],
-                        active_market[1],
-                        config=config,
-                        execution_availability=active_market[2],
-                        execution_availability_validated=True,
-                        execution_keys=execution_keys,
-                    )
-                except InputValidationError:
-                    backtest = None
+            if backtest is None and weights.height:
+                backtest = batch_results.get(f"{portfolio}:{lag}")
             row: dict[str, object] = {
                 "lag": lag,
                 "portfolio": portfolio,

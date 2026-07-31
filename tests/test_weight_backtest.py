@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from datetime import date
 
 import polars as pl
@@ -8,6 +10,7 @@ import pytest
 from bagelquant_bt import BacktestConfig, TransactionCostConfig, run_weight_backtest
 from bagelquant_bt.engine import _apply_execution_availability
 from bagelquant_bt.exceptions import InputValidationError
+from bagelquant_bt.results import _DeferredPortfolioFrame
 
 
 def test_weight_backtest_returns_polars_result_frames() -> None:
@@ -43,9 +46,73 @@ def test_weight_backtest_returns_polars_result_frames() -> None:
     assert result.transaction_costs.data["total_fee"].sum() > 0
     assert result.summary.gross_sharpe != result.summary.net_sharpe
     assert result.summary.gross_max_drawdown >= result.summary.net_max_drawdown
+
+
+def test_weight_frames_materialize_once_on_first_access() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"] * 2,
+            "asset_id": ["a"] * 3 + ["b"] * 3,
+            "price": [10.0, 11.0, 12.0, 20.0, 20.0, 21.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "b"],
+            "weight": [1.0, 0.5],
+        }
+    )
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=100_000),
+    )
+
+    assert isinstance(
+        object.__getattribute__(result, "weights"), _DeferredPortfolioFrame
+    )
+    assert isinstance(
+        object.__getattribute__(result, "target_weights"),
+        _DeferredPortfolioFrame,
+    )
+    assert "weights=<deferred>" in repr(result)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        materialized = list(executor.map(lambda _: result.weights, range(2)))
+    assert materialized[0] is materialized[1]
+    assert materialized[0] is result.weights
+    assert isinstance(result.weights, pl.DataFrame)
+    assert isinstance(asdict(result)["target_weights"], pl.DataFrame)
     assert result.summary.sharpe == result.summary.net_sharpe
     assert result.summary.max_drawdown == result.summary.net_max_drawdown
     assert result.performance.columns == ["metric", "gross", "net"]
+
+
+def test_zero_weight_portfolio_preserves_zero_path() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["a", "a", "a"],
+            "price": [10.0, 11.0, 12.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {"time": ["2024-01-01"], "asset_id": ["a"], "weight": [0.0]}
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(initial_capital=10_000),
+    )
+
+    assert result.returns.select("gross_return", "net_return").to_dicts() == [
+        {"gross_return": 0.0, "net_return": 0.0},
+        {"gross_return": 0.0, "net_return": 0.0},
+    ]
+    assert result.weights.get_column("weight").to_list() == [0.0, 0.0]
+    assert result.execution_event_count == 0
     assert "sharpe" in result.performance["metric"].to_list()
 
 

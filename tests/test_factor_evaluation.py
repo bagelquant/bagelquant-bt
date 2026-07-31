@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 from datetime import date
 
 import polars as pl
@@ -15,6 +16,7 @@ from bagelquant_bt import (
 )
 from bagelquant_bt.engine import (
     _legacy_compact_backtest_weight_frame_with_active_market,
+    _run_sparse_compact_backtests,
 )
 from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.factor import (
@@ -184,9 +186,16 @@ def test_batched_quantiles_match_sequential_portfolios(
     ).select("time", "quantile", "return")
 
     expected_frames = []
-    for label, weights in quantile_equal_weights(
-        factor, quantiles=2
-    ).items():
+    weight_frames = quantile_equal_weights(factor, quantiles=2)
+    batched = _run_sparse_compact_backtests(
+        weight_frames,
+        market.prices,
+        market.forward_returns,
+        config=config,
+        execution_availability=availability,
+        execution_availability_validated=False,
+    )
+    for label, weights in weight_frames.items():
         backtest = _legacy_compact_backtest_weight_frame_with_active_market(
             weights,
             market.prices,
@@ -195,6 +204,24 @@ def test_batched_quantiles_match_sequential_portfolios(
             execution_availability=availability,
             execution_availability_validated=False,
         )
+        assert_frame_equal(
+            batched[label].returns,
+            backtest.returns,
+            check_exact=False,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        assert_frame_equal(
+            batched[label].value,
+            backtest.value,
+            check_exact=False,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        for field, expected_value in asdict(backtest.summary).items():
+            assert getattr(batched[label].summary, field) == pytest.approx(
+                expected_value, rel=1e-12, abs=1e-12, nan_ok=True
+            )
         expected_frames.append(
             backtest.returns.select(
                 "time",
@@ -212,6 +239,87 @@ def test_batched_quantiles_match_sequential_portfolios(
     )
 
 
+def test_sparse_batch_matches_reference_across_listing_and_price_gaps() -> None:
+    times = [date(2024, 1, day) for day in range(1, 7)]
+    prices = pl.DataFrame(
+        {
+            "time": [
+                *times,
+                times[1],
+                times[3],
+                times[4],
+                times[5],
+                *times[:4],
+            ],
+            "asset_id": [*["a"] * 6, *["b"] * 4, *["c"] * 4],
+            "price": [
+                100.0,
+                101.0,
+                102.0,
+                103.0,
+                104.0,
+                105.0,
+                50.0,
+                55.0,
+                56.0,
+                57.0,
+                80.0,
+                79.0,
+                78.0,
+                77.0,
+            ],
+        }
+    )
+    weight_frames = {
+        "gap_exit": pl.DataFrame(
+            {
+                "time": [times[0], times[1], times[2], times[4]],
+                "asset_id": ["a", "b", "a", "b"],
+                "weight": [1.0, 1.0, 1.0, 1.0],
+            }
+        ),
+        "delisting": pl.DataFrame(
+            {
+                "time": [times[0], times[2], times[4]],
+                "asset_id": ["c", "a", "a"],
+                "weight": [1.0, 1.0, 1.0],
+            }
+        ),
+    }
+    market = prepare_factor_market_data(prices)
+    config = BacktestConfig(initial_capital=100_000)
+
+    actual = _run_sparse_compact_backtests(
+        weight_frames,
+        market.prices,
+        market.forward_returns,
+        config=config,
+        execution_availability=None,
+        execution_availability_validated=True,
+    )
+
+    for label, weights in weight_frames.items():
+        expected = _legacy_compact_backtest_weight_frame_with_active_market(
+            weights,
+            market.prices,
+            market.forward_returns,
+            config=config,
+            execution_availability=None,
+            execution_availability_validated=True,
+        )
+        for actual_frame, expected_frame in (
+            (actual[label].returns, expected.returns),
+            (actual[label].value, expected.value),
+            (actual[label].turnover, expected.turnover),
+            (actual[label].costs.data, expected.costs.data),
+        ):
+            assert_frame_equal(
+                actual_frame,
+                expected_frame,
+                check_exact=False,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
 def test_prepared_signal_returns_validate_schedule_and_price_keys() -> None:
     prices = pl.DataFrame(
         {

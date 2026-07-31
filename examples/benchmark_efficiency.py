@@ -43,12 +43,15 @@ CASES = (
 class BenchmarkMeasurement:
     case: str
     data_seconds: float
+    data_peak_rss_mb: float
     compute_seconds: float
     peak_rss_mb: float
     rows: int
     segments: int = 1
     single_seconds: float = 0.0
     segmented_seconds: float = 0.0
+    materialization_seconds: float = 0.0
+    materialized_peak_rss_mb: float = 0.0
 
 
 def _peak_rss_mb() -> float:
@@ -146,6 +149,7 @@ def _factor_case(
             )
         )
     data_seconds = time.perf_counter() - data_started
+    data_peak_rss_mb = _peak_rss_mb()
 
     compute_started = time.perf_counter()
     result = run_factor_evaluation(
@@ -160,12 +164,32 @@ def _factor_case(
         execution_availability=availability,
     )
     compute_seconds = time.perf_counter() - compute_started
+    compute_peak_rss = _peak_rss_mb()
+    materialize_started = time.perf_counter()
+    _ = (
+        result.top_n_backtest.weights.height,
+        result.top_n_backtest.target_weights.height,
+        (
+            0
+            if result.spread_backtest is None
+            else result.spread_backtest.weights.height
+        ),
+        (
+            0
+            if result.spread_backtest is None
+            else result.spread_backtest.target_weights.height
+        ),
+    )
+    materialization_seconds = time.perf_counter() - materialize_started
     return BenchmarkMeasurement(
         case=case,
         data_seconds=data_seconds,
+        data_peak_rss_mb=data_peak_rss_mb,
         compute_seconds=compute_seconds,
-        peak_rss_mb=_peak_rss_mb(),
+        peak_rss_mb=compute_peak_rss,
         rows=result.factor.height,
+        materialization_seconds=materialization_seconds,
+        materialized_peak_rss_mb=_peak_rss_mb(),
     )
 
 
@@ -186,6 +210,7 @@ def _portfolio_path_case() -> BenchmarkMeasurement:
     )
     config = BacktestConfig(initial_capital=1_000_000, top_n=50)
     data_seconds = time.perf_counter() - data_started
+    data_peak_rss_mb = _peak_rss_mb()
 
     compute_started = time.perf_counter()
     materialize_portfolio_path(
@@ -235,12 +260,14 @@ def _portfolio_path_case() -> BenchmarkMeasurement:
     return BenchmarkMeasurement(
         case="portfolio-path",
         data_seconds=data_seconds,
+        data_peak_rss_mb=data_peak_rss_mb,
         compute_seconds=single_seconds + segmented_seconds,
         peak_rss_mb=_peak_rss_mb(),
         rows=prices.height,
         segments=len(rebalance_times),
         single_seconds=single_seconds,
         segmented_seconds=segmented_seconds,
+        materialized_peak_rss_mb=_peak_rss_mb(),
     )
 
 
@@ -309,6 +336,9 @@ def main() -> None:
             "median_data_seconds": statistics.median(
                 item.data_seconds for item in measurements
             ),
+            "max_data_peak_rss_mb": max(
+                item.data_peak_rss_mb for item in measurements
+            ),
             "median_compute_seconds": statistics.median(
                 item.compute_seconds for item in measurements
             ),
@@ -318,6 +348,13 @@ def main() -> None:
             "rows": measurements[0].rows,
             "segments": measurements[0].segments,
         }
+        if case != "portfolio-path":
+            summary["median_materialization_seconds"] = statistics.median(
+                item.materialization_seconds for item in measurements
+            )
+            summary["max_materialized_peak_rss_mb"] = max(
+                item.materialized_peak_rss_mb for item in measurements
+            )
         if case == "portfolio-path":
             summary["median_single_seconds"] = statistics.median(
                 item.single_seconds for item in measurements
