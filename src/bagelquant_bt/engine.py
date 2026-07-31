@@ -26,9 +26,11 @@ from .results import (
     BacktestResult,
     PerformanceSummary,
     TransactionCostBreakdown,
+    _DeferredMarketKeys,
     _DeferredPortfolioFrame,
 )
 from .returns import (
+    _empty_unexecuted_weight_keys,
     _expand_portfolio_weight_data,
     _prepare_price_data,
     portfolio_returns,
@@ -134,12 +136,13 @@ def _backtest_weight_frame_with_forward_returns(
         )["portfolio"]
         if compact.state is None:
             raise AssertionError("sparse portfolio state is required")
+        deferred_market_keys = _DeferredMarketKeys(execution_keys)
         result_weights = _DeferredPortfolioFrame(
-            market_keys=execution_keys,
+            market_keys=deferred_market_keys,
             state_events=compact.state.executable_events,
         )
         result_targets = _DeferredPortfolioFrame(
-            market_keys=execution_keys,
+            market_keys=deferred_market_keys,
             state_events=compact.state.target_events,
         )
         result_returns = compact.returns
@@ -150,6 +153,7 @@ def _backtest_weight_frame_with_forward_returns(
         result_performance = compact.performance
         result_blocks = compact.state.execution_blocks
         result_event_count = compact.state.execution_event_count
+        result_unexecuted = compact.state.unexecuted_weight_keys
     else:
         core = _run_weight_backtest_core(
             weights,
@@ -173,6 +177,7 @@ def _backtest_weight_frame_with_forward_returns(
         result_performance = core.performance
         result_blocks = core.execution_blocks
         result_event_count = core.execution_event_count
+        result_unexecuted = unexecuted_weight_keys(weights, prices)
     return BacktestResult(
         weights=result_weights,
         asset_returns=forward_returns,
@@ -198,7 +203,7 @@ def _backtest_weight_frame_with_forward_returns(
             if price_gaps is None
             else price_gaps.sort([TIME, ASSET_ID])
         ),
-        unexecuted_weight_keys=unexecuted_weight_keys(weights, prices),
+        unexecuted_weight_keys=result_unexecuted,
         execution_blocks=result_blocks,
         target_weights=result_targets,
         execution_event_count=result_event_count,
@@ -214,6 +219,8 @@ def _backtest_weight_frames_with_forward_returns(
     price_gaps: pl.DataFrame | None,
     execution_availability: pl.DataFrame | None,
     execution_availability_validated: bool,
+    market_context: _SparseMarketContext | None = None,
+    precomputed_compact_results: Mapping[str, _CompactBacktestResult] | None = None,
 ) -> dict[str, BacktestResult]:
     """Build complete results for several portfolios from one batch scan."""
 
@@ -224,35 +231,47 @@ def _backtest_weight_frames_with_forward_returns(
     }
     if not nonempty:
         return {}
-    combined_weights = pl.concat(list(nonempty.values()))
-    active_prices, active_returns, active_availability = _active_market_inputs(
-        combined_weights,
-        prices,
-        forward_returns,
-        execution_availability,
-    )
-    execution_keys = (
-        active_returns.select(TIME, ASSET_ID)
-        .unique()
-        .sort([ASSET_ID, TIME])
-    )
-    compact_results = _run_sparse_compact_backtests(
-        nonempty,
-        active_prices,
-        active_returns,
-        config=config,
-        execution_availability=active_availability,
-        execution_availability_validated=execution_availability_validated,
-        execution_keys=execution_keys,
+    if market_context is None:
+        combined_weights = pl.concat(list(nonempty.values()))
+        active_prices, active_returns, active_availability = _active_market_inputs(
+            combined_weights,
+            prices,
+            forward_returns,
+            execution_availability,
+        )
+        execution_keys = (
+            active_returns.select(TIME, ASSET_ID)
+            .unique()
+            .sort([ASSET_ID, TIME])
+        )
+    else:
+        active_prices = prices
+        active_returns = forward_returns
+        active_availability = execution_availability
+        execution_keys = market_context.execution_keys
+    compact_results = (
+        dict(precomputed_compact_results)
+        if precomputed_compact_results is not None
+        else _run_sparse_compact_backtests(
+            nonempty,
+            active_prices,
+            active_returns,
+            config=config,
+            execution_availability=active_availability,
+            execution_availability_validated=execution_availability_validated,
+            execution_keys=execution_keys,
+            market_context=market_context,
+        )
     )
     results: dict[str, BacktestResult] = {}
+    deferred_market_keys = _DeferredMarketKeys(execution_keys)
     for label, weights in nonempty.items():
         compact = compact_results[label]
         if compact.state is None:
             raise AssertionError("sparse portfolio state is required")
         results[label] = BacktestResult(
             weights=_DeferredPortfolioFrame(
-                market_keys=execution_keys,
+                market_keys=deferred_market_keys,
                 state_events=compact.state.executable_events,
             ),
             asset_returns=forward_returns,
@@ -274,10 +293,10 @@ def _backtest_weight_frames_with_forward_returns(
                 if price_gaps is None
                 else price_gaps.sort([TIME, ASSET_ID])
             ),
-            unexecuted_weight_keys=unexecuted_weight_keys(weights, prices),
+            unexecuted_weight_keys=compact.state.unexecuted_weight_keys,
             execution_blocks=compact.state.execution_blocks,
             target_weights=_DeferredPortfolioFrame(
-                market_keys=execution_keys,
+                market_keys=deferred_market_keys,
                 state_events=compact.state.target_events,
             ),
             execution_event_count=compact.state.execution_event_count,
@@ -307,6 +326,33 @@ class _SparsePortfolioState:
     execution_blocks: pl.DataFrame
     execution_event_count: int
     first_time: object
+    unexecuted_weight_keys: pl.DataFrame
+
+
+@dataclass(frozen=True, slots=True)
+class _SparsePortfolioTargets:
+    """Sparse state inputs plus absent-price rebalance diagnostics."""
+
+    target_events: pl.DataFrame
+    seed_targets: pl.DataFrame
+    unexecuted_weight_keys: pl.DataFrame
+
+
+@dataclass(frozen=True, slots=True)
+class _SparseMarketContext:
+    """Read-only integer market representation reused by portfolio families."""
+
+    market_times: pl.DataFrame
+    market_assets: pl.DataFrame
+    market_ordinals: np.ndarray
+    asset_values: pl.Series
+    asset_enum: pl.DataType
+    observed: np.ndarray
+    execution_keys: pl.DataFrame
+    execution_event_keys: pl.DataFrame
+    return_sessions: pl.DataFrame
+    return_assets: pl.DataFrame
+    return_matrix: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +367,92 @@ class _BacktestCoreResult:
     performance: pl.DataFrame
     execution_blocks: pl.DataFrame
     execution_event_count: int
+
+
+def _prepare_sparse_market_context(
+    prices: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    execution_availability: pl.DataFrame | None,
+    *,
+    execution_keys: pl.DataFrame | None = None,
+) -> _SparseMarketContext:
+    """Encode stable market axes and rule events once for batch evaluation."""
+
+    market_times = prices.get_column(TIME).unique(maintain_order=True).to_frame()
+    market_assets = (
+        prices.get_column(ASSET_ID).unique(maintain_order=True).to_frame()
+    )
+    market_ordinals = market_times.get_column(TIME).cast(pl.Int32).to_numpy()
+    asset_values = market_assets.get_column(ASSET_ID)
+    asset_enum = pl.Enum(asset_values.to_list())
+    price_session_indices = np.searchsorted(
+        market_ordinals,
+        prices.get_column(TIME).cast(pl.Int32).to_numpy(),
+    )
+    price_asset_indices = (
+        prices.get_column(ASSET_ID).cast(asset_enum).to_physical().to_numpy()
+    )
+    observed = np.zeros(
+        (market_times.height, market_assets.height),
+        dtype=np.bool_,
+    )
+    observed[price_session_indices, price_asset_indices] = True
+
+    resolved_execution_keys = (
+        forward_returns.select(TIME, ASSET_ID)
+        if execution_keys is None
+        else execution_keys
+    )
+    return_sessions = forward_returns.get_column(TIME).unique(
+        maintain_order=True
+    ).to_frame().with_row_index("_session_index")
+    return_assets = (
+        forward_returns.get_column(ASSET_ID)
+        .unique(maintain_order=True)
+        .to_frame()
+        .with_row_index("_asset_index")
+    )
+    return_matrix = np.zeros(
+        (return_sessions.height, return_assets.height),
+        dtype=np.float64,
+    )
+    return_session_indices = np.searchsorted(
+        return_sessions.get_column(TIME).cast(pl.Int32).to_numpy(),
+        forward_returns.get_column(TIME).cast(pl.Int32).to_numpy(),
+    )
+    return_asset_indices = (
+        forward_returns.get_column(ASSET_ID)
+        .cast(pl.Enum(return_assets.get_column(ASSET_ID).to_list()))
+        .to_physical()
+        .to_numpy()
+    )
+    return_present = np.zeros(return_matrix.shape, dtype=np.bool_)
+    return_matrix[
+        return_session_indices,
+        return_asset_indices,
+    ] = forward_returns.get_column("forward_return").to_numpy()
+    return_present[return_session_indices, return_asset_indices] = True
+    execution_event_keys = _execution_rule_event_keys(
+        execution_availability,
+        return_sessions.get_column(TIME).cast(pl.Int32).to_numpy(),
+        return_assets.get_column(ASSET_ID),
+        return_present,
+    )
+    for values in (market_ordinals, observed, return_matrix):
+        values.setflags(write=False)
+    return _SparseMarketContext(
+        market_times=market_times,
+        market_assets=market_assets,
+        market_ordinals=market_ordinals,
+        asset_values=asset_values,
+        asset_enum=asset_enum,
+        observed=observed,
+        execution_keys=resolved_execution_keys,
+        execution_event_keys=execution_event_keys,
+        return_sessions=return_sessions,
+        return_assets=return_assets,
+        return_matrix=return_matrix,
+    )
 
 
 def _compact_backtest_weight_frame_with_forward_returns(
@@ -409,6 +541,7 @@ def _run_sparse_compact_backtests(
     execution_availability: pl.DataFrame | None,
     execution_availability_validated: bool,
     execution_keys: pl.DataFrame | None = None,
+    market_context: _SparseMarketContext | None = None,
 ) -> dict[str, _CompactBacktestResult]:
     """Evaluate several sparse portfolios in one market-state scan."""
 
@@ -424,61 +557,46 @@ def _run_sparse_compact_backtests(
         if execution_availability is None or execution_availability_validated
         else validate_execution_availability(execution_availability)
     )
-    market_keys = (
-        forward_returns.select(TIME, ASSET_ID)
-        .unique()
-        .sort([ASSET_ID, TIME])
-        if execution_keys is None
-        else execution_keys
-    )
-    execution_event_keys = _execution_rule_event_keys(
+    context = market_context or _prepare_sparse_market_context(
+        prices,
+        forward_returns,
         resolved_availability,
-        market_keys,
+        execution_keys=execution_keys,
     )
-    portfolio_targets = _batch_portfolio_targets(nonempty, prices)
+    portfolio_targets = _batch_portfolio_targets(nonempty, context)
     states = {
         label: _resolve_sparse_portfolio_state_from_targets(
-            portfolio_targets[label][0],
-            portfolio_targets[label][1],
+            portfolio_targets[label].target_events,
+            portfolio_targets[label].seed_targets,
             resolved_availability,
-            execution_event_keys=execution_event_keys,
+            execution_event_keys=context.execution_event_keys,
             retry_blocked=config.retry_blocked_orders,
             first_time=weights.get_column(TIME).min(),
+            unexecuted_weight_keys=portfolio_targets[label].unexecuted_weight_keys,
         )
         for label, weights in nonempty.items()
     }
     return _calculate_sparse_portfolio_batch(
         states,
-        forward_returns,
+        context,
         config=config,
     )
 
 
 def _batch_portfolio_targets(
     weight_frames: Mapping[str, pl.DataFrame],
-    prices: pl.DataFrame,
-) -> dict[str, tuple[pl.DataFrame, pl.DataFrame]]:
+    market_context: _SparseMarketContext,
+) -> dict[str, _SparsePortfolioTargets]:
     """Build target changes and first tradable states for all portfolios."""
 
-    market_times = prices.select(TIME).unique().sort(TIME)
-    market_assets = prices.select(ASSET_ID).unique().sort(ASSET_ID)
-    market_ordinals = market_times.get_column(TIME).cast(pl.Int32).to_numpy()
-    asset_values = market_assets.get_column(ASSET_ID)
-    asset_enum = pl.Enum(asset_values.to_list())
-    price_session_indices = np.searchsorted(
-        market_ordinals,
-        prices.get_column(TIME).cast(pl.Int32).to_numpy(),
-    )
-    price_asset_indices = (
-        prices.get_column(ASSET_ID).cast(asset_enum).to_physical().to_numpy()
-    )
-    observed = np.zeros(
-        (market_times.height, market_assets.height),
-        dtype=np.bool_,
-    )
-    observed[price_session_indices, price_asset_indices] = True
+    market_times = market_context.market_times
+    market_assets = market_context.market_assets
+    market_ordinals = market_context.market_ordinals
+    asset_values = market_context.asset_values
+    asset_enum = market_context.asset_enum
+    observed = market_context.observed
 
-    results: dict[str, tuple[pl.DataFrame, pl.DataFrame]] = {}
+    results: dict[str, _SparsePortfolioTargets] = {}
     for label, weights in weight_frames.items():
         timed_weights = weights.join(market_times, on=TIME, how="inner")
         snapshot_ordinals = (
@@ -487,7 +605,11 @@ def _batch_portfolio_targets(
         snapshot_sessions = np.searchsorted(market_ordinals, snapshot_ordinals)
         if not len(snapshot_sessions):
             empty = weights.head(0).select(TIME, ASSET_ID, "weight")
-            results[label] = (empty, empty)
+            results[label] = _SparsePortfolioTargets(
+                empty,
+                empty,
+                _empty_unexecuted_weight_keys(),
+            )
             continue
         asset_weights = timed_weights.join(market_assets, on=ASSET_ID, how="inner")
         weight_sessions = np.searchsorted(
@@ -506,6 +628,76 @@ def _batch_portfolio_targets(
         actual_assets = weight_assets[tradable_mask]
 
         snapshot_observed = observed[snapshot_sessions]
+        weight_snapshot_positions = np.searchsorted(
+            snapshot_sessions,
+            weight_sessions,
+        )
+        weight_values = asset_weights.get_column("weight").to_numpy()
+        weight_order = np.lexsort((weight_assets, weight_snapshot_positions))
+        weight_snapshot_positions = weight_snapshot_positions[weight_order]
+        ordered_weight_assets = weight_assets[weight_order]
+        ordered_weight_values = weight_values[weight_order]
+        retained_weights = np.zeros(market_assets.height, dtype=np.float64)
+        desired_weights = np.zeros_like(retained_weights)
+        missing_sessions: list[np.ndarray] = []
+        missing_assets: list[np.ndarray] = []
+        missing_targets: list[np.ndarray] = []
+        missing_retained: list[np.ndarray] = []
+        weight_offset = 0
+        for snapshot_position, snapshot_session in enumerate(snapshot_sessions):
+            desired_weights.fill(0.0)
+            weight_end = np.searchsorted(
+                weight_snapshot_positions,
+                snapshot_position,
+                side="right",
+            )
+            selected_assets = ordered_weight_assets[weight_offset:weight_end]
+            desired_weights[selected_assets] = ordered_weight_values[
+                weight_offset:weight_end
+            ]
+            absent_changes = np.flatnonzero(
+                ~snapshot_observed[snapshot_position]
+                & (desired_weights != retained_weights)
+            )
+            if len(absent_changes):
+                missing_sessions.append(
+                    np.full(
+                        len(absent_changes),
+                        snapshot_session,
+                        dtype=np.int64,
+                    )
+                )
+                missing_assets.append(absent_changes)
+                missing_targets.append(desired_weights[absent_changes].copy())
+                missing_retained.append(retained_weights[absent_changes].copy())
+            observed_assets = snapshot_observed[snapshot_position]
+            retained_weights[observed_assets] = desired_weights[observed_assets]
+            weight_offset = weight_end
+        if missing_sessions:
+            missing_session_indices = np.concatenate(missing_sessions)
+            missing_asset_indices = np.concatenate(missing_assets)
+            absent_price_targets = pl.DataFrame(
+                {
+                    TIME: pl.Series(
+                        market_ordinals[missing_session_indices],
+                        dtype=pl.Int32,
+                    ).cast(pl.Date),
+                    ASSET_ID: asset_values.gather(
+                        pl.Series(missing_asset_indices.astype(np.uint32))
+                    ),
+                    "target_weight": pl.Series(
+                        np.concatenate(missing_targets),
+                        dtype=pl.Float64,
+                    ),
+                    "retained_weight": pl.Series(
+                        np.concatenate(missing_retained),
+                        dtype=pl.Float64,
+                    ),
+                }
+            ).sort([TIME, ASSET_ID])
+        else:
+            absent_price_targets = _empty_unexecuted_weight_keys()
+
         next_positions = np.full(snapshot_observed.shape, -1, dtype=np.int32)
         next_observed = np.full(market_assets.height, -1, dtype=np.int32)
         for position in range(len(snapshot_sessions) - 1, -1, -1):
@@ -601,7 +793,11 @@ def _batch_portfolio_targets(
             .select(TIME, ASSET_ID, "weight")
             .sort([TIME, ASSET_ID])
         )
-        results[label] = (target_events, seed_targets)
+        results[label] = _SparsePortfolioTargets(
+            target_events,
+            seed_targets,
+            absent_price_targets,
+        )
     return results
 
 
@@ -613,6 +809,7 @@ def _resolve_sparse_portfolio_state_from_targets(
     execution_event_keys: pl.DataFrame,
     retry_blocked: bool,
     first_time: object,
+    unexecuted_weight_keys: pl.DataFrame,
 ) -> _SparsePortfolioState:
     if seed_targets.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
@@ -629,6 +826,7 @@ def _resolve_sparse_portfolio_state_from_targets(
             execution_blocks=blocks,
             execution_event_count=0,
             first_time=first_time,
+            unexecuted_weight_keys=unexecuted_weight_keys,
         )
     sparse_desired = _sparse_execution_desired_weights(
         target_events,
@@ -664,50 +862,21 @@ def _resolve_sparse_portfolio_state_from_targets(
         execution_blocks=blocks,
         execution_event_count=event_count,
         first_time=first_time,
+        unexecuted_weight_keys=unexecuted_weight_keys,
     )
 
 
 def _calculate_sparse_portfolio_batch(
     states: Mapping[str, _SparsePortfolioState],
-    forward_returns: pl.DataFrame,
+    market_context: _SparseMarketContext,
     *,
     config: BacktestConfig,
 ) -> dict[str, _CompactBacktestResult]:
     labels = list(states)
     portfolio_count = len(labels)
-    session_lookup = (
-        forward_returns.select(TIME)
-        .unique()
-        .sort(TIME)
-        .with_row_index("_session_index")
-    )
-    asset_lookup = (
-        forward_returns.select(ASSET_ID)
-        .unique()
-        .sort(ASSET_ID)
-        .with_row_index("_asset_index")
-    )
-    return_matrix = np.zeros(
-        (session_lookup.height, asset_lookup.height),
-        dtype=np.float64,
-    )
-    session_ordinals = (
-        session_lookup.get_column(TIME).cast(pl.Int32).to_numpy()
-    )
-    return_session_indices = np.searchsorted(
-        session_ordinals,
-        forward_returns.get_column(TIME).cast(pl.Int32).to_numpy(),
-    )
-    return_asset_indices = (
-        forward_returns.get_column(ASSET_ID)
-        .cast(pl.Enum(asset_lookup.get_column(ASSET_ID).to_list()))
-        .to_physical()
-        .to_numpy()
-    )
-    return_matrix[
-        return_session_indices,
-        return_asset_indices,
-    ] = forward_returns.get_column("forward_return").to_numpy()
+    session_lookup = market_context.return_sessions
+    asset_lookup = market_context.return_assets
+    return_matrix = market_context.return_matrix
 
     labeled_events = []
     for portfolio_index, label in enumerate(labels):
@@ -893,27 +1062,15 @@ def _calculate_sparse_portfolio_batch(
 
 def _execution_rule_event_keys(
     execution_availability: pl.DataFrame | None,
-    market_keys: pl.DataFrame,
+    session_ordinals: np.ndarray,
+    asset_values: pl.Series,
+    present: np.ndarray,
 ) -> pl.DataFrame:
     if execution_availability is None or execution_availability.is_empty():
-        return market_keys.head(0).select(TIME, ASSET_ID)
-    market_assets = market_keys.select(ASSET_ID).unique().sort(ASSET_ID)
-    asset_values = market_assets.get_column(ASSET_ID)
+        return pl.DataFrame(schema={TIME: pl.Date, ASSET_ID: pl.String})
     asset_enum = pl.Enum(asset_values.to_list())
-    market_asset_indices = (
-        market_keys.get_column(ASSET_ID)
-        .cast(asset_enum)
-        .to_physical()
-        .to_numpy()
-    )
-    market_ordinals = market_keys.get_column(TIME).cast(pl.Int32).to_numpy()
-    counts = np.bincount(
-        market_asset_indices,
-        minlength=market_assets.height,
-    )
-    offsets = np.concatenate(([0], np.cumsum(counts)))
     rules = execution_availability.select(TIME, ASSET_ID).join(
-        market_assets,
+        asset_values.to_frame(),
         on=ASSET_ID,
         how="inner",
     )
@@ -924,23 +1081,31 @@ def _execution_rule_event_keys(
         .to_numpy()
     )
     rule_ordinals = rules.get_column(TIME).cast(pl.Int32).to_numpy()
+    rule_sessions = np.searchsorted(session_ordinals, rule_ordinals)
     event_ordinals: list[int] = []
     event_assets: list[int] = []
-    for rule_ordinal, asset_index in zip(
+    for rule_ordinal, session_index, asset_index in zip(
         rule_ordinals,
+        rule_sessions,
         rule_assets,
         strict=True,
     ):
-        start = int(offsets[asset_index])
-        end = int(offsets[asset_index + 1])
-        asset_times = market_ordinals[start:end]
-        position = int(np.searchsorted(asset_times, rule_ordinal))
-        if position >= len(asset_times) or asset_times[position] != rule_ordinal:
+        if (
+            session_index >= len(session_ordinals)
+            or session_ordinals[session_index] != rule_ordinal
+            or not present[session_index, asset_index]
+        ):
             continue
         event_ordinals.append(int(rule_ordinal))
         event_assets.append(int(asset_index))
-        if position + 1 < len(asset_times):
-            event_ordinals.append(int(asset_times[position + 1]))
+        next_session = int(session_index) + 1
+        while (
+            next_session < len(session_ordinals)
+            and not present[next_session, asset_index]
+        ):
+            next_session += 1
+        if next_session < len(session_ordinals):
+            event_ordinals.append(int(session_ordinals[next_session]))
             event_assets.append(int(asset_index))
     return (
         pl.DataFrame(

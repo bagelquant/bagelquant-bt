@@ -12,10 +12,30 @@ from .inputs import ASSET_ID, TIME
 
 
 @dataclass(slots=True)
+class _DeferredMarketKeys:
+    """Thread-safe shared sort cache for deferred portfolio frames."""
+
+    frame: pl.DataFrame
+    _sorted: pl.DataFrame | None = field(default=None, init=False, repr=False)
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
+
+    def sorted(self) -> pl.DataFrame:
+        cached = self._sorted
+        if cached is not None:
+            return cached
+        with self._lock:
+            cached = self._sorted
+            if cached is None:
+                cached = self.frame.sort([ASSET_ID, TIME])
+                self._sorted = cached
+        return cached
+
+
+@dataclass(slots=True)
 class _DeferredPortfolioFrame:
     """Thread-safe, one-shot expansion of sparse portfolio state."""
 
-    market_keys: pl.DataFrame
+    market_keys: pl.DataFrame | _DeferredMarketKeys
     state_events: pl.DataFrame
     _cached: pl.DataFrame | None = field(default=None, init=False, repr=False)
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -36,8 +56,13 @@ class _DeferredPortfolioFrame:
                         ),
                         category=UserWarning,
                     )
+                    market_keys = (
+                        self.market_keys.sorted()
+                        if isinstance(self.market_keys, _DeferredMarketKeys)
+                        else self.market_keys.sort([ASSET_ID, TIME])
+                    )
                     cached = (
-                        self.market_keys.sort([ASSET_ID, TIME])
+                        market_keys
                         .join_asof(
                             self.state_events.sort([ASSET_ID, TIME]),
                             on=TIME,

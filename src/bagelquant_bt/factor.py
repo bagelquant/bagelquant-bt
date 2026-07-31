@@ -20,8 +20,11 @@ from .benchmarks import (
 from .config import BacktestConfig
 from .engine import (
     _backtest_weight_frames_with_forward_returns,
+    _CompactBacktestResult,
+    _prepare_sparse_market_context,
     _require_config,
     _run_sparse_compact_backtests,
+    _SparseMarketContext,
 )
 from .exceptions import InputValidationError
 from .inputs import (
@@ -174,31 +177,29 @@ def materialize_signal_diagnostics(
         if execution_availability is None
         else validate_execution_availability(execution_availability)
     )
+    market_context = _prepare_sparse_market_context(
+        prepared.prices,
+        prepared.forward_returns,
+        resolved_execution_availability,
+    )
     result: dict[str, pl.DataFrame] = {}
+    diagnostic_quantile_weights: dict[str, pl.DataFrame] = {}
     if include_quantiles or include_spread:
-        quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
+        all_quantile_weights = quantile_equal_weights(
             factor,
-            prepared.prices,
-            config=resolved_config,
             quantiles=resolved_config.quantiles,
-            forward_returns=prepared.forward_returns,
-            price_gaps=(
-                None
-                if prepared.price_data is None
-                else prepared.price_data.price_gaps
-            ),
-            execution_availability=resolved_execution_availability,
-            execution_availability_validated=True,
         )
-        if include_quantiles:
-            result["quantile_returns"] = quantile_returns
-        if include_spread:
-            result["spread_returns"] = _spread_returns(
-                quantile_returns,
-                resolved_config.quantiles,
-            ).rename({"spread_return": "return"})
+        requested_labels = (
+            tuple(all_quantile_weights)
+            if include_quantiles
+            else ("q1", f"q{resolved_config.quantiles}")
+        )
+        diagnostic_quantile_weights = {
+            label: all_quantile_weights[label] for label in requested_labels
+        }
+    compact_quantiles: dict[str, _CompactBacktestResult] = {}
     if include_lags:
-        lag_analysis, lag_returns = _lag_outputs(
+        lag_analysis, lag_returns, compact_quantiles = _lag_outputs(
             factor,
             prepared.prices,
             config=resolved_config,
@@ -211,9 +212,33 @@ def materialize_signal_diagnostics(
             ),
             execution_availability=resolved_execution_availability,
             execution_availability_validated=True,
+            market_context=market_context,
+            additional_weight_frames=diagnostic_quantile_weights,
         )
         result["lag_analysis"] = lag_analysis
         result["lag_returns"] = lag_returns
+    elif diagnostic_quantile_weights:
+        compact_quantiles = _run_sparse_compact_backtests(
+            diagnostic_quantile_weights,
+            prepared.prices,
+            prepared.forward_returns,
+            config=resolved_config,
+            execution_availability=resolved_execution_availability,
+            execution_availability_validated=True,
+            market_context=market_context,
+        )
+    if diagnostic_quantile_weights:
+        quantile_returns = _quantile_returns_from_compact_results(
+            diagnostic_quantile_weights,
+            compact_quantiles,
+        )
+        if include_quantiles:
+            result["quantile_returns"] = quantile_returns
+        if include_spread:
+            result["spread_returns"] = _spread_returns(
+                quantile_returns,
+                resolved_config.quantiles,
+            ).rename({"spread_return": "return"})
     return result
 
 
@@ -309,6 +334,11 @@ def evaluate_factor_frame(
     )
     if factor.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
+    market_context = _prepare_sparse_market_context(
+        aligned_prices,
+        forward_returns,
+        resolved_execution_availability,
+    )
 
     ic = information_coefficients(factor, metric_returns)
     ic_summary = summarize_ic(ic, annualization=config.resolved_ic_annualization)
@@ -320,33 +350,9 @@ def evaluate_factor_frame(
         if ic_std != 0 and not math.isnan(ic_std)
         else math.nan
     )
-    quantile_returns = _traded_factor_quantile_returns_with_forward_returns(
+    quantile_weights = quantile_equal_weights(
         factor,
-        aligned_prices,
-        config=config,
         quantiles=config.quantiles,
-        forward_returns=forward_returns,
-        price_gaps=price_data.price_gaps,
-        execution_availability=resolved_execution_availability,
-        execution_availability_validated=True,
-    )
-    spread_returns = _spread_returns(quantile_returns, config.quantiles)
-    lag_analysis, lag_returns = _lag_outputs(
-        factor,
-        aligned_prices,
-        config=config,
-        lags=FACTOR_LAGS,
-        forward_returns=forward_returns,
-        price_gaps=price_data.price_gaps,
-        execution_availability=resolved_execution_availability,
-        execution_availability_validated=True,
-    )
-    ic_decay = factor_ic_decay(
-        factor,
-        metric_returns,
-        trading_sessions=_trading_sessions(aligned_prices),
-        return_provider=lag_return_provider,
-        lags=FACTOR_LAGS,
     )
     top_n_weights = _policy_weights(
         factor,
@@ -359,6 +365,41 @@ def evaluate_factor_frame(
         factor,
         quantiles=config.quantiles,
     )
+    lag_analysis, lag_returns, primary_compact_results = _lag_outputs(
+        factor,
+        aligned_prices,
+        config=config,
+        lags=FACTOR_LAGS,
+        forward_returns=forward_returns,
+        price_gaps=price_data.price_gaps,
+        execution_availability=resolved_execution_availability,
+        execution_availability_validated=True,
+        market_context=market_context,
+        additional_weight_frames={
+            "top_n": top_n_weights,
+            **({"spread": spread_weights} if spread_weights.height else {}),
+            **{
+                f"quantile:{label}": weights
+                for label, weights in quantile_weights.items()
+            },
+        },
+    )
+    quantile_returns = _quantile_returns_from_compact_results(
+        quantile_weights,
+        {
+            label.removeprefix("quantile:"): compact
+            for label, compact in primary_compact_results.items()
+            if label.startswith("quantile:")
+        },
+    )
+    spread_returns = _spread_returns(quantile_returns, config.quantiles)
+    ic_decay = factor_ic_decay(
+        factor,
+        metric_returns,
+        trading_sessions=_trading_sessions(aligned_prices),
+        return_provider=lag_return_provider,
+        lags=FACTOR_LAGS,
+    )
     primary_backtests = _backtest_weight_frames_with_forward_returns(
         {
             "top_n": top_n_weights,
@@ -370,6 +411,8 @@ def evaluate_factor_frame(
         price_gaps=price_data.price_gaps,
         execution_availability=resolved_execution_availability,
         execution_availability_validated=True,
+        market_context=market_context,
+        precomputed_compact_results=primary_compact_results,
     )
     top_n_backtest = primary_backtests["top_n"]
     spread_backtest = primary_backtests.get("spread")
@@ -773,6 +816,54 @@ def _traded_factor_quantile_returns_with_forward_returns(
     )
 
 
+def _quantile_returns_from_compact_results(
+    quantile_weights: Mapping[str, pl.DataFrame],
+    compact_results: Mapping[str, _CompactBacktestResult],
+) -> pl.DataFrame:
+    """Restore the public quantile table from unified batch results."""
+
+    if not compact_results:
+        return pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                "quantile": pl.String,
+                "return": pl.Float64,
+                "cumulative_return": pl.Float64,
+            }
+        )
+    return_frames = [
+        compact_results[label].returns.select(
+            TIME,
+            pl.lit(label).alias("quantile"),
+            pl.col("gross_return").alias("return"),
+        )
+        for label in quantile_weights
+        if label in compact_results
+    ]
+    times = return_frames[0].select(TIME)
+    grid = times.join(
+        pl.DataFrame(
+            {"quantile": list(quantile_weights)},
+            schema={"quantile": pl.String},
+        ),
+        how="cross",
+    )
+    return (
+        grid.join(
+            pl.concat(return_frames),
+            on=[TIME, "quantile"],
+            how="left",
+        )
+        .with_columns(pl.col("return").fill_null(0.0))
+        .sort([TIME, "quantile"])
+        .with_columns(
+            ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
+                "cumulative_return"
+            )
+        )
+    )
+
+
 def _batched_quantile_gross_returns(
     quantile_weights: Mapping[str, pl.DataFrame],
     prices: pl.DataFrame,
@@ -1148,7 +1239,7 @@ def factor_lag_analysis(
 ) -> pl.DataFrame:
     """Backtest TOP N and spread signals delayed by trading sessions."""
 
-    analysis, _ = _lag_outputs(factor, prices, config=config, lags=lags)
+    analysis, _, _ = _lag_outputs(factor, prices, config=config, lags=lags)
     return analysis
 
 
@@ -1161,7 +1252,7 @@ def factor_lag_returns(
 ) -> pl.DataFrame:
     """Return cumulative returns for factor signals delayed by trading sessions."""
 
-    _, returns = _lag_outputs(factor, prices, config=config, lags=lags)
+    _, returns, _ = _lag_outputs(factor, prices, config=config, lags=lags)
     return returns
 
 
@@ -1237,6 +1328,13 @@ def _batched_factor_ic_decay(
         ).sort(["method", "lag"])
 
     sessions = trading_sessions.with_row_index("_session_index")
+    ranked_factor = factor.drop_nulls("factor").with_columns(
+        pl.col("factor")
+        .rank("average")
+        .over(TIME)
+        .alias("_source_factor_rank"),
+        pl.len().over(TIME).alias("_source_count"),
+    )
     lagged_parts: list[pl.DataFrame] = []
     chunk_size = len(lags) if factor.height <= 100_000 else 1
     for start in range(0, len(lags), chunk_size):
@@ -1249,8 +1347,8 @@ def _batched_factor_ic_decay(
             pl.col(TIME).alias("_lagged_time"),
             "lag",
         )
-        lagged_parts.append(
-            factor.lazy()
+        paired = (
+            ranked_factor.lazy()
             .join(sessions.lazy(), on=TIME, how="inner")
             .join(
                 lag_mapping,
@@ -1262,15 +1360,38 @@ def _batched_factor_ic_decay(
                 pl.col("_lagged_time").alias(TIME),
                 ASSET_ID,
                 "factor",
+                "_source_factor_rank",
+                "_source_count",
                 "lag",
             )
             .join(forward_returns.lazy(), on=[TIME, ASSET_ID], how="inner")
-            .drop_nulls(["factor", "forward_return"])
+            .drop_nulls("forward_return")
             .with_columns(
+                pl.len().over("lag", TIME).alias("_paired_count"),
+            )
+            .collect(engine="streaming")
+        )
+        if paired.is_empty():
+            continue
+        complete = paired.filter(pl.col("_paired_count") == pl.col("_source_count"))
+        incomplete = paired.filter(
+            pl.col("_paired_count") != pl.col("_source_count")
+        )
+        if incomplete.height:
+            incomplete = incomplete.with_columns(
                 pl.col("factor")
                 .rank("average")
                 .over("lag", TIME)
-                .alias("_factor_rank"),
+                .alias("_source_factor_rank")
+            )
+        paired = (
+            pl.concat([complete, incomplete])
+            if complete.height and incomplete.height
+            else (complete if complete.height else incomplete)
+        )
+        lagged_parts.append(
+            paired.lazy()
+            .with_columns(
                 pl.col("forward_return")
                 .rank("average")
                 .over("lag", TIME)
@@ -1279,7 +1400,9 @@ def _batched_factor_ic_decay(
             .group_by("lag", TIME)
             .agg(
                 _corr_expr("factor", "forward_return").alias("pearson"),
-                _corr_expr("_factor_rank", "_return_rank").alias("spearman"),
+                _corr_expr("_source_factor_rank", "_return_rank").alias(
+                    "spearman"
+                ),
             )
             .unpivot(
                 index=["lag", TIME],
@@ -1291,7 +1414,13 @@ def _batched_factor_ic_decay(
             .agg(pl.col("ic").mean().alias("ic_mean"))
             .collect(engine="streaming")
         )
-    lagged = pl.concat(lagged_parts)
+    lagged = (
+        pl.concat(lagged_parts)
+        if lagged_parts
+        else pl.DataFrame(
+            schema={"lag": pl.Int64, "method": pl.String, "ic_mean": pl.Float64}
+        )
+    )
     return (
         result_grid.join(lagged, on=["lag", "method"], how="left")
         .with_columns(pl.col("ic_mean").fill_null(float("nan")))
@@ -1409,7 +1538,13 @@ def _lag_outputs(
     execution_availability: pl.DataFrame | None = None,
     lag_zero: Mapping[str, BacktestResult | None] | None = None,
     execution_availability_validated: bool = False,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+    market_context: _SparseMarketContext | None = None,
+    additional_weight_frames: Mapping[str, pl.DataFrame] | None = None,
+) -> tuple[
+    pl.DataFrame,
+    pl.DataFrame,
+    dict[str, _CompactBacktestResult],
+]:
     analysis_rows: list[dict[str, object]] = []
     return_frames: list[pl.DataFrame] = []
     trading_sessions = _trading_sessions(prices)
@@ -1446,10 +1581,30 @@ def _lag_outputs(
         if not weights.is_empty()
         and not (lag == 0 and lag_zero and lag_zero.get(portfolio) is not None)
     }
+    additional_labels: dict[str, str] = {}
+    for label, weights in (additional_weight_frames or {}).items():
+        if weights.is_empty():
+            continue
+        canonical = next(
+            (
+                candidate
+                for candidate, candidate_weights in batch_inputs.items()
+                if weights.equals(candidate_weights)
+            ),
+            None,
+        )
+        if canonical is None:
+            canonical = f"_additional:{label}"
+            batch_inputs[canonical] = weights
+        additional_labels[label] = canonical
     execution_keys = (
-        resolved_forward_returns.select(TIME, ASSET_ID)
-        .unique()
-        .sort([ASSET_ID, TIME])
+        market_context.execution_keys
+        if market_context is not None
+        else (
+            resolved_forward_returns.select(TIME, ASSET_ID)
+            .unique()
+            .sort([ASSET_ID, TIME])
+        )
     )
     batch_results = (
         _run_sparse_compact_backtests(
@@ -1460,6 +1615,7 @@ def _lag_outputs(
             execution_availability=resolved_availability,
             execution_availability_validated=True,
             execution_keys=execution_keys,
+            market_context=market_context,
         )
         if batch_inputs
         else {}
@@ -1517,7 +1673,14 @@ def _lag_outputs(
         )
     else:
         returns = pl.concat(return_frames).sort(["portfolio", "lag", TIME])
-    return analysis, returns
+    return (
+        analysis,
+        returns,
+        {
+            label: batch_results[canonical]
+            for label, canonical in additional_labels.items()
+        },
+    )
 
 
 def _spread_returns(quantile_returns: pl.DataFrame, quantiles: int) -> pl.DataFrame:

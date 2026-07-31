@@ -4,6 +4,7 @@ from datetime import date
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
     BacktestConfig,
@@ -12,6 +13,7 @@ from bagelquant_bt import (
     TargetVolatilityPolicy,
     resolve_signal_policy,
     run_signal_evaluation,
+    run_weight_backtest,
 )
 from bagelquant_bt.exceptions import InputValidationError
 
@@ -231,6 +233,71 @@ def test_portfolio_policies_use_explicit_market_inputs() -> None:
     assert weights["weight"].to_list() == [pytest.approx(0.25), pytest.approx(0.75)]
     with pytest.raises(InputValidationError, match="requires market_caps"):
         FloatMarketCapWeightPolicy(2).build(signals)
+
+
+def test_factor_batch_preserves_custom_portfolio_policy_weights() -> None:
+    times = [date(2024, 1, day) for day in range(1, 7)]
+    signals = pl.DataFrame(
+        {
+            "time": [times[0]] * 3 + [times[3]] * 3,
+            "asset_id": ["a", "b", "c"] * 2,
+            "signal": [3.0, 2.0, 1.0, 2.0, 3.0, 1.0],
+        }
+    )
+    prices = pl.DataFrame(
+        {
+            "time": times * 3,
+            "asset_id": ["a"] * 6 + ["b"] * 6 + ["c"] * 6,
+            "price": [
+                10.0,
+                11.0,
+                12.0,
+                13.0,
+                14.0,
+                15.0,
+                20.0,
+                19.0,
+                18.0,
+                17.0,
+                16.0,
+                15.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+            ],
+        }
+    )
+    caps = pl.DataFrame(
+        {
+            "time": [times[0]] * 3 + [times[3]] * 3,
+            "asset_id": ["a", "b", "c"] * 2,
+            "float_market_cap": [1.0, 3.0, 2.0, 4.0, 1.0, 2.0],
+        }
+    )
+    config = BacktestConfig(initial_capital=100_000, quantiles=2, top_n=2)
+    policy = FloatMarketCapWeightPolicy(2)
+    expected_weights = policy.build(signals, market_caps=caps).weights
+
+    actual = run_signal_evaluation(
+        signals,
+        prices,
+        config=config,
+        portfolio_policy=policy,
+        portfolio_inputs={"market_caps": caps},
+    )
+    expected = run_weight_backtest(expected_weights, prices, config=config)
+
+    assert actual.top_n_weights.equals(expected_weights)
+    assert_frame_equal(
+        actual.top_n_backtest.returns,
+        expected.returns,
+        check_exact=False,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
 
 
 def test_target_volatility_skips_snapshots_without_history() -> None:

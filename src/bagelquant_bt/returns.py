@@ -68,35 +68,129 @@ def _prepare_price_data(
     """Internal variant that can reuse an already validated key order."""
 
     observed_prices = prices if inputs_sorted else prices.sort([TIME, ASSET_ID])
-    valuation_prices = _build_valuation_prices(observed_prices)
+    sessions = observed_prices.get_column(TIME).unique(
+        maintain_order=True
+    ).to_frame().with_row_index("_session_index")
+    asset_count = observed_prices.get_column(ASSET_ID).n_unique()
+    if observed_prices.height == sessions.height * asset_count:
+        forward_returns = (
+            observed_prices.with_columns(
+                (
+                    pl.col("price").shift(-1).over(ASSET_ID) / pl.col("price") - 1.0
+                ).alias("forward_return")
+            )
+            .drop_nulls("forward_return")
+            .select(TIME, ASSET_ID, "forward_return")
+        )
+        price_gaps = _empty_price_gaps()
+    else:
+        forward_returns, price_gaps = _build_sparse_price_outputs(
+            observed_prices,
+            sessions,
+        )
+    return PreparedPriceData(
+        observed_prices=observed_prices,
+        forward_returns=forward_returns,
+        price_gaps=price_gaps,
+    )
+
+
+def _build_sparse_price_outputs(
+    observed_prices: pl.DataFrame,
+    sessions: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Expand observed-price intervals directly into returns and gap evidence."""
+
+    last_session = sessions.height - 1
+    segments = (
+        observed_prices.join(sessions, on=TIME, how="left")
+        .sort([ASSET_ID, "_session_index"])
+        .with_columns(
+            pl.col("_session_index")
+            .shift(-1)
+            .over(ASSET_ID)
+            .alias("_next_session"),
+            pl.col("price").shift(-1).over(ASSET_ID).alias("_next_price"),
+        )
+    )
+    zero_returns = (
+        segments.select(
+            ASSET_ID,
+            pl.int_ranges(
+                pl.col("_session_index").cast(pl.Int64),
+                pl.when(pl.col("_next_session").is_not_null())
+                .then(pl.col("_next_session").cast(pl.Int64) - 1)
+                .otherwise(last_session),
+            ).alias("_return_session"),
+        )
+        .explode("_return_session", empty_as_null=True)
+        .drop_nulls("_return_session")
+        .with_columns(pl.lit(0.0).alias("forward_return"))
+    )
+    movement_returns = segments.filter(
+        pl.col("_next_session").is_not_null()
+    ).select(
+        ASSET_ID,
+        (pl.col("_next_session") - 1).alias("_return_session"),
+        (pl.col("_next_price") / pl.col("price") - 1.0).alias("forward_return"),
+    )
+    forward_returns = (
+        pl.concat([zero_returns, movement_returns], how="vertical_relaxed")
+        .join(
+            sessions.select(
+                pl.col("_session_index").alias("_return_session"),
+                TIME,
+            ),
+            on="_return_session",
+            how="left",
+        )
+        .select(TIME, ASSET_ID, "forward_return")
+        .sort([TIME, ASSET_ID])
+    )
+
     price_gaps = (
-        valuation_prices.filter(
-            pl.col("price").is_not_null() & pl.col("_observed_price").is_null()
+        segments.select(
+            ASSET_ID,
+            pl.col(TIME).alias("last_observed_time"),
+            pl.col("_session_index").alias("_last_observed_session"),
+            pl.int_ranges(
+                pl.col("_session_index").cast(pl.Int64) + 1,
+                pl.when(pl.col("_next_session").is_not_null())
+                .then(pl.col("_next_session").cast(pl.Int64))
+                .otherwise(last_session + 1),
+            ).alias("_gap_session"),
+        )
+        .explode("_gap_session", empty_as_null=True)
+        .drop_nulls("_gap_session")
+        .join(
+            sessions.select(
+                pl.col("_session_index").alias("_gap_session"),
+                TIME,
+            ),
+            on="_gap_session",
+            how="left",
         )
         .select(
             TIME,
             ASSET_ID,
-            pl.col("_last_observed_time").alias("last_observed_time"),
-            (pl.col("_session_index") - pl.col("_last_observed_session"))
+            "last_observed_time",
+            (pl.col("_gap_session") - pl.col("_last_observed_session"))
             .cast(pl.Int64)
             .alias("missing_session_count"),
         )
         .sort([TIME, ASSET_ID])
     )
-    forward_returns = (
-        valuation_prices.with_columns(
-            (pl.col("price").shift(-1).over(ASSET_ID) / pl.col("price") - 1.0).alias(
-                "forward_return"
-            )
-        )
-        .filter(pl.col("price").is_not_null() & pl.col("forward_return").is_not_null())
-        .select(TIME, ASSET_ID, "forward_return")
-        .sort([TIME, ASSET_ID])
-    )
-    return PreparedPriceData(
-        observed_prices=observed_prices,
-        forward_returns=forward_returns,
-        price_gaps=price_gaps,
+    return forward_returns, price_gaps
+
+
+def _empty_price_gaps() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            TIME: pl.Date,
+            ASSET_ID: pl.String,
+            "last_observed_time": pl.Date,
+            "missing_session_count": pl.Int64,
+        }
     )
 
 

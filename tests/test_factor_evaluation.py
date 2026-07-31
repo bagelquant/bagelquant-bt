@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import bagelquant_bt.factor as factor_module
 from bagelquant_bt import (
     BacktestConfig,
     materialize_signal_diagnostics,
@@ -21,6 +22,7 @@ from bagelquant_bt.engine import (
 from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.factor import (
     _traded_factor_quantile_returns_with_forward_returns,
+    factor_ic_decay,
     factor_quantile_returns,
     information_coefficients,
     lag_factor,
@@ -232,6 +234,20 @@ def test_batched_quantiles_match_sequential_portfolios(
     expected = pl.concat(expected_frames).sort(["time", "quantile"])
     assert_frame_equal(
         actual,
+        expected,
+        check_exact=False,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+    evaluation = run_factor_evaluation(
+        factor,
+        prices,
+        config=config,
+        market_data=market,
+        execution_availability=availability,
+    )
+    assert_frame_equal(
+        evaluation.quantile_returns.select("time", "quantile", "return"),
         expected,
         check_exact=False,
         rel_tol=1e-12,
@@ -552,6 +568,71 @@ def test_lag_factor_matches_observation_shift_for_daily_inputs() -> None:
     ]
 
 
+def test_batched_ic_decay_matches_sequential_reference_with_missing_returns() -> None:
+    sessions = pl.DataFrame(
+        {"time": [date(2024, 1, day) for day in range(1, 7)]}
+    )
+    factor = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 1)] * 4 + [date(2024, 1, 3)] * 4,
+            "asset_id": ["a", "b", "c", "d"] * 2,
+            "factor": [4.0, 3.0, 2.0, 1.0, 1.0, 3.0, 4.0, 2.0],
+        }
+    )
+    forward_returns = pl.DataFrame(
+        {
+            "time": [
+                date(2024, 1, 1),
+                date(2024, 1, 1),
+                date(2024, 1, 1),
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+                date(2024, 1, 2),
+                date(2024, 1, 3),
+                date(2024, 1, 3),
+                date(2024, 1, 3),
+            ],
+            "asset_id": ["a", "b", "d", "a", "b", "c", "d", "a", "c", "d"],
+            "forward_return": [
+                0.04,
+                0.03,
+                0.01,
+                0.01,
+                0.04,
+                0.02,
+                0.03,
+                0.02,
+                0.05,
+                0.01,
+            ],
+        }
+    )
+    lags = (0, 1, 2)
+
+    actual = factor_ic_decay(
+        factor,
+        forward_returns,
+        trading_sessions=sessions,
+        lags=lags,
+    )
+    expected = factor_ic_decay(
+        factor,
+        forward_returns,
+        trading_sessions=sessions,
+        return_provider=lambda _: forward_returns,
+        lags=lags,
+    )
+
+    assert_frame_equal(
+        actual,
+        expected,
+        check_exact=False,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+
+
 def test_monthly_signal_lag_trades_daily_from_the_shifted_session() -> None:
     sessions = pl.DataFrame(
         {
@@ -833,7 +914,9 @@ def test_factor_evaluation_removes_null_and_nan_rows_before_alignment() -> None:
     assert result.missing_price_keys.is_empty()
 
 
-def test_signal_diagnostics_build_only_requested_paths() -> None:
+def test_signal_diagnostics_build_only_requested_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     times = [date(2024, 1, 2), date(2024, 2, 1), date(2024, 3, 1)]
     prices = pl.DataFrame(
         {
@@ -880,3 +963,74 @@ def test_signal_diagnostics_build_only_requested_paths() -> None:
     )
     assert set(spread) == {"spread_returns"}
     assert spread["spread_returns"].columns == ["time", "return"]
+
+    original_batch = factor_module._run_sparse_compact_backtests
+    batch_calls = 0
+
+    def counted_batch(*args: object, **kwargs: object):
+        nonlocal batch_calls
+        batch_calls += 1
+        return original_batch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        factor_module,
+        "_run_sparse_compact_backtests",
+        counted_batch,
+    )
+    combined = materialize_signal_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+        include_quantiles=True,
+        include_lags=True,
+    )
+    assert set(combined) == {"quantile_returns", "lag_analysis", "lag_returns"}
+    assert batch_calls == 1
+
+
+def test_signal_diagnostics_skip_unrequested_family_builders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    times = [date(2024, 1, day) for day in range(1, 5)]
+    prices = pl.DataFrame(
+        {
+            "time": times * 2,
+            "asset_id": ["a"] * 4 + ["b"] * 4,
+            "price": [10.0, 11.0, 12.0, 13.0, 10.0, 9.0, 8.0, 7.0],
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": [times[0], times[0]],
+            "asset_id": ["a", "b"],
+            "signal": [2.0, 1.0],
+        }
+    )
+    config = BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1)
+
+    monkeypatch.setattr(
+        factor_module,
+        "_lag_outputs",
+        lambda *args, **kwargs: pytest.fail("lag family must not be built"),
+    )
+    quantiles = materialize_signal_diagnostics(
+        signals,
+        prices,
+        config=config,
+        include_quantiles=True,
+    )
+    assert set(quantiles) == {"quantile_returns"}
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        factor_module,
+        "quantile_equal_weights",
+        lambda *args, **kwargs: pytest.fail("quantile family must not be built"),
+    )
+    lags = materialize_signal_diagnostics(
+        signals,
+        prices,
+        config=config,
+        include_lags=True,
+    )
+    assert set(lags) == {"lag_analysis", "lag_returns"}
