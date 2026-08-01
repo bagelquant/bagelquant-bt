@@ -189,3 +189,6 @@ class FactorEvaluationResult:
     benchmark_coverage: pl.DataFrame
     benchmark_performance: pl.DataFrame
     excess_returns: pl.DataFrame
+
+
+SignalEvaluationResult = FactorEvaluationResult

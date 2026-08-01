@@ -1,79 +1,43 @@
 # 快速开始
 
-`bagelquant-bt` 评估研究输出。它不负责读取数据，也不负责生成因子信号。输入必须是数值型 long-form Polars DataFrame。
-
-## 安装
-
-```bash
-uv add bagelquant-bt
-```
-
-## 权重回测
-
-当 signal frame 已经是组合权重时，使用 `kind="weights"`。权重使用 `time`、`asset_id`、`weight` 列；价格使用 `time`、`asset_id`、`price` 列。
+`bagelquant-bt` 将 AlphaValue Panel 组合成强类型 Signal，回测只能通过该
+Signal 契约进入。
 
 ```python
-import polars as pl
-
-from bagelquant_bt import BacktestConfig, run_backtest
-
-prices = pl.DataFrame(
-    {
-        "time": ["2024-01-02", "2024-01-03"],
-        "asset_id": ["AAA", "AAA"],
-        "price": [100.0, 102.0],
-    }
-)
-weights = pl.DataFrame(
-    {"time": ["2024-01-02"], "asset_id": ["AAA"], "weight": [1.0]}
+from bagelquant_core import IdentitySignalComposer, Panel
+from bagelquant_bt import (
+    BacktestConfig,
+    MissingSnapshotAction,
+    SignalAnchor,
+    SignalDatePolicy,
+    compose_signal,
+    run_signal_backtest,
 )
 
-result = run_backtest(
-    weights,
+alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
+policy = SignalDatePolicy(
+    id="month_end",
+    frequency="monthly",
+    anchor=SignalAnchor.LAST_TRADING_DAY,
+    missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
+)
+signal = compose_signal(
+    {"quality": alpha_value},
+    IdentitySignalComposer(),
+    calendar,
+    policy,
+    standardization="zscore",
+)
+result = run_signal_backtest(
+    signal,
     prices,
-    kind="weights",
-    config=BacktestConfig(initial_capital=1_000_000),
-)
-
-result.summary
-result.net_cumulative_returns
-```
-
-## 因子评估
-
-当第一个 frame 是截面因子分数时，使用 `kind="factor"`。因子输入使用 `time`、`asset_id`、`factor` 列。包会计算 forward returns、IC、分位数组合收益和 top-N 回测。
-
-```python
-from bagelquant_bt import BacktestConfig, run_backtest
-
-factor = pl.DataFrame(
-    {"time": ["2024-01-02"], "asset_id": ["AAA"], "factor": [1.5]}
-)
-
-result = run_backtest(
-    factor,
-    prices,
-    kind="factor",
-    config=BacktestConfig(
-        initial_capital=1_000_000,
-        quantiles=5,
-        top_n=50,
-    ),
-)
-
-result.ic_mean
-result.spread_returns
-```
-
-## 交易成本
-
-```python
-from bagelquant_bt import BacktestConfig, TransactionCostConfig
-
-config = BacktestConfig(
-    initial_capital=1_000_000,
-    transaction_cost=TransactionCostConfig(rate=0.00015, min_fee=5.0),
+    calendar,
+    policy,
+    config=BacktestConfig(initial_capital=1_000_000, top_n=50),
 )
 ```
 
-最小费用需要 `initial_capital`，因为引擎需要把权重换手转换为交易名义金额。
+使用 `ICWeightedSignalComposer`、`OLSSignalComposer` 或
+`GLSSignalComposer` 时，还需向 `compose_signal` 提供 `prices`。rolling window
+按 SignalDatePolicy 的交易期计数，不按日频行计数。普通 Panel、裸 DataFrame
+与直接 weights 均不能传给 `run_signal_backtest`。

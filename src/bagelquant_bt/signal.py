@@ -10,9 +10,10 @@ from enum import StrEnum
 from typing import Literal
 
 import polars as pl
+from bagelquant_core import Domain, SignalPanel
 
 from .exceptions import InputValidationError
-from .inputs import ASSET_ID, TIME, validate_panel_frame
+from .inputs import ASSET_ID, TIME
 
 
 class SignalFrequency(StrEnum):
@@ -88,11 +89,11 @@ class ExecutionPolicy:
 
 
 @dataclass(frozen=True, slots=True)
-class SignalSelection:
-    """A resolved schedule and the executable signal rows selected by it."""
+class ScheduledSignal:
+    """A resolved schedule and its strongly typed executable SignalPanel."""
 
     schedule: pl.DataFrame
-    signals: pl.DataFrame
+    signal: SignalPanel
 
     @property
     def identity(self) -> str:
@@ -103,7 +104,7 @@ class SignalSelection:
 
 
 @dataclass(frozen=True, slots=True)
-class SignalPolicy:
+class SignalDatePolicy:
     """Choose Alpha snapshots without deciding when orders execute."""
 
     id: str
@@ -176,18 +177,18 @@ class SignalPolicy:
 
     def select(
         self,
-        predictions: pl.DataFrame,
+        predictions: SignalPanel,
         calendar: pl.DataFrame,
         *,
         execution_policy: str | ExecutionPolicy = "next_open",
         start: date | None = None,
         end: date | None = None,
-    ) -> SignalSelection:
+    ) -> ScheduledSignal:
         """Select whole Alpha snapshots, then map rebalances to execution dates."""
 
-        values = validate_panel_frame(
-            predictions, label="predictions", value_columns=("prediction",)
-        ).drop_nulls("prediction")
+        if not isinstance(predictions, SignalPanel):
+            raise TypeError("SignalDatePolicy.select requires a SignalPanel")
+        values = predictions.collect(dense=False).drop_nulls("value")
         requested = self.schedule(calendar, start=start, end=end)
         execution = (
             resolve_execution_policy(execution_policy)
@@ -256,7 +257,7 @@ class SignalPolicy:
                     pl.col(TIME).alias("source_time"),
                     pl.lit(row["execution_date"], dtype=pl.Date).alias(TIME),
                     ASSET_ID,
-                    pl.col("prediction").alias("signal"),
+                    pl.col("value").alias("value"),
                 )
             )
         schedule = pl.DataFrame(
@@ -278,11 +279,33 @@ class SignalPolicy:
             if signal_frames
             else _empty_signals()
         )
-        return SignalSelection(schedule=schedule, signals=signals)
+        execution_dates = (
+            requested.get_column("execution_date").drop_nulls().unique().sort()
+        )
+        calendar_dates = (
+            execution_dates
+            if not execution_dates.is_empty()
+            else predictions.domain.times
+        )
+        scheduled_domain = Domain(
+            calendar=calendar_dates,
+            universe=predictions.domain.asset_ids,
+        )
+        scheduled_panel = SignalPanel.from_domain(
+            signals.select(TIME, ASSET_ID, "value"),
+            scheduled_domain,
+            name=predictions.name,
+            metadata={
+                **predictions.metadata,
+                "signal_date_policy": self.id,
+                "execution_policy": execution.id,
+            },
+        )
+        return ScheduledSignal(schedule=schedule, signal=scheduled_panel)
 
     def transform(
         self,
-        predictions: pl.DataFrame,
+        predictions: SignalPanel,
         calendar: pl.DataFrame,
         *,
         execution_policy: str | ExecutionPolicy = "next_open",
@@ -291,27 +314,27 @@ class SignalPolicy:
 
         return self.select(
             predictions, calendar, execution_policy=execution_policy
-        ).signals
+        ).signal.collect(dense=False)
 
 
 _CANONICAL_EXECUTION_POLICIES = {
     "next_open": ExecutionPolicy("next_open", lag_sessions=1),
 }
 
-_CANONICAL_SIGNAL_POLICIES = {
-    "daily": SignalPolicy(
+_CANONICAL_SIGNAL_DATE_POLICIES = {
+    "daily": SignalDatePolicy(
         "daily",
         "daily",
         SignalAnchor.EVERY_TRADING_DAY,
         MissingSnapshotAction.SKIP,
     ),
-    "month_end": SignalPolicy(
+    "month_end": SignalDatePolicy(
         "month_end",
         "monthly",
         SignalAnchor.LAST_TRADING_DAY,
         MissingSnapshotAction.PREVIOUS_IN_PERIOD,
     ),
-    "monthly_mid": SignalPolicy(
+    "monthly_mid": SignalDatePolicy(
         "monthly_mid",
         "monthly",
         SignalAnchor.ON_OR_AFTER_CALENDAR_DAY,
@@ -319,7 +342,7 @@ _CANONICAL_SIGNAL_POLICIES = {
         calendar_day=15,
         holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION,
     ),
-    "monthly_first_monday": SignalPolicy(
+    "monthly_first_monday": SignalDatePolicy(
         "monthly_first_monday",
         "monthly",
         SignalAnchor.FIRST_WEEKDAY,
@@ -327,7 +350,7 @@ _CANONICAL_SIGNAL_POLICIES = {
         weekday=0,
         holiday_adjustment=HolidayAdjustment.NEXT_OPEN_SESSION,
     ),
-    "monthly_last_friday": SignalPolicy(
+    "monthly_last_friday": SignalDatePolicy(
         "monthly_last_friday",
         "monthly",
         SignalAnchor.LAST_WEEKDAY,
@@ -349,15 +372,15 @@ def resolve_execution_policy(policy_id: str) -> ExecutionPolicy:
         raise KeyError(f"unknown execution policy: {policy_id}") from error
 
 
-def signal_policies() -> tuple[SignalPolicy, ...]:
-    return tuple(_CANONICAL_SIGNAL_POLICIES.values())
+def signal_date_policies() -> tuple[SignalDatePolicy, ...]:
+    return tuple(_CANONICAL_SIGNAL_DATE_POLICIES.values())
 
 
-def resolve_signal_policy(policy_id: str) -> SignalPolicy:
+def resolve_signal_date_policy(policy_id: str) -> SignalDatePolicy:
     try:
-        return _CANONICAL_SIGNAL_POLICIES[policy_id]
+        return _CANONICAL_SIGNAL_DATE_POLICIES[policy_id]
     except KeyError as error:
-        raise KeyError(f"unknown signal policy: {policy_id}") from error
+        raise KeyError(f"unknown signal date policy: {policy_id}") from error
 
 
 def _open_sessions(calendar: pl.DataFrame) -> list[date]:
@@ -374,7 +397,7 @@ def _open_sessions(calendar: pl.DataFrame) -> list[date]:
     return result
 
 
-def _observations(sessions: list[date], policy: SignalPolicy) -> list[date]:
+def _observations(sessions: list[date], policy: SignalDatePolicy) -> list[date]:
     if policy.anchor == SignalAnchor.EVERY_TRADING_DAY:
         return sessions
     months: dict[tuple[int, int], list[date]] = {}
@@ -423,7 +446,7 @@ def _empty_signals() -> pl.DataFrame:
             "source_time": pl.Date,
             TIME: pl.Date,
             ASSET_ID: pl.String,
-            "signal": pl.Float64,
+            "value": pl.Float64,
         }
     )
 
@@ -432,12 +455,12 @@ __all__ = [
     "ExecutionPolicy",
     "HolidayAdjustment",
     "MissingSnapshotAction",
+    "ScheduledSignal",
     "SignalAnchor",
+    "SignalDatePolicy",
     "SignalFrequency",
-    "SignalPolicy",
-    "SignalSelection",
     "execution_policies",
     "resolve_execution_policy",
-    "resolve_signal_policy",
-    "signal_policies",
+    "resolve_signal_date_policy",
+    "signal_date_policies",
 ]

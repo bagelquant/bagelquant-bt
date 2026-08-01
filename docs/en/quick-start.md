@@ -1,86 +1,43 @@
 # Quick Start
 
-`bagelquant-bt` evaluates research outputs. It does not retrieve data and it
-does not build factor signals. Inputs are numeric long-form Polars DataFrames.
-
-## Install
-
-```bash
-uv add bagelquant-bt
-```
-
-## Weight Backtest
-
-Use `kind="weights"` when the signal frame already contains portfolio weights.
-Weights use `time`, `asset_id`, and `weight`; prices use `time`, `asset_id`,
-and `price`.
+`bagelquant-bt` composes AlphaValue panels into a strongly typed signal and
+backtests only through that signal contract.
 
 ```python
-import polars as pl
-
-from bagelquant_bt import BacktestConfig, run_backtest
-
-prices = pl.DataFrame(
-    {
-        "time": ["2024-01-02", "2024-01-03"],
-        "asset_id": ["AAA", "AAA"],
-        "price": [100.0, 102.0],
-    }
-)
-weights = pl.DataFrame(
-    {"time": ["2024-01-02"], "asset_id": ["AAA"], "weight": [1.0]}
+from bagelquant_core import Domain, IdentitySignalComposer, Panel
+from bagelquant_bt import (
+    BacktestConfig,
+    SignalAnchor,
+    SignalDatePolicy,
+    MissingSnapshotAction,
+    compose_signal,
+    run_signal_backtest,
 )
 
-result = run_backtest(
-    weights,
+alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
+policy = SignalDatePolicy(
+    id="month_end",
+    frequency="monthly",
+    anchor=SignalAnchor.LAST_TRADING_DAY,
+    missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
+)
+signal = compose_signal(
+    {"quality": alpha_value},
+    IdentitySignalComposer(),
+    calendar,
+    policy,
+    standardization="zscore",
+)
+result = run_signal_backtest(
+    signal,
     prices,
-    kind="weights",
-    config=BacktestConfig(initial_capital=1_000_000),
-)
-
-result.summary
-result.net_cumulative_returns
-```
-
-## Factor Evaluation
-
-Use `kind="factor"` when the first frame contains cross-sectional factor scores
-with `time`, `asset_id`, and `factor` columns.
-The package computes forward returns, information coefficients, quantile
-returns, and a top-N backtest.
-
-```python
-from bagelquant_bt import BacktestConfig, run_backtest
-
-factor = pl.DataFrame(
-    {"time": ["2024-01-02"], "asset_id": ["AAA"], "factor": [1.5]}
-)
-
-result = run_backtest(
-    factor,
-    prices,
-    kind="factor",
-    config=BacktestConfig(
-        initial_capital=1_000_000,
-        quantiles=5,
-        top_n=50,
-    ),
-)
-
-result.ic_mean
-result.spread_returns
-```
-
-## Transaction Costs
-
-```python
-from bagelquant_bt import BacktestConfig, TransactionCostConfig
-
-config = BacktestConfig(
-    initial_capital=1_000_000,
-    transaction_cost=TransactionCostConfig(rate=0.00015, min_fee=5.0),
+    calendar,
+    policy,
+    config=BacktestConfig(initial_capital=1_000_000, top_n=50),
 )
 ```
 
-Minimum fees require `initial_capital` so the engine can translate weight
-turnover into traded notional.
+For `ICWeightedSignalComposer`, `OLSSignalComposer`, or `GLSSignalComposer`,
+also pass `prices` to `compose_signal`. Their rolling window counts signal
+periods, not daily rows. Ordinary panels, raw DataFrames, and direct weights
+cannot be passed to `run_signal_backtest`.

@@ -1,8 +1,7 @@
-"""Backtesting and factor evaluation for the BagelQuant ecosystem."""
+"""Typed signal composition, evaluation, and backtesting for BagelQuant."""
 
 from .benchmarks import benchmark_performance, build_universe_benchmark_returns
 from .config import BacktestConfig, TransactionCostConfig
-from .engine import run_weight_backtest
 from .exceptions import (
     BacktestConfigError,
     BagelQuantBacktestError,
@@ -13,9 +12,9 @@ from .factor import (
     information_coefficients,
     materialize_signal_diagnostics,
     prepare_factor_market_data,
-    run_factor_evaluation,
     run_signal_evaluation,
 )
+from .orders import OrderPlan, OrderSizingPolicy
 from .path import (
     RESULT_SECTIONS,
     PortfolioPathChunk,
@@ -29,17 +28,19 @@ from .path import (
     portfolio_path_from_backtest,
     resume_portfolio_path,
 )
+from .pipeline import compose_signal, run_signal_backtest
 from .portfolio import (
     EqualWeightPolicy,
     FloatMarketCapWeightPolicy,
     PortfolioBuild,
     TargetVolatilityPolicy,
 )
-from .reporting import ReportFigure, factor_evaluation_report_figures, summary_report
+from .reporting import ReportFigure, signal_evaluation_report_figures, summary_report
 from .results import (
     BacktestResult,
     FactorEvaluationResult,
     PerformanceSummary,
+    SignalEvaluationResult,
     TransactionCostBreakdown,
 )
 from .returns import prepare_price_data
@@ -47,14 +48,14 @@ from .signal import (
     ExecutionPolicy,
     HolidayAdjustment,
     MissingSnapshotAction,
+    ScheduledSignal,
     SignalAnchor,
+    SignalDatePolicy,
     SignalFrequency,
-    SignalPolicy,
-    SignalSelection,
     execution_policies,
     resolve_execution_policy,
-    resolve_signal_policy,
-    signal_policies,
+    resolve_signal_date_policy,
+    signal_date_policies,
 )
 
 __all__ = [
@@ -70,6 +71,8 @@ __all__ = [
     "HolidayAdjustment",
     "InputValidationError",
     "MissingSnapshotAction",
+    "OrderPlan",
+    "OrderSizingPolicy",
     "PerformanceSummary",
     "PortfolioBuild",
     "PortfolioPathChunk",
@@ -80,18 +83,19 @@ __all__ = [
     "ResultSection",
     "ResultSectionSpec",
     "ResultWindow",
+    "ScheduledSignal",
     "SignalAnchor",
+    "SignalDatePolicy",
+    "SignalEvaluationResult",
     "SignalFrequency",
-    "SignalPolicy",
-    "SignalSelection",
     "TargetVolatilityPolicy",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
     "benchmark_performance",
     "build_universe_benchmark_returns",
+    "compose_signal",
     "compute_result_section",
     "execution_policies",
-    "factor_evaluation_report_figures",
     "information_coefficients",
     "materialize_portfolio_path",
     "materialize_signal_diagnostics",
@@ -99,11 +103,11 @@ __all__ = [
     "prepare_factor_market_data",
     "prepare_price_data",
     "resolve_execution_policy",
-    "resolve_signal_policy",
+    "resolve_signal_date_policy",
     "resume_portfolio_path",
-    "run_factor_evaluation",
+    "run_signal_backtest",
     "run_signal_evaluation",
-    "run_weight_backtest",
-    "signal_policies",
+    "signal_date_policies",
+    "signal_evaluation_report_figures",
     "summary_report",
 ]

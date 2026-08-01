@@ -1,70 +1,57 @@
 # API
 
-## `run_backtest`
+## `compose_signal`
 
 ```python
-run_backtest(signal, prices, *, kind, config=None)
-```
-
-根据 `kind` 分发到对应评估路径：
-
-- `kind="weights"` 调用 `run_weight_backtest`
-- `kind="factor"` 调用 `run_factor_evaluation`
-
-由于最低交易费用需要 `initial_capital`，实际使用时需要提供 `config`。
-
-## `run_weight_backtest`
-
-```python
-run_weight_backtest(weights, prices, *, config)
-```
-
-把 long-form Polars DataFrame 解释为组合权重并执行回测，返回 `BacktestResult`。
-
-重要字段包括 `weights`、`asset_returns`、`gross_returns`、`net_returns`、累计收益、组合价值、换手、交易成本、`summary`、`performance` 和 `coverage`。
-
-## `run_factor_evaluation`
-
-```python
-run_factor_evaluation(factor, prices, *, config)
-```
-
-把 long-form Polars DataFrame 解释为因子分数并执行评估，返回 `FactorEvaluationResult`。
-
-重要字段包括 `factor`、`forward_returns`、`ic`、`ic_summary`、`ic_mean`、`ic_std`、`icir`、分位数组合收益、`spread_returns`、TOP N 权重、TOP N 回测结果、`spread_backtest`、`lag_analysis`、`lag_returns`、`ic_decay` 和 `coverage`。
-
-## `summary_report`
-
-```python
-summary_report(
-    result,
+compose_signal(
+    alpha_values,
+    composer,
+    calendar,
+    signal_date_policy,
     *,
-    output_path=None,
-    missing_price_keys_output_path=None,
-    title=None,
-    annualization=252,
+    standardization="zscore",
+    execution_policy="next_open",
+    prices=None,
 )
 ```
 
-为 `BacktestResult` 或 `FactorEvaluationResult` 生成静态 HTML 报告。报告包含精简汇总表格和 Plotly 图表；如果传入 `output_path`，会写入文件并同时返回 HTML 字符串。
+`alpha_values` 用稳定 alias 映射到普通 core `Panel`；结果是终端
+`SignalPanel`。standardization 必须为 `zscore` 或 `percentile_rank`。
+IC weighted、OLS 与 GLS 必须提供价格，以构造无前视的 execution-to-next-
+execution 标签。
 
-因子报告会分为 IC and ICIR、TOP N、spread performance 和 quantile performance 四个部分，每个部分先展示精简表格，再展示图表。因子和回测报告都会在顶部汇总表格下方展示覆盖度图表。
-
-## Config
+## `run_signal_backtest`
 
 ```python
-BacktestConfig(
-    initial_capital=1_000_000,
-    transaction_cost=TransactionCostConfig(rate=0.00015, min_fee=5.0),
-    annualization=252,
-    ic_method="spearman",
-    quantiles=5,
-    top_n=50,
+run_signal_backtest(
+    signal,
+    prices,
+    calendar,
+    signal_date_policy,
+    *,
+    execution_policy="next_open",
+    portfolio_policy=None,
+    portfolio_inputs=None,
+    config,
+    execution_availability=None,
 )
 ```
 
-`initial_capital` 必须为正数。`ic_method` 仍可传入以保持兼容；因子评估现在会同时输出 Spearman 和 Pearson IC。
+公开边界严格要求 `SignalPanel`。函数依次应用日期、执行和组合政策，再进入
+私有 weights 引擎。裸 DataFrame、普通 `Panel` 和直接 weights 会被拒绝。
 
-## DataFrame 边界
+## `run_signal_evaluation`
 
-第一个参数必须是数值型 `polars.DataFrame`。权重需要 `time`、`asset_id`、`weight` 列；因子需要 `time`、`asset_id`、`factor` 列；价格需要 `time`、`asset_id`、`price` 列。
+```python
+run_signal_evaluation(scheduled_signal, prices, *, config, ...)
+```
+
+输入必须为 `ScheduledSignal`。forward return 从本次 execution price 到
+下一次 Signal execution price；结果包含 Spearman/Pearson IC、分位数、
+spread、TOP N、lag、IC decay、基准和覆盖度。
+
+## 数据边界
+
+Signal 使用 core `SignalPanel(time, asset_id, value)`；价格仍是包含 `time`、
+`asset_id`、`price` 的 long-form Polars 数据。PortfolioPolicy 产生普通 weights
+`Panel`，但 weights 不是公开回测入口。

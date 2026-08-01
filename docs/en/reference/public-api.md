@@ -1,21 +1,31 @@
 # Public API
 
-The stable public API is exported from `bagelquant_bt`.
+The stable public API is exported from `bagelquant_bt`. Version 0.2 accepts
+strongly typed signals only; ordinary `Panel`, raw DataFrames, and direct
+weights are not public backtest inputs.
 
-## Entry Points
+## Entry points
 
 ```python
-from bagelquant_bt import run_backtest, run_factor_evaluation, run_weight_backtest
+from bagelquant_bt import compose_signal, run_signal_backtest, run_signal_evaluation
 ```
 
-- `run_backtest(signal, prices, *, kind, config=None)`: dispatch by `kind`.
-- `run_weight_backtest(weights, prices, *, config)`: evaluate portfolio weights.
-- `run_factor_evaluation(factor, prices, *, config)`: evaluate factor scores.
-- `summary_report(result, *, output_path=None, missing_price_keys_output_path=None, title=None, annualization=252)`:
-  build a static HTML report for `BacktestResult` or `FactorEvaluationResult`.
-  Missing price keys are written to a separate CSV. With `output_path`, the
-  default CSV path is `<report_stem>_missing_price_keys.csv`; pass
-  `missing_price_keys_output_path` to override it or write only the CSV.
+- `compose_signal(...) -> SignalPanel` applies a `SignalComposer` at the
+  cadence selected by `SignalDatePolicy`. Supervised composers derive labels
+  from one execution price to the next and enforce label-availability cutoffs.
+- `run_signal_backtest(signal, prices, calendar, signal_date_policy, ...)`
+  schedules a `SignalPanel`, applies `ExecutionPolicy` and `PortfolioPolicy`,
+  and returns `BacktestResult`.
+- `run_signal_evaluation(scheduled_signal, prices, ...)` computes IC,
+  quantiles, lag diagnostics, and signal-driven portfolio results.
+- `summary_report(...)` builds a static HTML report for a backtest or signal
+  evaluation result.
+
+`SignalDatePolicy` and `ExecutionPolicy` are separate contracts. A portfolio
+policy receives `ScheduledSignal` and returns
+`PortfolioBuild(weights: Panel, skipped: DataFrame)`. `OrderSizingPolicy` and
+`OrderPlan` reserve the later target-weight-to-order boundary; quantity sizing
+is not implemented in 0.2.
 
 ## Configuration
 
@@ -26,73 +36,27 @@ config = BacktestConfig(
     initial_capital=1_000_000,
     transaction_cost=TransactionCostConfig(rate=0.00015, min_fee=5.0),
     annualization=252,
-    ic_method="spearman",
     quantiles=5,
     top_n=50,
 )
 ```
 
-- `initial_capital` must be positive.
-- `ic_method` is accepted for compatibility. Factor evaluation outputs both
-  Spearman and Pearson IC.
-- `quantiles` controls factor bucket count.
-- `top_n` controls the top-N factor portfolio.
+`initial_capital` must be positive. `quantiles` controls signal buckets and
+`top_n` controls the default equal-weight portfolio policy.
 
 ## Results
 
-`BacktestResult` exposes:
+`BacktestResult` exposes weights, returns, value, turnover, transaction costs,
+performance, execution blocks, coverage, and missing price keys.
 
-- `weights`
-- `asset_returns`
-- `gross_returns`
-- `net_returns`
-- `gross_cumulative_returns`
-- `net_cumulative_returns`
-- `gross_value`
-- `net_value`
-- `turnover`
-- `transaction_costs`
-- `summary`
-- `performance`
-- `coverage`: per-price-date raw `weight_asset_count`, `universe_asset_count`,
-  and `coverage_ratio`.
-- `missing_price_keys`
-
-`weights` and `target_weights` are expanded from validated sparse state events
-on first access and then cached. They still return ordinary long-form Polars
-DataFrames with the documented schema and stable ordering. Reading other result
-fields, including `repr(result)`, does not materialize these two daily frames.
-
-`FactorEvaluationResult` exposes:
-
-- `factor`
-- `forward_returns`
-- `ic`
-- `ic_summary`
-- `ic_mean`
-- `ic_std`
-- `icir`
-- `quantile_returns`
-- `quantile_cumulative_returns`
-- `spread_returns`
-- `top_n_weights`
-- `top_n_backtest`
-- `spread_weights`
-- `spread_backtest`
-- `lag_analysis`
-- `lag_returns`
-- `ic_decay`
-- `coverage`: per-price-date raw `factor_signal_asset_count`,
-  `universe_asset_count`, and `coverage_ratio`.
-- `missing_price_keys`
-
-## Visualization
-
-`plot_coverage(result)` returns a Plotly time series showing raw factor-signal
-or weight asset coverage as a shaded area and the total price-universe asset count.
+`SignalEvaluationResult` exposes the evaluated signal, execution-to-execution
+forward returns, Pearson and Spearman IC, quantile and spread results, TOP N
+portfolios, lag analysis, IC decay, benchmarks, coverage, and missing price
+keys. `FactorEvaluationResult` remains the internal result class name for the
+statistical implementation; operator-facing APIs use Signal terminology.
 
 ## Exceptions
 
 - `BagelQuantBacktestError`: base package error.
 - `BacktestConfigError`: invalid configuration.
-- `InputValidationError`: invalid or incompatible input frames.
+- `InputValidationError`: invalid or incompatible market data.

@@ -1,12 +1,14 @@
-# 因子评估
+# Signal 评估
 
-因子评估会把因子 DataFrame 解释为截面分数，分数越高代表越好。
+Signal 评估会把 `ScheduledSignal` 中的每个 `SignalPanel` 快照解释为截面
+prediction，数值越高代表越正向。
 
 ## IC 和 ICIR
 
-对每个日期，`bagelquant-bt` 计算 t 日因子分数与 t 到 t+1 资产收益之间的截面相关性。
+对每个信号期，`bagelquant-bt` 计算 Signal 与本次 execution price 到下一次
+Signal execution price 收益之间的截面相关性。
 
-因子评估会在 `result.ic` 中同时输出 Pearson 相关和 Spearman 秩相关：
+Signal 评估会在 `result.ic` 中同时输出 Pearson 相关和 Spearman 秩相关：
 
 ```python
 result.ic.select("time", "pearson_ic", "spearman_ic")
@@ -25,7 +27,10 @@ mean(IC) / standard_deviation(IC) * sqrt(每年 IC 观测数)
 
 ## Signal 与 Execution Policy
 
-`SignalPolicy.select` 从日频预测 Panel 选择完整截面，并返回同时包含调度与可执行行的 `SignalSelection`。`month_end` 优先选择月末最后一个开市交易日；若整张截面不存在，只能回退到同一自然月内最近的此前完整截面，否则记录 skip。单个资产绝不会从此前日期回填。
+`SignalDatePolicy.select` 从 `SignalPanel` 选择完整截面，返回带调度、执行日期
+lineage 和强类型 signal 的 `ScheduledSignal`。`month_end` 优先选择月末最后一个
+开市交易日；若整张截面不存在，只能回退到同一自然月内最近的此前完整截面，
+否则记录 skip。单个资产绝不会从此前日期回填。
 
 `ExecutionPolicy("next_open")` 独立把再平衡日映射到下一开市交易日。`run_signal_evaluation` 接收已经解析的统一 selection，IC 使用本次 execution date 到下一次 execution date 的收益，组合则在两次执行之间逐日估值；最后一条没有完整后续执行期的信号不进入 IC。
 
@@ -51,9 +56,9 @@ TOP N 回测会把因子分数转换成长-only 等权组合：
 
 ## Spread 和滞后分析
 
-因子评估还会构造 spread 组合：做多 `q1`、做空 `qN`，并通过同一个含交易成本的回测引擎计算结果。
+Signal 评估还会构造 spread 组合：做多 `q1`、做空 `qN`，并通过同一个含交易成本的回测引擎计算结果。
 
-`lag_analysis` 会评估 TOP N 和 spread 组合在因子信号滞后 0、1、2、3、4、5、10、20、30、60 个交易日后的累计收益和 Sharpe；月频信号的 Lag 15 是 15 个开市日，不是 15 个按月观测。
+`lag_analysis` 会评估 TOP N 和 spread 组合在 Signal 滞后 0、1、2、3、4、5、10、20、30、60 个交易日后的累计收益和 Sharpe；月频 Signal 的 Lag 15 是 15 个开市日，不是 15 个按月观测。
 
 `lag_returns` 包含相同组合和滞后下的 gross/net 累计收益时间序列。
 

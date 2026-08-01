@@ -4,12 +4,14 @@ import polars as pl
 
 from bagelquant_bt import (
     BacktestConfig,
-    factor_evaluation_report_figures,
-    run_factor_evaluation,
-    run_weight_backtest,
     summary_report,
 )
-from bagelquant_bt.reporting import _dataframe_to_html
+from bagelquant_bt.engine import run_weight_backtest
+from bagelquant_bt.factor import run_factor_evaluation
+from bagelquant_bt.reporting import (
+    _dataframe_to_html,
+    factor_evaluation_report_figures,
+)
 from bagelquant_bt.visualization import _label_with_mean
 
 
@@ -95,7 +97,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert "<h3>Summary</h3>" in html
     assert "Spread SR" in html
     assert "rankICIR" in html
-    assert "Factor Signal Coverage" in html
+    assert "Signal Coverage" in html
     assert "N/A" in html
     assert "<h3>IC Summary</h3>" not in html
     assert "<h3>IC Decay</h3>" not in html
@@ -127,7 +129,7 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     assert html.index("<h3>Summary</h3>") < html.index("<h2>IC and ICIR</h2>")
     assert (
         html.index("<h3>Summary</h3>")
-        < html.index("Factor Signal Coverage")
+        < html.index("Signal Coverage")
         < html.index("<h2>IC and ICIR</h2>")
     )
     assert html.index("<h3>TOP N Performance</h3>") < html.index(

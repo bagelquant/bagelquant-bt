@@ -4,17 +4,19 @@ from datetime import date
 
 import polars as pl
 import pytest
+from bagelquant_core import Domain, SignalPanel
 from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
     BacktestConfig,
     EqualWeightPolicy,
     FloatMarketCapWeightPolicy,
+    ScheduledSignal,
     TargetVolatilityPolicy,
-    resolve_signal_policy,
+    resolve_signal_date_policy,
     run_signal_evaluation,
-    run_weight_backtest,
 )
+from bagelquant_bt.engine import run_weight_backtest
 from bagelquant_bt.exceptions import InputValidationError
 
 
@@ -22,6 +24,35 @@ def _calendar() -> pl.DataFrame:
     return pl.DataFrame(
         {"time": pl.date_range(date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True)}
     ).filter(pl.col("time").dt.weekday() <= 5)
+
+
+def _signal_panel(
+    frame: pl.DataFrame,
+    calendar: pl.DataFrame | None = None,
+) -> SignalPanel:
+    values = frame.rename(
+        {"prediction": "value"}
+        if "prediction" in frame.columns
+        else {"signal": "value"}
+    )
+    dates = (
+        calendar.get_column("time").cast(pl.Date).unique().sort()
+        if calendar is not None
+        else values.get_column("time").cast(pl.Date).unique().sort()
+    )
+    domain = Domain(
+        calendar=dates,
+        universe=values.get_column("asset_id").unique().sort(),
+    )
+    return SignalPanel.from_domain(values, domain, name="signal")
+
+
+def _scheduled_signal(frame: pl.DataFrame) -> ScheduledSignal:
+    panel = _signal_panel(frame)
+    return ScheduledSignal(
+        schedule=frame.select("time").unique().sort("time"),
+        signal=panel,
+    )
 
 
 def test_month_end_signal_executes_on_next_open_session() -> None:
@@ -38,7 +69,10 @@ def test_month_end_signal_executes_on_next_open_session() -> None:
         }
     )
 
-    signals = resolve_signal_policy("month_end").transform(predictions, _calendar())
+    calendar = _calendar()
+    signals = resolve_signal_date_policy("month_end").transform(
+        _signal_panel(predictions, calendar), calendar
+    )
     assert signals.get_column("time").unique().to_list() == [
         date(2024, 2, 1),
         date(2024, 3, 1),
@@ -55,7 +89,9 @@ def test_month_end_signal_uses_rebalance_next_open_not_calendar_days() -> None:
     )
     calendar = _calendar().filter(pl.col("time") != date(2024, 2, 1))
 
-    signals = resolve_signal_policy("month_end").transform(predictions, calendar)
+    signals = resolve_signal_date_policy("month_end").transform(
+        _signal_panel(predictions, calendar), calendar
+    )
 
     assert signals.get_column("time").unique().to_list() == [date(2024, 2, 2)]
 
@@ -63,15 +99,15 @@ def test_month_end_signal_uses_rebalance_next_open_not_calendar_days() -> None:
 def test_execution_policy_marks_rebalance_without_future_session() -> None:
     calendar = _calendar().filter(pl.col("time") <= date(2024, 2, 9))
 
-    selection = resolve_signal_policy("month_end").select(
-        pl.DataFrame(
+    values = pl.DataFrame(
             {
                 "time": [date(2024, 2, 9)],
                 "asset_id": ["a"],
                 "prediction": [1.0],
             }
-        ),
-        calendar,
+        )
+    selection = resolve_signal_date_policy("month_end").select(
+        _signal_panel(values, calendar), calendar
     )
 
     assert selection.schedule.row(-1, named=True)["selection_status"] == "skipped"
@@ -81,16 +117,16 @@ def test_execution_policy_marks_rebalance_without_future_session() -> None:
     )
 
 
-def test_signal_policy_preserves_all_monthly_schedule_variants() -> None:
+def test_signal_date_policy_preserves_all_monthly_schedule_variants() -> None:
     calendar = pl.DataFrame(
         {
             "time": pl.date_range(date(2024, 1, 1), date(2024, 2, 5), "1d", eager=True)
         }
     ).with_columns((pl.col("time").dt.weekday() <= 5).cast(pl.Int8).alias("is_open"))
 
-    mid = resolve_signal_policy("monthly_mid").schedule(calendar)
-    monday = resolve_signal_policy("monthly_first_monday").schedule(calendar)
-    friday = resolve_signal_policy("monthly_last_friday").schedule(calendar)
+    mid = resolve_signal_date_policy("monthly_mid").schedule(calendar)
+    monday = resolve_signal_date_policy("monthly_first_monday").schedule(calendar)
+    friday = resolve_signal_date_policy("monthly_last_friday").schedule(calendar)
 
     assert mid.row(0, named=True)["rebalance_date"] == date(2024, 1, 15)
     assert monday.row(0, named=True)["rebalance_date"] == date(2024, 1, 1)
@@ -106,7 +142,10 @@ def test_month_end_uses_latest_previous_snapshot_only_within_month() -> None:
         }
     )
 
-    selection = resolve_signal_policy("month_end").select(predictions, _calendar())
+    calendar = _calendar()
+    selection = resolve_signal_date_policy("month_end").select(
+        _signal_panel(predictions, calendar), calendar
+    )
     january = selection.schedule.filter(pl.col("period") == "2024-01").row(
         0, named=True
     )
@@ -115,7 +154,7 @@ def test_month_end_uses_latest_previous_snapshot_only_within_month() -> None:
     assert january["rebalance_date"] == date(2024, 1, 31)
     assert january["execution_date"] == date(2024, 2, 1)
     assert january["selection_status"] == "previous_in_period"
-    assert set(selection.signals.filter(pl.col("period") == "2024-01")["asset_id"]) == {
+    assert set(selection.signal.collect(dense=False)["asset_id"]) == {
         "a",
         "b",
     }
@@ -130,7 +169,10 @@ def test_month_end_skips_period_without_any_snapshot() -> None:
         }
     )
 
-    selection = resolve_signal_policy("month_end").select(predictions, _calendar())
+    calendar = _calendar()
+    selection = resolve_signal_date_policy("month_end").select(
+        _signal_panel(predictions, calendar), calendar
+    )
     february = selection.schedule.filter(pl.col("period") == "2024-02").row(
         0, named=True
     )
@@ -147,10 +189,12 @@ def test_selection_identity_is_stable_for_all_consumers() -> None:
             "prediction": [1.0, 2.0],
         }
     )
-    policy = resolve_signal_policy("month_end")
+    policy = resolve_signal_date_policy("month_end")
 
-    first = policy.select(predictions, _calendar())
-    second = policy.select(predictions, _calendar())
+    calendar = _calendar()
+    panel = _signal_panel(predictions, calendar)
+    first = policy.select(panel, calendar)
+    second = policy.select(panel, calendar)
 
     assert first.identity == second.identity
     assert len(first.identity) == 32
@@ -178,7 +222,7 @@ def test_signal_evaluation_uses_next_signal_horizon_and_daily_holding() -> None:
     )
 
     result = run_signal_evaluation(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
     )
@@ -228,11 +272,14 @@ def test_portfolio_policies_use_explicit_market_inputs() -> None:
         }
     )
 
-    weights = FloatMarketCapWeightPolicy(2).build(signals, market_caps=caps).weights
+    scheduled = _scheduled_signal(signals)
+    weights = FloatMarketCapWeightPolicy(2).build(
+        scheduled, market_caps=caps
+    ).weights.collect(dense=False)
 
-    assert weights["weight"].to_list() == [pytest.approx(0.25), pytest.approx(0.75)]
+    assert weights["value"].to_list() == [pytest.approx(0.25), pytest.approx(0.75)]
     with pytest.raises(InputValidationError, match="requires market_caps"):
-        FloatMarketCapWeightPolicy(2).build(signals)
+        FloatMarketCapWeightPolicy(2).build(scheduled)
 
 
 def test_factor_batch_preserves_custom_portfolio_policy_weights() -> None:
@@ -279,10 +326,12 @@ def test_factor_batch_preserves_custom_portfolio_policy_weights() -> None:
     )
     config = BacktestConfig(initial_capital=100_000, quantiles=2, top_n=2)
     policy = FloatMarketCapWeightPolicy(2)
-    expected_weights = policy.build(signals, market_caps=caps).weights
+    scheduled = _scheduled_signal(signals)
+    expected_panel = policy.build(scheduled, market_caps=caps).weights
+    expected_weights = expected_panel.collect(dense=False).rename({"value": "weight"})
 
     actual = run_signal_evaluation(
-        signals,
+        scheduled,
         prices,
         config=config,
         portfolio_policy=policy,
@@ -319,8 +368,10 @@ def test_target_volatility_skips_snapshots_without_history() -> None:
     policy = TargetVolatilityPolicy(EqualWeightPolicy(1), lookback_sessions=2)
 
     built = policy.build(
-        signals, prices=prices, config=BacktestConfig(initial_capital=10_000)
+        _scheduled_signal(signals),
+        prices=prices,
+        config=BacktestConfig(initial_capital=10_000),
     )
 
     assert built.skipped["reason"].to_list() == ["insufficient_volatility_history"]
-    assert built.weights.get_column("weight").max() <= 1.0
+    assert built.weights.collect(dense=False).get_column("value").max() <= 1.0

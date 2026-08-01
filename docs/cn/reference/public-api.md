@@ -1,93 +1,32 @@
 # 公开 API
 
-稳定 API 从 `bagelquant_bt` 导出。
+稳定 API 从 `bagelquant_bt` 导出。0.2 只接受强类型 Signal；普通 `Panel`、
+裸 DataFrame 和直接 weights 均不能进入公开回测入口。
 
 ## 入口函数
 
 ```python
-from bagelquant_bt import run_backtest, run_factor_evaluation, run_weight_backtest
+from bagelquant_bt import compose_signal, run_signal_backtest, run_signal_evaluation
 ```
 
-- `run_backtest(signal, prices, *, kind, config=None)`：根据 `kind` 分发。
-- `run_weight_backtest(weights, prices, *, config)`：评估组合权重。
-- `run_factor_evaluation(factor, prices, *, config)`：评估因子分数。
-- `summary_report(result, *, output_path=None, missing_price_keys_output_path=None, title=None, annualization=252)`：
-  为 `BacktestResult` 或 `FactorEvaluationResult` 生成静态 HTML 报告。
+- `compose_signal(...) -> SignalPanel`：按 `SignalDatePolicy` 的 cadence
+  执行 `SignalComposer`。监督式 composer 使用本次 execution 到下一次
+  execution 的收益，并检查标签可用时间。
+- `run_signal_backtest(...)`：依次应用 `SignalDatePolicy`、
+  `ExecutionPolicy`、`PortfolioPolicy` 和内部 weights 引擎。
+- `run_signal_evaluation(scheduled_signal, prices, ...)`：计算 IC、分位数、
+  lag、IC decay 和 Signal 驱动的组合结果。
 
-## 配置
+`PortfolioPolicy` 接收 `ScheduledSignal`，返回
+`PortfolioBuild(weights: Panel, skipped: DataFrame)`。`OrderSizingPolicy` 与
+`OrderPlan` 只预留 weights 到订单的边界，本版本不实现手数计算。
 
-```python
-from bagelquant_bt import BacktestConfig, TransactionCostConfig
-
-config = BacktestConfig(
-    initial_capital=1_000_000,
-    transaction_cost=TransactionCostConfig(rate=0.00015, min_fee=5.0),
-    annualization=252,
-    ic_method="spearman",
-    quantiles=5,
-    top_n=50,
-)
-```
-
-- `initial_capital` 必须为正。
-- `ic_method` 仍可传入以保持兼容；因子评估会同时输出 Spearman 和 Pearson IC。
-- `quantiles` 控制因子分桶数量。
-- `top_n` 控制 top-N 因子组合。
-
-## 结果对象
-
-`BacktestResult` 暴露：
-
-- `weights`
-- `asset_returns`
-- `gross_returns`
-- `net_returns`
-- `gross_cumulative_returns`
-- `net_cumulative_returns`
-- `gross_value`
-- `net_value`
-- `turnover`
-- `transaction_costs`
-- `summary`
-- `performance`
-- `coverage`：按价格日期给出原始 `weight_asset_count`、`universe_asset_count` 和
-  `coverage_ratio`。
-- `missing_price_keys`
-
-`weights` 和 `target_weights` 在首次访问时从已校验的稀疏状态事件展开，
-随后缓存在结果对象中。两者仍返回具有原有 schema 和稳定排序的 long-form
-Polars DataFrame；读取其他结果字段或执行 `repr(result)` 不会触发这两张日频表。
-
-`FactorEvaluationResult` 暴露：
-
-- `factor`
-- `forward_returns`
-- `ic`
-- `ic_summary`
-- `ic_mean`
-- `ic_std`
-- `icir`
-- `quantile_returns`
-- `quantile_cumulative_returns`
-- `spread_returns`
-- `top_n_weights`
-- `top_n_backtest`
-- `spread_weights`
-- `spread_backtest`
-- `lag_analysis`
-- `lag_returns`
-- `ic_decay`
-- `coverage`：按价格日期给出原始 `factor_signal_asset_count`、
-  `universe_asset_count` 和 `coverage_ratio`。
-- `missing_price_keys`
-
-## 可视化
-
-`plot_coverage(result)` 返回 Plotly 时间序列：以阴影面积展示原始因子信号或权重的
-资产覆盖数，并展示价格宇宙总资产数。
+`BacktestResult` 包含权重、收益、净值、换手、成本、执行阻塞和覆盖度。
+`SignalEvaluationResult` 包含 Signal、execution-to-execution forward returns、
+Pearson/Spearman IC、分位数、spread、TOP N、lag、IC decay 与基准结果。
 
 ## 异常
 
 - `BagelQuantBacktestError`：包级基础异常。
 - `BacktestConfigError`：配置无效。
-- `InputValidationError`：输入 frame 无效或不兼容。
+- `InputValidationError`：市场数据无效或不兼容。

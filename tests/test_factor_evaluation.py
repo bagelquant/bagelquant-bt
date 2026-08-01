@@ -6,13 +6,14 @@ from datetime import date
 
 import polars as pl
 import pytest
+from bagelquant_core import Domain, SignalPanel
 from polars.testing import assert_frame_equal
 
 import bagelquant_bt.factor as factor_module
 from bagelquant_bt import (
     BacktestConfig,
+    ScheduledSignal,
     materialize_signal_diagnostics,
-    run_factor_evaluation,
     run_signal_evaluation,
 )
 from bagelquant_bt.engine import (
@@ -28,10 +29,25 @@ from bagelquant_bt.factor import (
     lag_factor,
     prepare_factor_market_data,
     quantile_equal_weights,
+    run_factor_evaluation,
     signal_forward_returns,
     spread_quantile_weights,
     summarize_ic,
 )
+
+
+def _scheduled_signal(frame: pl.DataFrame) -> ScheduledSignal:
+    values = frame.with_columns(pl.col("time").cast(pl.Date)).rename(
+        {"signal": "value"}
+    )
+    domain = Domain(
+        calendar=values.get_column("time").unique().sort(),
+        universe=values.get_column("asset_id").unique().sort(),
+    )
+    return ScheduledSignal(
+        schedule=values.select("time").unique().sort("time"),
+        signal=SignalPanel.from_domain(values, domain, name="signal"),
+    )
 
 
 def test_icir_is_annualized_with_configured_ic_observations() -> None:
@@ -355,7 +371,7 @@ def test_prepared_signal_returns_validate_schedule_and_price_keys() -> None:
 
     with pytest.raises(InputValidationError, match="outside the current signal"):
         run_signal_evaluation(
-            signals,
+            _scheduled_signal(signals),
             prices,
             config=config,
             evaluation_returns=pl.DataFrame(
@@ -369,7 +385,7 @@ def test_prepared_signal_returns_validate_schedule_and_price_keys() -> None:
 
     with pytest.raises(InputValidationError, match="outside the current signals"):
         run_signal_evaluation(
-            signals,
+            _scheduled_signal(signals),
             prices,
             config=config,
             evaluation_returns=pl.DataFrame(
@@ -395,7 +411,7 @@ def test_prepared_signal_returns_validate_schedule_and_price_keys() -> None:
     )
     with pytest.raises(InputValidationError, match="absent from prepared prices"):
         run_signal_evaluation(
-            signals_with_missing_price,
+            _scheduled_signal(signals_with_missing_price),
             prices,
             config=config,
             evaluation_returns=pl.DataFrame(
@@ -665,7 +681,7 @@ def test_monthly_signal_lag_trades_daily_from_the_shifted_session() -> None:
     )
 
     result = run_signal_evaluation(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
     )
@@ -704,12 +720,12 @@ def test_signal_evaluation_reuses_prepared_prices_and_scheduled_returns() -> Non
     )
 
     direct = run_signal_evaluation(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
     )
     reused = run_signal_evaluation(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
         market_data=prepared,
@@ -947,7 +963,7 @@ def test_signal_diagnostics_build_only_requested_paths(
     )
 
     quantiles = materialize_signal_diagnostics(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
         include_quantiles=True,
@@ -956,7 +972,7 @@ def test_signal_diagnostics_build_only_requested_paths(
     assert set(quantiles["quantile_returns"]["quantile"]) == {"q1", "q2"}
 
     spread = materialize_signal_diagnostics(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
         include_spread=True,
@@ -978,7 +994,7 @@ def test_signal_diagnostics_build_only_requested_paths(
         counted_batch,
     )
     combined = materialize_signal_diagnostics(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
         include_quantiles=True,
@@ -1014,7 +1030,7 @@ def test_signal_diagnostics_skip_unrequested_family_builders(
         lambda *args, **kwargs: pytest.fail("lag family must not be built"),
     )
     quantiles = materialize_signal_diagnostics(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=config,
         include_quantiles=True,
@@ -1028,7 +1044,7 @@ def test_signal_diagnostics_skip_unrequested_family_builders(
         lambda *args, **kwargs: pytest.fail("quantile family must not be built"),
     )
     lags = materialize_signal_diagnostics(
-        signals,
+        _scheduled_signal(signals),
         prices,
         config=config,
         include_lags=True,

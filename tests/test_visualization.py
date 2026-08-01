@@ -3,7 +3,9 @@ from __future__ import annotations
 import plotly.graph_objects as go
 import polars as pl
 
-from bagelquant_bt import BacktestConfig, run_factor_evaluation, run_weight_backtest
+from bagelquant_bt import BacktestConfig
+from bagelquant_bt.engine import run_weight_backtest
+from bagelquant_bt.factor import run_factor_evaluation
 from bagelquant_bt.visualization import (
     plot_coverage,
     plot_cumulative_returns,
@@ -119,7 +121,7 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
         "Total universe asset count",
     ]
     assert [trace.name for trace in factor_coverage.data] == [
-        "Factor signal coverage",
+        "Signal coverage",
         "Total universe asset count",
     ]
     assert weight_coverage.data[0].fill == "tozeroy"

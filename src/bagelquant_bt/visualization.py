@@ -128,8 +128,8 @@ def plot_coverage(result: BacktestResult | FactorEvaluationResult) -> go.Figure:
 
     if isinstance(result, FactorEvaluationResult):
         input_column = "factor_signal_asset_count"
-        input_label = "Factor signal coverage"
-        title = "Factor Signal Coverage"
+        input_label = "Signal coverage"
+        title = "Signal Coverage"
     else:
         input_column = "weight_asset_count"
         input_label = "Weights coverage"

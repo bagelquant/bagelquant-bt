@@ -57,7 +57,7 @@ def factor_evaluation_report_figures(
         ReportFigure(
             "coverage",
             "Summary & Coverage",
-            "Factor Signal Coverage",
+            "Signal Coverage",
             plot_coverage(result),
         ),
         ReportFigure("ic", "IC & ICIR", "Information Coefficient", plot_ic(result)),
@@ -220,7 +220,7 @@ def summary_report(
     """Build a self-contained HTML report for a backtest or factor result."""
 
     if isinstance(result, FactorEvaluationResult):
-        report_title = title or "Factor Evaluation Summary Report"
+        report_title = title or "Signal Evaluation Summary Report"
         body = _factor_report(result, annualization=annualization)
     elif isinstance(result, BacktestResult):
         report_title = title or "Backtest Summary Report"
@@ -654,3 +654,6 @@ def _format_value(value: object, *, none_display: str = "") -> str:
     if isinstance(value, float):
         return f"{value:.4g}"
     return str(value)
+
+
+signal_evaluation_report_figures = factor_evaluation_report_figures

@@ -5,15 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import polars as pl
+from bagelquant_core import Panel
 
 from .engine import backtest_weight_frame
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_panel_frame
+from .signal import ScheduledSignal
 
 
 @dataclass(frozen=True, slots=True)
 class PortfolioBuild:
-    weights: pl.DataFrame
+    weights: Panel
     skipped: pl.DataFrame
 
 
@@ -21,9 +23,12 @@ class PortfolioBuild:
 class EqualWeightPolicy:
     top_n: int
 
-    def build(self, signals: pl.DataFrame, **_: object) -> PortfolioBuild:
+    def build(self, signals: ScheduledSignal, **_: object) -> PortfolioBuild:
         selected = _top_n(signals, self.top_n)
-        return PortfolioBuild(_normalise(selected, "_unit"), _empty_skipped())
+        return PortfolioBuild(
+            _weight_panel(_normalise(selected, "_unit"), signals),
+            _empty_skipped(),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +38,7 @@ class FloatMarketCapWeightPolicy:
 
     def build(
         self,
-        signals: pl.DataFrame,
+        signals: ScheduledSignal,
         *,
         market_caps: pl.DataFrame | None = None,
         **_: object,
@@ -54,7 +59,10 @@ class FloatMarketCapWeightPolicy:
                 f"missing float market cap for selected signals at: {dates}"
             )
         return PortfolioBuild(
-            _normalise(weighted, self.market_cap_column), _empty_skipped()
+            _weight_panel(
+                _normalise(weighted, self.market_cap_column), signals
+            ),
+            _empty_skipped(),
         )
 
 
@@ -78,7 +86,7 @@ class TargetVolatilityPolicy:
 
     def build(
         self,
-        signals: pl.DataFrame,
+        signals: ScheduledSignal,
         *,
         prices: pl.DataFrame | None = None,
         config=None,
@@ -88,7 +96,8 @@ class TargetVolatilityPolicy:
             raise InputValidationError(
                 "target-volatility policy requires prices and config"
             )
-        base = self.base.build(signals, **kwargs).weights
+        base_panel = self.base.build(signals, **kwargs).weights
+        base = _weight_frame(base_panel)
         history = backtest_weight_frame(base, prices, config=config).returns
         dates = base.select(TIME).unique().sort(TIME)
         scales = []
@@ -122,13 +131,26 @@ class TargetVolatilityPolicy:
             .select(TIME, ASSET_ID, "weight")
         )
         skipped = scale_frame.filter(pl.col("scale").is_null()).select(TIME, "reason")
-        return PortfolioBuild(weights.sort([TIME, ASSET_ID]), skipped)
+        return PortfolioBuild(
+            Panel.from_domain(
+                weights.rename({"weight": "value"}),
+                signals.signal.domain,
+                name="weights",
+            ),
+            skipped,
+        )
 
 
-def _top_n(signals: pl.DataFrame, top_n: int) -> pl.DataFrame:
+def _top_n(signals: ScheduledSignal, top_n: int) -> pl.DataFrame:
     if top_n <= 0:
         raise ValueError("top_n must be positive")
-    frame = validate_panel_frame(signals, label="signals", value_columns=("signal",))
+    if not isinstance(signals, ScheduledSignal):
+        raise TypeError("portfolio policies require a ScheduledSignal")
+    frame = validate_panel_frame(
+        signals.signal.collect(dense=False).rename({"value": "signal"}),
+        label="signals",
+        value_columns=("signal",),
+    )
     return (
         frame.sort([TIME, "signal"], descending=[False, True])
         .with_columns(pl.int_range(1, pl.len() + 1).over(TIME).alias("_rank"))
@@ -149,3 +171,17 @@ def _normalise(frame: pl.DataFrame, column: str) -> pl.DataFrame:
 
 def _empty_skipped() -> pl.DataFrame:
     return pl.DataFrame(schema={TIME: pl.Date, "reason": pl.String})
+
+
+def _weight_panel(frame: pl.DataFrame, signals: ScheduledSignal) -> Panel:
+    return Panel.from_domain(
+        frame.rename({"weight": "value"}),
+        signals.signal.domain,
+        name="weights",
+    )
+
+
+def _weight_frame(weights: Panel) -> pl.DataFrame:
+    return weights.collect(dense=False).drop_nulls("value").rename(
+        {"value": "weight"}
+    )

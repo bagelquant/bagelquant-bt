@@ -6,9 +6,9 @@ import pytest
 from bagelquant_bt import (
     BacktestConfig,
     build_universe_benchmark_returns,
-    run_factor_evaluation,
     summary_report,
 )
+from bagelquant_bt.factor import run_factor_evaluation
 
 
 def test_universe_benchmark_renormalizes_available_equal_and_size_samples() -> None:

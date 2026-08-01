@@ -2,40 +2,37 @@
 
 ## Responsibility Boundary
 
-`bagelquant-bt` has one job: evaluate a research output against daily prices.
+`bagelquant-bt` evaluates a typed Signal against prices and applies investment
+timing and portfolio policies.
 
-It does not import `bagelquant-core` or `bagelquant-data`.
-
-- `bagelquant-core` owns signal construction and research logic.
+- `bagelquant-core` owns `Panel`, `SignalPanel`, signal construction, and research logic.
 - `bagelquant-data` owns data access and storage.
 - `bagelquant-bt` owns evaluation, transaction costs, summaries, and plots.
 
-This keeps the backtester useful with any workflow that can produce a
-long-form Polars `DataFrame`.
+The public backtest boundary accepts `SignalPanel` only. A plain `Panel`, raw
+Polars `DataFrame`, or direct weights cannot enter `run_signal_backtest`.
 
 ## DataFrame Shape
 
-Prices, weights, and factor scores use the same long-form key shape:
+Prices, Signals, and weights share the same long-form key shape:
 
 ```text
 keys:    time, asset_id
-values:  price, weight, or factor
+values:  price, value, or weight
 ```
 
-Prices are interpreted as close prices.
-
-For a weight backtest, values are portfolio weights. Negative weights are
-allowed.
-
-For factor evaluation, values are cross-sectional scores. Higher scores
-are considered better for quantile and TOP N tests.
+`SignalDatePolicy` maps observation snapshots, `ExecutionPolicy` maps execution
+sessions, and `PortfolioPolicy.build(ScheduledSignal)` returns a `PortfolioBuild`
+containing a plain weights `Panel` plus skipped rows. `MarketRule` remains an
+independent execution constraint. `OrderSizingPolicy`/`OrderPlan` are reserved;
+lot sizing and live order submission are not implemented.
 
 ## Timing Convention
 
 The package uses a no-lookahead convention:
 
 ```text
-weight or factor at date t -> uses the exact matching price date
+Signal information at date t -> executes only after its information cutoff
 executed portfolio weights -> earn the next market-session close-to-close return
 ```
 
@@ -65,7 +62,7 @@ unexecuted target remains cash rather than being redistributed. Results expose
 `price_gaps` and `unexecuted_weight_keys` for audit; `missing_price_keys`
 continues to describe raw target keys without exact observed prices.
 
-For factor evaluation, factor values remain signal inputs for analytics such as
+For signal evaluation, signal values remain inputs for analytics such as
 IC, ICIR, and IC decay. Tradable factor outputs, including TOP N, quantile, and
 spread portfolios, are first converted into portfolio weights and then sent
 through the same weight backtest engine.
@@ -74,4 +71,4 @@ It rejects:
 
 - duplicate `(time, asset_id)` keys
 - nonnumeric values
-- non-DataFrame signal inputs
+- non-SignalPanel public backtest inputs

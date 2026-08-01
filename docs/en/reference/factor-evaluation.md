@@ -1,15 +1,15 @@
-# Factor Evaluation
+# Signal Evaluation
 
-Factor evaluation treats the factor DataFrame as cross-sectional scores.
-
-Higher scores are better.
+Signal evaluation treats each scheduled `SignalPanel` snapshot as
+cross-sectional predictions. Higher values are better.
 
 ## IC and ICIR
 
 For each date, `bagelquant-bt` computes the cross-sectional correlation between
-factor scores at date `t` and asset returns from `t` to `t+1`.
+signal values at one execution date and asset returns through the next signal
+execution date.
 
-Factor evaluation outputs both Pearson correlation and Spearman rank
+Signal evaluation outputs both Pearson correlation and Spearman rank
 correlation in `result.ic`:
 
 ```python
@@ -30,16 +30,16 @@ it defaults to the daily-return `annualization` setting. This is distinct from
 portfolio returns: annualized return, volatility, Sharpe, rolling performance,
 benchmarks, and lag Sharpe use the daily-return annualization setting.
 
-## Signal policies
+## Signal date and execution policies
 
-`SignalPolicy.select` chooses whole snapshots from a daily prediction panel and
-returns a `SignalSelection` containing both the resolved schedule and executable
-rows. `month_end` prefers the last open session, falls back only to an earlier
-whole snapshot in the same calendar month, and otherwise records a skip. It
-never fills one asset from an earlier date.
+`SignalDatePolicy.select` chooses whole snapshots from a `SignalPanel` and
+returns `ScheduledSignal`, which contains the resolved schedule, execution-date
+lineage, and typed signal. `month_end` prefers the last open session, falls back
+only to an earlier whole snapshot in the same calendar month, and otherwise
+records a skip. It never fills one asset from an earlier date.
 
 `ExecutionPolicy("next_open")` separately maps rebalance dates to execution
-dates. `run_signal_evaluation` accepts the resolved `SignalSelection`, measures
+dates. `run_signal_evaluation` accepts the resolved `ScheduledSignal`, measures
 IC through the next execution date, and marks portfolios to market daily
 between executions. The final signal without a complete following execution
 period is excluded.
@@ -60,7 +60,7 @@ q1_return - qN_return
 
 ## TOP N Backtest
 
-The TOP N backtest converts factor scores into long-only equal weights:
+The TOP N backtest converts signal values into long-only equal weights:
 
 ```text
 top N assets each day -> 1 / N weight each
@@ -71,10 +71,10 @@ normal portfolio-weight DataFrame, including transaction costs.
 
 ## Spread and Lag Analysis
 
-Factor evaluation also builds a spread portfolio: long `q1`, short `qN`, and
+Signal evaluation also builds a spread portfolio: long `q1`, short `qN`, and
 passes it through the same cost-aware backtest engine.
 
-`lag_analysis` evaluates TOP N and spread portfolios with factor signals
+`lag_analysis` evaluates TOP N and spread portfolios with signals
 delayed by 0, 1, 2, 3, 4, 5, 10, 20, 30, and 60 trading sessions. The delay is
 resolved on the daily price-session calendar, so a monthly signal delayed by 15
 is delayed by 15 open sessions rather than 15 monthly observations.

@@ -1,68 +1,65 @@
 # bagelquant-bt
 
-`bagelquant-bt` provides backtesting, factor evaluation, performance metrics, and
-Plotly visualization for long-form Polars panels.
+`bagelquant-bt` provides typed signal composition, evaluation, portfolio-policy
+application, performance metrics, and Plotly visualization.
 
-The public input shape is always explicit:
+The public investment flow is:
 
-- prices: `time`, `asset_id`, `price`
-- weights: `time`, `asset_id`, `weight`
-- factors: `time`, `asset_id`, `factor`
+```text
+AlphaValue Panel -> SignalComposer -> SignalPanel -> SignalDatePolicy
+-> ScheduledSignal -> ExecutionPolicy -> PortfolioPolicy -> Weights Panel
+```
 
-Weights at `time=t` earn the next market-session return. During an asset-specific
-price gap, its holding is frozen at the last observed price; the gap sessions
-have zero return and the cumulative move is recognized when a new price arrives.
+Public backtests require a core `SignalPanel`. Ordinary panels, raw DataFrames,
+and direct weights cannot enter the backtest API. Prices remain explicit
+long-form Polars data with `time`, `asset_id`, and `price`.
 
 ```python
-import polars as pl
-
-from bagelquant_bt import BacktestConfig, run_backtest
-
-prices = pl.DataFrame(
-    {
-        "time": ["2024-01-02", "2024-01-03"],
-        "asset_id": ["AAA", "AAA"],
-        "price": [100.0, 102.0],
-    }
-)
-weights = pl.DataFrame(
-    {"time": ["2024-01-02"], "asset_id": ["AAA"], "weight": [1.0]}
+from bagelquant_core import IdentitySignalComposer, Panel
+from bagelquant_bt import (
+    BacktestConfig,
+    MissingSnapshotAction,
+    SignalAnchor,
+    SignalDatePolicy,
+    compose_signal,
+    run_signal_backtest,
 )
 
-result = run_backtest(
-    weights,
+alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
+policy = SignalDatePolicy(
+    id="month_end",
+    frequency="monthly",
+    anchor=SignalAnchor.LAST_TRADING_DAY,
+    missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
+)
+signal = compose_signal(
+    {"quality": alpha_value},
+    IdentitySignalComposer(),
+    calendar,
+    policy,
+)
+result = run_signal_backtest(
+    signal,
     prices,
-    kind="weights",
+    calendar,
+    policy,
     config=BacktestConfig(initial_capital=1_000_000),
 )
-
-print(result.returns)
-print(result.summary)
 ```
 
-Factor evaluation computes cross-sectional IC at the signal cadence, plus
-daily marked-to-market quantile portfolios, a `q1 - qN` spread, and a TOP N
-equal-weight backtest. Sparse or monthly signal snapshots rebalance only on
-their snapshot dates; their weights are held across intervening daily returns.
-Call `SignalPolicy.select` first and pass its `SignalSelection` to every
-evaluation entry point; `ExecutionPolicy("next_open")` keeps date selection
-separate from execution timing.
+`run_signal_evaluation` computes execution-to-execution IC, quantiles, spread,
+TOP N, lag, and IC-decay diagnostics from `ScheduledSignal`. Sparse or monthly
+signals rebalance only on their snapshot dates; positions are held between
+snapshots. `OrderSizingPolicy` reserves the later target-weight-to-order
+boundary, but quantity sizing is not implemented yet.
 
-Visualization helpers return Plotly figures:
-
-```python
-from bagelquant_bt.visualization import plot_coverage, plot_cumulative_returns
-
-fig = plot_cumulative_returns(result)
-fig.write_html("cumulative_returns.html")
-
-coverage_fig = plot_coverage(result)
-coverage_fig.write_html("coverage.html")
-```
+During an asset-specific price gap, its holding is frozen at the last observed
+price. The gap sessions have zero return and the cumulative move is recognized
+when a new price appears.
 
 ## Development
 
 ```bash
 uv run ruff check .
-uv run pytest
+uv run python -m pytest
 ```

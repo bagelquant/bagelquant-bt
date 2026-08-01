@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
+from bagelquant_core import Domain, SignalPanel
 
 from .benchmarks import (
     DEFAULT_BENCHMARK,
@@ -40,7 +41,7 @@ from .inputs import (
 from .portfolio import EqualWeightPolicy
 from .results import BacktestResult, FactorEvaluationResult
 from .returns import PreparedPriceData, _prepare_price_data, prepare_price_data
-from .signal import SignalSelection
+from .signal import ScheduledSignal
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
 
@@ -97,7 +98,7 @@ def run_factor_evaluation(
 
 
 def run_signal_evaluation(
-    signals: pl.DataFrame | SignalSelection,
+    signals: ScheduledSignal,
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
@@ -114,7 +115,9 @@ def run_signal_evaluation(
     """Evaluate executable signals against returns through the next signal."""
 
     resolved_config = _require_config(config)
-    signal_frame = signals.signals if isinstance(signals, SignalSelection) else signals
+    if not isinstance(signals, ScheduledSignal):
+        raise TypeError("run_signal_evaluation requires a ScheduledSignal")
+    signal_frame = signals.signal.collect(dense=False).rename({"value": "signal"})
     aligned = validate_panel_frame(
         signal_frame, label="signals", value_columns=("signal",)
     )
@@ -149,7 +152,7 @@ def run_signal_evaluation(
 
 
 def materialize_signal_diagnostics(
-    signals: pl.DataFrame | SignalSelection,
+    signals: ScheduledSignal,
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
@@ -164,7 +167,9 @@ def materialize_signal_diagnostics(
     if not (include_quantiles or include_spread or include_lags):
         return {}
     resolved_config = _require_config(config)
-    signal_frame = signals.signals if isinstance(signals, SignalSelection) else signals
+    if not isinstance(signals, ScheduledSignal):
+        raise TypeError("materialize_signal_diagnostics requires a ScheduledSignal")
+    signal_frame = signals.signal.collect(dense=False).rename({"value": "signal"})
     aligned = validate_panel_frame(
         signal_frame,
         label="signals",
@@ -576,13 +581,26 @@ def _policy_weights(
     build = getattr(selected, "build", None)
     if build is None:
         raise TypeError("portfolio_policy must define build(signals, ...)")
+    signal_frame = factor.select(
+        TIME,
+        ASSET_ID,
+        pl.col("factor").alias("value"),
+    )
+    domain = Domain(
+        calendar=signal_frame.get_column(TIME).unique().sort(),
+        universe=signal_frame.get_column(ASSET_ID).unique().sort(),
+    )
+    scheduled = ScheduledSignal(
+        schedule=signal_frame.select(TIME).unique().sort(TIME),
+        signal=SignalPanel.from_domain(signal_frame, domain, name="signal"),
+    )
     output = build(
-        factor.select(TIME, ASSET_ID, pl.col("factor").alias("signal")),
+        scheduled,
         prices=prices,
         config=config,
         **dict(inputs or {}),
     )
-    return output.weights
+    return output.weights.collect(dense=False).rename({"value": "weight"})
 
 
 def information_coefficients(
@@ -1250,7 +1268,7 @@ def factor_lag_returns(
     config: BacktestConfig,
     lags: tuple[int, ...] = FACTOR_LAGS,
 ) -> pl.DataFrame:
-    """Return cumulative returns for factor signals delayed by trading sessions."""
+    """Return cumulative returns for signals delayed by trading sessions."""
 
     _, returns, _ = _lag_outputs(factor, prices, config=config, lags=lags)
     return returns
@@ -1264,7 +1282,7 @@ def factor_ic_decay(
     return_provider: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
     lags: tuple[int, ...] = FACTOR_LAGS,
 ) -> pl.DataFrame:
-    """Compute IC decay for factor signals delayed by trading sessions."""
+    """Compute IC decay for signals delayed by trading sessions."""
 
     calendar = (
         _trading_sessions(trading_sessions)

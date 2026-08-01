@@ -12,9 +12,10 @@ resolution-markers = [
 
 [[package]]
 name = "bagelquant-bt"
-version = "0.1.5"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "bagelquant-core" },
     { name = "numpy" },
     { name = "plotly" },
     { name = "polars" },
@@ -28,6 +29,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bagelquant-core", editable = "../bagelquant-core" },
     { name = "numpy", specifier = ">=2.4.0" },
     { name = "plotly", specifier = ">=6.0.0" },
     { name = "polars", specifier = ">=1.35.0" },
@@ -36,6 +38,27 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=9.0.0" },
+    { name = "ruff", specifier = ">=0.14.0" },
+]
+
+[[package]]
+name = "bagelquant-core"
+version = "0.3.0"
+source = { editable = "../bagelquant-core" }
+dependencies = [
+    { name = "numpy" },
+    { name = "polars" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "polars", specifier = ">=1.35.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.14.0" },
 ]
 

@@ -1,6 +1,7 @@
 # bagelquant-bt 文档
 
-`bagelquant-bt` 用于评估研究输出。它不生成信号，也不读取市场数据；输入边界是 long-form Polars DataFrame。
+`bagelquant-bt` 将 AlphaValue Panel 组合成强类型 Signal 并执行评估。它不读取
+市场数据；公开回测入口只接受 `SignalPanel`。
 
 ## 推荐阅读
 
@@ -12,4 +13,4 @@
 - [内部实现](reference/internals.md)
 - [API](reference/api.md)
 - [交易成本](reference/transaction-costs.md)
-- [因子评估](reference/factor-evaluation.md)
+- [Signal 评估](reference/factor-evaluation.md)
