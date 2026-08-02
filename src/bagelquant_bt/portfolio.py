@@ -58,6 +58,14 @@ class FloatMarketCapWeightPolicy:
             raise InputValidationError(
                 f"missing float market cap for selected signals at: {dates}"
             )
+        invalid = weighted.filter(
+            ~pl.col(self.market_cap_column).is_finite()
+            | (pl.col(self.market_cap_column) <= 0)
+        )
+        if invalid.height:
+            raise InputValidationError(
+                "float market caps must be finite and positive"
+            )
         return PortfolioBuild(
             _weight_panel(
                 _normalise(weighted, self.market_cap_column), signals

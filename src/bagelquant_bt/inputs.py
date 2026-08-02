@@ -43,15 +43,40 @@ def validate_panel_frame(
 
 
 def validate_prices(prices: pl.DataFrame) -> pl.DataFrame:
-    return validate_panel_frame(prices, label="prices", value_columns=("price",))
+    normalized = validate_panel_frame(
+        prices,
+        label="prices",
+        value_columns=("price",),
+    )
+    if normalized.select(
+        ((~pl.col("price").is_finite()) | (pl.col("price") <= 0)).any()
+    ).item():
+        raise InputValidationError(
+            "prices.price must be finite and positive"
+        )
+    return normalized
 
 
 def validate_weights(weights: pl.DataFrame) -> pl.DataFrame:
-    return validate_panel_frame(weights, label="weights", value_columns=("weight",))
+    normalized = validate_panel_frame(
+        weights,
+        label="weights",
+        value_columns=("weight",),
+    )
+    if normalized.select((~pl.col("weight").is_finite()).any()).item():
+        raise InputValidationError("weights.weight must be finite")
+    return normalized
 
 
 def validate_factor(factor: pl.DataFrame) -> pl.DataFrame:
-    return validate_panel_frame(factor, label="factor", value_columns=("factor",))
+    normalized = validate_panel_frame(
+        factor,
+        label="factor",
+        value_columns=("factor",),
+    )
+    if normalized.select((~pl.col("factor").is_finite()).any()).item():
+        raise InputValidationError("factor.factor must be finite")
+    return normalized
 
 
 def validate_universe(universe: pl.DataFrame) -> pl.DataFrame:
@@ -97,9 +122,14 @@ def validate_execution_availability(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("can_sell").cast(pl.Boolean, strict=False),
         pl.col("reason").cast(pl.String),
     )
-    normalized = normalized.drop_nulls(
-        [TIME, ASSET_ID, "can_buy", "can_sell", "reason"]
-    )
+    if normalized.select(
+        pl.any_horizontal(
+            pl.col(column).is_null() for column in required
+        ).any()
+    ).item():
+        raise InputValidationError(
+            "execution_availability must not contain null values"
+        )
     if normalized.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
         raise InputValidationError(
             "execution_availability must be unique by (time, asset_id)"

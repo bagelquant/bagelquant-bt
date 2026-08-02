@@ -4,7 +4,12 @@ import polars as pl
 import pytest
 
 from bagelquant_bt.exceptions import InputValidationError
-from bagelquant_bt.inputs import validate_prices
+from bagelquant_bt.inputs import (
+    validate_execution_availability,
+    validate_factor,
+    validate_prices,
+    validate_weights,
+)
 
 
 def test_prices_must_be_polars_dataframe() -> None:
@@ -31,6 +36,19 @@ def test_prices_are_sorted_and_cloned() -> None:
     assert result["price"].to_list() == [1.0, 2.0]
 
 
+@pytest.mark.parametrize("price", [0.0, -1.0, float("inf")])
+def test_prices_must_be_finite_and_positive(price: float) -> None:
+    frame = pl.DataFrame(
+        {"time": ["2024-01-01"], "asset_id": ["a"], "price": [price]}
+    )
+
+    with pytest.raises(
+        InputValidationError,
+        match=r"prices\.price must be finite and positive",
+    ):
+        validate_prices(frame)
+
+
 def test_required_nulls_and_nans_are_removed_before_duplicate_check() -> None:
     frame = pl.DataFrame(
         {
@@ -45,3 +63,42 @@ def test_required_nulls_and_nans_are_removed_before_duplicate_check() -> None:
     assert result.to_dicts() == [
         {"time": result["time"][0], "asset_id": "a", "price": 1.0}
     ]
+
+
+@pytest.mark.parametrize(
+    ("validator", "column", "label"),
+    [
+        (validate_weights, "weight", "weights.weight"),
+        (validate_factor, "factor", "factor.factor"),
+    ],
+)
+def test_backtest_numeric_inputs_reject_infinite_values(
+    validator,
+    column: str,
+    label: str,
+) -> None:
+    frame = pl.DataFrame(
+        {"time": ["2024-01-01"], "asset_id": ["a"], column: [float("inf")]}
+    )
+
+    with pytest.raises(InputValidationError, match=rf"{label} must be finite"):
+        validator(frame)
+
+
+def test_execution_availability_rejects_null_rule_values() -> None:
+    frame = pl.DataFrame(
+        {
+            "time": ["2024-01-02"],
+            "asset_id": ["a"],
+            "can_buy": [None],
+            "can_sell": [True],
+            "reason": ["suspended"],
+        },
+        schema_overrides={"can_buy": pl.Boolean},
+    )
+
+    with pytest.raises(
+        InputValidationError,
+        match="execution_availability must not contain null values",
+    ):
+        validate_execution_availability(frame)

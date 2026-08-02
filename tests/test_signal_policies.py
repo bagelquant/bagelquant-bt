@@ -281,6 +281,18 @@ def test_portfolio_policies_use_explicit_market_inputs() -> None:
     with pytest.raises(InputValidationError, match="requires market_caps"):
         FloatMarketCapWeightPolicy(2).build(scheduled)
 
+    invalid_caps = caps.with_columns(
+        pl.Series("float_market_cap", [-1.0, 1.0])
+    )
+    with pytest.raises(
+        InputValidationError,
+        match="float market caps must be finite and positive",
+    ):
+        FloatMarketCapWeightPolicy(2).build(
+            scheduled,
+            market_caps=invalid_caps,
+        )
+
 
 def test_factor_batch_preserves_custom_portfolio_policy_weights() -> None:
     times = [date(2024, 1, day) for day in range(1, 7)]
