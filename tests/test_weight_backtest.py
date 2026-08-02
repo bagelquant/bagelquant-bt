@@ -176,7 +176,12 @@ def test_gross_and_net_value_paths_follow_independent_daily_ledgers() -> None:
         prices,
         config=BacktestConfig(
             initial_capital=1_000,
-            transaction_cost=TransactionCostConfig(rate=0.01, min_fee=0.0),
+            transaction_cost=TransactionCostConfig(
+                rate=0.01,
+                min_fee=0.0,
+                slippage_rate=0.0,
+                stamp_tax_rate=0.0,
+            ),
         ),
     )
 
@@ -214,7 +219,12 @@ def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
         prices,
         config=BacktestConfig(
             initial_capital=1_000,
-            transaction_cost=TransactionCostConfig(rate=0.001, min_fee=5.0),
+            transaction_cost=TransactionCostConfig(
+                rate=0.001,
+                min_fee=5.0,
+                slippage_rate=0.0,
+                stamp_tax_rate=0.0,
+            ),
         ),
     )
 
@@ -224,6 +234,126 @@ def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
     assert cost["raw_fee"] == pytest.approx(1.0)
     assert cost["total_fee"] == pytest.approx(10.0)
     assert cost["min_fee_adjustment"] == pytest.approx(9.0)
+
+
+def test_transaction_cost_breakdown_separates_buy_and_sell_costs() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "asset_id": ["a", "a", "a"],
+            "price": [10.0, 10.0, 10.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "a"],
+            "weight": [1.0, 0.5],
+        }
+    )
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=100_000,
+            transaction_cost=TransactionCostConfig(
+                rate=0.00015,
+                min_fee=5.0,
+                slippage_rate=0.0005,
+                stamp_tax_rate=0.0005,
+            ),
+        ),
+    )
+
+    entry, sale = result.transaction_costs.data.to_dicts()
+    assert entry["buy_notional"] == pytest.approx(100_000)
+    assert entry["sell_notional"] == 0.0
+    assert entry["slippage_fee"] == pytest.approx(50.0)
+    assert entry["commission_fee"] == pytest.approx(15.0)
+    assert entry["stamp_tax_fee"] == 0.0
+    assert entry["total_fee"] == pytest.approx(65.0)
+
+    assert sale["buy_notional"] == 0.0
+    assert sale["sell_notional"] > 0.0
+    assert sale["stamp_tax_fee"] == pytest.approx(
+        sale["sell_notional"] * 0.0005
+    )
+    assert sale["total_fee"] == pytest.approx(
+        sale["slippage_fee"]
+        + sale["commission_fee"]
+        + sale["stamp_tax_fee"]
+    )
+    assert sale["min_fee_adjustment"] == pytest.approx(
+        sale["commission_fee"] - sale["raw_fee"]
+    )
+
+
+def test_effective_slippage_schedule_and_missing_rate_fallback() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"] * 2,
+            "asset_id": ["a", "a", "b", "b"],
+            "price": [10.0, 10.0, 10.0, 10.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-01"],
+            "asset_id": ["a", "b"],
+            "weight": [0.5, 0.5],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "time": ["2023-12-01"],
+            "asset_id": ["a"],
+            "slippage_rate": [0.002],
+            "is_fallback": [False],
+        }
+    )
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=100_000,
+            transaction_cost=TransactionCostConfig(
+                rate=0.0,
+                min_fee=0.0,
+                slippage_rate=0.001,
+                stamp_tax_rate=0.0,
+            ),
+        ),
+        slippage_rates=schedule,
+    )
+
+    cost = result.transaction_costs.data.to_dicts()[0]
+    assert cost["slippage_fee"] == pytest.approx(150.0)
+    assert cost["slippage_fallback_asset_count"] == 1
+    assert cost["total_fee"] == pytest.approx(150.0)
+
+
+@pytest.mark.parametrize("rate", [-0.1, float("nan"), float("inf")])
+def test_slippage_schedule_rejects_invalid_rates(rate: float) -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "a"],
+            "price": [1.0, 1.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {"time": ["2024-01-01"], "asset_id": ["a"], "weight": [1.0]}
+    )
+    schedule = pl.DataFrame(
+        {"time": ["2024-01-01"], "asset_id": ["a"], "slippage_rate": [rate]}
+    )
+    with pytest.raises(InputValidationError, match="finite and nonnegative"):
+        run_weight_backtest(
+            weights,
+            prices,
+            config=BacktestConfig(initial_capital=100_000),
+            slippage_rates=schedule,
+        )
 
 
 def test_weight_backtest_raises_when_transaction_costs_exhaust_capital() -> None:

@@ -78,6 +78,7 @@ def run_factor_evaluation(
     execution_availability: pl.DataFrame | None = None,
     benchmark_returns: pl.DataFrame | None = None,
     benchmark_coverage: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate a factor score frame against forward returns and membership."""
 
@@ -94,6 +95,7 @@ def run_factor_evaluation(
         execution_availability=execution_availability,
         benchmark_returns=benchmark_returns,
         benchmark_coverage=benchmark_coverage,
+        slippage_rates=slippage_rates,
     )
 
 
@@ -111,6 +113,7 @@ def run_signal_evaluation(
     execution_availability: pl.DataFrame | None = None,
     benchmark_returns: pl.DataFrame | None = None,
     benchmark_coverage: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate executable signals against returns through the next signal."""
 
@@ -148,6 +151,7 @@ def run_signal_evaluation(
         execution_availability=execution_availability,
         benchmark_returns=benchmark_returns,
         benchmark_coverage=benchmark_coverage,
+        slippage_rates=slippage_rates,
     )
 
 
@@ -161,6 +165,7 @@ def materialize_signal_diagnostics(
     include_quantiles: bool = False,
     include_spread: bool = False,
     include_lags: bool = False,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> Mapping[str, pl.DataFrame]:
     """Build only requested heavyweight signal diagnostic paths."""
 
@@ -219,6 +224,7 @@ def materialize_signal_diagnostics(
             execution_availability_validated=True,
             market_context=market_context,
             additional_weight_frames=diagnostic_quantile_weights,
+            slippage_rates=slippage_rates,
         )
         result["lag_analysis"] = lag_analysis
         result["lag_returns"] = lag_returns
@@ -231,6 +237,7 @@ def materialize_signal_diagnostics(
             execution_availability=resolved_execution_availability,
             execution_availability_validated=True,
             market_context=market_context,
+            slippage_rates=slippage_rates,
         )
     if diagnostic_quantile_weights:
         quantile_returns = _quantile_returns_from_compact_results(
@@ -305,6 +312,7 @@ def evaluate_factor_frame(
     execution_availability: pl.DataFrame | None = None,
     benchmark_returns: pl.DataFrame | None = None,
     benchmark_coverage: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
@@ -388,6 +396,7 @@ def evaluate_factor_frame(
                 for label, weights in quantile_weights.items()
             },
         },
+        slippage_rates=slippage_rates,
     )
     quantile_returns = _quantile_returns_from_compact_results(
         quantile_weights,
@@ -418,6 +427,7 @@ def evaluate_factor_frame(
         execution_availability_validated=True,
         market_context=market_context,
         precomputed_compact_results=primary_compact_results,
+        slippage_rates=slippage_rates,
     )
     top_n_backtest = primary_backtests["top_n"]
     spread_backtest = primary_backtests.get("spread")
@@ -1558,6 +1568,7 @@ def _lag_outputs(
     execution_availability_validated: bool = False,
     market_context: _SparseMarketContext | None = None,
     additional_weight_frames: Mapping[str, pl.DataFrame] | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> tuple[
     pl.DataFrame,
     pl.DataFrame,
@@ -1634,6 +1645,7 @@ def _lag_outputs(
             execution_availability_validated=True,
             execution_keys=execution_keys,
             market_context=market_context,
+            slippage_rates=slippage_rates,
         )
         if batch_inputs
         else {}

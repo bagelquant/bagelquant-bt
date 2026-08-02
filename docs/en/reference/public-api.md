@@ -34,7 +34,12 @@ from bagelquant_bt import BacktestConfig, TransactionCostConfig
 
 config = BacktestConfig(
     initial_capital=1_000_000,
-    transaction_cost=TransactionCostConfig(rate=0.00015, min_fee=5.0),
+    transaction_cost=TransactionCostConfig(
+        rate=0.00015,
+        min_fee=5.0,
+        slippage_rate=0.0005,
+        stamp_tax_rate=0.0005,
+    ),
     annualization=252,
     quantiles=5,
     top_n=50,

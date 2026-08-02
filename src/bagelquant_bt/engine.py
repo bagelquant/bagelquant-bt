@@ -19,6 +19,7 @@ from .inputs import (
     missing_price_keys,
     validate_execution_availability,
     validate_prices,
+    validate_slippage_rates,
     validate_weights,
 )
 from .performance import summarize_performance
@@ -44,6 +45,7 @@ def run_weight_backtest(
     *,
     config: BacktestConfig | None = None,
     execution_availability: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest a long-form portfolio weight frame."""
 
@@ -55,6 +57,7 @@ def run_weight_backtest(
         aligned_prices,
         config=resolved_config,
         execution_availability=execution_availability,
+        slippage_rates=slippage_rates,
     )
 
 
@@ -64,6 +67,7 @@ def backtest_weight_frame(
     *,
     config: BacktestConfig,
     execution_availability: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Backtest an already materialized long-form weight frame."""
 
@@ -79,6 +83,7 @@ def backtest_weight_frame(
         missing_price_keys=missing_keys,
         price_gaps=price_data.price_gaps,
         execution_availability=execution_availability,
+        slippage_rates=slippage_rates,
     )
 
 
@@ -91,6 +96,7 @@ def _backtest_weight_frame_with_forward_returns(
     missing_price_keys: pl.DataFrame | None = None,
     price_gaps: pl.DataFrame | None = None,
     execution_availability: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
     initial_target_weights: pl.DataFrame | None = None,
     initial_executed_weights: pl.DataFrame | None = None,
     initial_gross_value: float | None = None,
@@ -119,6 +125,11 @@ def _backtest_weight_frame_with_forward_returns(
         and initial_gross_value is None
         and initial_net_value is None
     )
+    resolved_slippage_rates = (
+        None
+        if slippage_rates is None
+        else validate_slippage_rates(slippage_rates)
+    )
     if can_defer_weights:
         execution_keys = (
             active_returns.select(TIME, ASSET_ID)
@@ -133,6 +144,7 @@ def _backtest_weight_frame_with_forward_returns(
             execution_availability=active_availability,
             execution_availability_validated=execution_availability_validated,
             execution_keys=execution_keys,
+            slippage_rates=resolved_slippage_rates,
         )["portfolio"]
         if compact.state is None:
             raise AssertionError("sparse portfolio state is required")
@@ -166,6 +178,7 @@ def _backtest_weight_frame_with_forward_returns(
             initial_gross_value=initial_gross_value,
             initial_net_value=initial_net_value,
             execution_availability_validated=execution_availability_validated,
+            slippage_rates=resolved_slippage_rates,
         )
         result_weights = core.weights
         result_targets = core.target_weights
@@ -219,6 +232,7 @@ def _backtest_weight_frames_with_forward_returns(
     price_gaps: pl.DataFrame | None,
     execution_availability: pl.DataFrame | None,
     execution_availability_validated: bool,
+    slippage_rates: pl.DataFrame | None = None,
     market_context: _SparseMarketContext | None = None,
     precomputed_compact_results: Mapping[str, _CompactBacktestResult] | None = None,
 ) -> dict[str, BacktestResult]:
@@ -261,6 +275,7 @@ def _backtest_weight_frames_with_forward_returns(
             execution_availability_validated=execution_availability_validated,
             execution_keys=execution_keys,
             market_context=market_context,
+            slippage_rates=slippage_rates,
         )
     )
     results: dict[str, BacktestResult] = {}
@@ -463,6 +478,7 @@ def _compact_backtest_weight_frame_with_forward_returns(
     config: BacktestConfig,
     execution_availability: pl.DataFrame | None = None,
     execution_availability_validated: bool = False,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> _CompactBacktestResult:
     """Run a backtest without building diagnostics discarded by the caller."""
 
@@ -483,6 +499,7 @@ def _compact_backtest_weight_frame_with_forward_returns(
         config=config,
         execution_availability=active_availability,
         execution_availability_validated=execution_availability_validated,
+        slippage_rates=slippage_rates,
     )
 
 
@@ -495,6 +512,7 @@ def _compact_backtest_weight_frame_with_active_market(
     execution_availability: pl.DataFrame | None,
     execution_availability_validated: bool,
     execution_keys: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> _CompactBacktestResult:
     """Run a compact backtest with caller-reused active market inputs."""
 
@@ -506,6 +524,7 @@ def _compact_backtest_weight_frame_with_active_market(
         execution_availability=execution_availability,
         execution_availability_validated=execution_availability_validated,
         execution_keys=execution_keys,
+        slippage_rates=slippage_rates,
     )
 
 
@@ -518,6 +537,7 @@ def _run_sparse_compact_backtest(
     execution_availability: pl.DataFrame | None,
     execution_availability_validated: bool,
     execution_keys: pl.DataFrame | None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> _CompactBacktestResult:
     """Compute aggregate paths from sparse holding-state changes."""
 
@@ -529,6 +549,7 @@ def _run_sparse_compact_backtest(
         execution_availability=execution_availability,
         execution_availability_validated=execution_availability_validated,
         execution_keys=execution_keys,
+        slippage_rates=slippage_rates,
     )["portfolio"]
 
 
@@ -542,6 +563,7 @@ def _run_sparse_compact_backtests(
     execution_availability_validated: bool,
     execution_keys: pl.DataFrame | None = None,
     market_context: _SparseMarketContext | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> dict[str, _CompactBacktestResult]:
     """Evaluate several sparse portfolios in one market-state scan."""
 
@@ -556,6 +578,11 @@ def _run_sparse_compact_backtests(
         execution_availability
         if execution_availability is None or execution_availability_validated
         else validate_execution_availability(execution_availability)
+    )
+    resolved_slippage_rates = (
+        None
+        if slippage_rates is None
+        else validate_slippage_rates(slippage_rates)
     )
     context = market_context or _prepare_sparse_market_context(
         prices,
@@ -580,6 +607,7 @@ def _run_sparse_compact_backtests(
         states,
         context,
         config=config,
+        slippage_rates=resolved_slippage_rates,
     )
 
 
@@ -871,6 +899,7 @@ def _calculate_sparse_portfolio_batch(
     market_context: _SparseMarketContext,
     *,
     config: BacktestConfig,
+    slippage_rates: pl.DataFrame | None,
 ) -> dict[str, _CompactBacktestResult]:
     labels = list(states)
     portfolio_count = len(labels)
@@ -891,10 +920,19 @@ def _calculate_sparse_portfolio_batch(
         .join(asset_lookup, on=ASSET_ID, how="inner")
         .sort(["_session_index", "_portfolio_index", "_asset_index"])
     )
+    events = _attach_slippage_rates(
+        events,
+        slippage_rates,
+        default_rate=config.transaction_cost.slippage_rate,
+    )
     event_sessions = events.get_column("_session_index").to_numpy()
     event_portfolios = events.get_column("_portfolio_index").to_numpy()
     event_assets = events.get_column("_asset_index").to_numpy()
     event_weights = events.get_column("weight").to_numpy()
+    event_slippage_rates = events.get_column("_slippage_rate").to_numpy()
+    event_slippage_fallbacks = events.get_column(
+        "_slippage_fallback"
+    ).to_numpy()
 
     periods = session_lookup.height
     holdings = np.zeros((portfolio_count, asset_lookup.height), dtype=np.float64)
@@ -902,9 +940,15 @@ def _calculate_sparse_portfolio_batch(
     net_returns = np.zeros_like(gross_returns)
     turnover_values = np.zeros_like(gross_returns)
     traded_asset_counts = np.zeros((periods, portfolio_count), dtype=np.int64)
+    slippage_fallback_asset_counts = np.zeros_like(traded_asset_counts)
     traded_notionals = np.zeros_like(gross_returns)
+    buy_notionals = np.zeros_like(gross_returns)
+    sell_notionals = np.zeros_like(gross_returns)
+    slippage_fees = np.zeros_like(gross_returns)
     raw_fees = np.zeros_like(gross_returns)
     min_fee_adjustments = np.zeros_like(gross_returns)
+    commission_fees = np.zeros_like(gross_returns)
+    stamp_tax_fees = np.zeros_like(gross_returns)
     total_fees = np.zeros_like(gross_returns)
     cost_returns = np.zeros_like(gross_returns)
     gross_value_path = np.zeros_like(gross_returns)
@@ -925,6 +969,8 @@ def _calculate_sparse_portfolio_batch(
     for session_index in range(periods):
         changed_portfolios: list[int] = []
         changed_deltas: list[float] = []
+        changed_slippage_rates: list[float] = []
+        changed_slippage_fallbacks: list[bool] = []
         while (
             event_offset < events.height
             and int(event_sessions[event_offset]) == session_index
@@ -932,11 +978,17 @@ def _calculate_sparse_portfolio_batch(
             portfolio_index = int(event_portfolios[event_offset])
             asset_index = int(event_assets[event_offset])
             target = float(event_weights[event_offset])
-            delta = abs(target - holdings[portfolio_index, asset_index])
+            delta = target - holdings[portfolio_index, asset_index]
             holdings[portfolio_index, asset_index] = target
             if delta != 0.0:
                 changed_portfolios.append(portfolio_index)
                 changed_deltas.append(delta)
+                changed_slippage_rates.append(
+                    float(event_slippage_rates[event_offset])
+                )
+                changed_slippage_fallbacks.append(
+                    bool(event_slippage_fallbacks[event_offset])
+                )
             event_offset += 1
 
         if changed_portfolios:
@@ -944,34 +996,71 @@ def _calculate_sparse_portfolio_batch(
                 changed_portfolios, dtype=np.int64
             )
             changed_delta_array = np.asarray(changed_deltas, dtype=np.float64)
+            absolute_delta_array = np.abs(changed_delta_array)
+            changed_slippage_rate_array = np.asarray(
+                changed_slippage_rates,
+                dtype=np.float64,
+            )
+            changed_slippage_fallback_array = np.asarray(
+                changed_slippage_fallbacks,
+                dtype=np.int64,
+            )
             np.add.at(
                 turnover_values[session_index],
                 changed_portfolio_array,
-                changed_delta_array,
+                absolute_delta_array,
             )
             np.add.at(
                 traded_asset_counts[session_index],
                 changed_portfolio_array,
                 1,
             )
-            per_trade_raw = (
-                changed_delta_array
-                * current_net[changed_portfolio_array]
-                * config.transaction_cost.rate
+            np.add.at(
+                slippage_fallback_asset_counts[session_index],
+                changed_portfolio_array,
+                changed_slippage_fallback_array,
             )
-            per_trade_total = np.maximum(
+            per_trade_notional = (
+                absolute_delta_array * current_net[changed_portfolio_array]
+            )
+            per_trade_buy_notional = (
+                np.maximum(changed_delta_array, 0.0)
+                * current_net[changed_portfolio_array]
+            )
+            per_trade_sell_notional = (
+                np.maximum(-changed_delta_array, 0.0)
+                * current_net[changed_portfolio_array]
+            )
+            per_trade_raw = (
+                per_trade_notional * config.transaction_cost.rate
+            )
+            per_trade_commission = np.maximum(
                 per_trade_raw,
                 config.transaction_cost.min_fee,
             )
+            per_trade_slippage = (
+                per_trade_notional * changed_slippage_rate_array
+            )
+            per_trade_stamp_tax = (
+                per_trade_sell_notional
+                * config.transaction_cost.stamp_tax_rate
+            )
+            for target, values in (
+                (buy_notionals, per_trade_buy_notional),
+                (sell_notionals, per_trade_sell_notional),
+                (slippage_fees, per_trade_slippage),
+                (commission_fees, per_trade_commission),
+                (stamp_tax_fees, per_trade_stamp_tax),
+            ):
+                np.add.at(
+                    target[session_index],
+                    changed_portfolio_array,
+                    values,
+                )
             np.add.at(
                 raw_fees[session_index],
                 changed_portfolio_array,
                 per_trade_raw,
-            )
-            np.add.at(
-                total_fees[session_index],
-                changed_portfolio_array,
-                per_trade_total,
             )
 
         active = session_index >= first_session_indices
@@ -980,7 +1069,12 @@ def _calculate_sparse_portfolio_batch(
             turnover_values[session_index] * current_net
         )
         min_fee_adjustments[session_index] = (
-            total_fees[session_index] - raw_fees[session_index]
+            commission_fees[session_index] - raw_fees[session_index]
+        )
+        total_fees[session_index] = (
+            commission_fees[session_index]
+            + slippage_fees[session_index]
+            + stamp_tax_fees[session_index]
         )
         np.divide(
             total_fees[session_index],
@@ -1024,9 +1118,17 @@ def _calculate_sparse_portfolio_batch(
             {
                 TIME: selected_times,
                 "traded_asset_count": traded_asset_counts[start:, portfolio_index],
+                "slippage_fallback_asset_count": slippage_fallback_asset_counts[
+                    start:, portfolio_index
+                ],
                 "traded_notional": traded_notionals[start:, portfolio_index],
+                "buy_notional": buy_notionals[start:, portfolio_index],
+                "sell_notional": sell_notionals[start:, portfolio_index],
+                "slippage_fee": slippage_fees[start:, portfolio_index],
                 "raw_fee": raw_fees[start:, portfolio_index],
                 "min_fee_adjustment": min_fee_adjustments[start:, portfolio_index],
+                "commission_fee": commission_fees[start:, portfolio_index],
+                "stamp_tax_fee": stamp_tax_fees[start:, portfolio_index],
                 "total_fee": total_fees[start:, portfolio_index],
                 "cost_return": cost_returns[start:, portfolio_index],
             }
@@ -1252,6 +1354,7 @@ def _run_weight_backtest_core(
     initial_net_value: float | None = None,
     execution_availability_validated: bool = False,
     prepared_execution_keys: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> _BacktestCoreResult:
     expanded = _expand_portfolio_weight_data(
         weights,
@@ -1295,6 +1398,7 @@ def _run_weight_backtest_core(
         deltas=deltas,
         gross_returns=gross_returns,
         config=config,
+        slippage_rates=slippage_rates,
         initial_gross_value=initial_gross_value,
         initial_net_value=initial_net_value,
     )
@@ -1647,10 +1751,15 @@ def _simulate_cost_adjusted_returns(
     deltas: pl.DataFrame,
     gross_returns: pl.DataFrame,
     config: BacktestConfig,
+    slippage_rates: pl.DataFrame | None,
     initial_gross_value: float | None = None,
     initial_net_value: float | None = None,
 ) -> tuple[TransactionCostBreakdown, pl.DataFrame, pl.DataFrame]:
-    trade_summary = _trade_summary(deltas)
+    trade_summary = _trade_summary(
+        deltas,
+        slippage_rates=slippage_rates,
+        default_slippage_rate=config.transaction_cost.slippage_rate,
+    )
     timeline = (
         gross_returns.join(trade_summary, on=TIME, how="left")
         .with_columns(pl.col("gross_return").fill_null(0.0))
@@ -1670,16 +1779,32 @@ def _simulate_cost_adjusted_returns(
     periods = timeline.height
     times = timeline.get_column(TIME)
     gross_values = timeline.get_column("gross_return").to_numpy()
-    delta_lists = timeline.get_column("weight_deltas")
+    delta_lists = timeline.get_column("signed_weight_deltas")
+    slippage_rate_lists = timeline.get_column("slippage_rates")
+    slippage_fallback_lists = timeline.get_column("slippage_fallbacks")
     traded_asset_counts = (
         delta_lists.list.len().fill_null(0).to_numpy().astype(np.int64)
     )
     flat_deltas = (
         delta_lists.explode(empty_as_null=True).drop_nulls().to_numpy()
     )
+    flat_slippage_rates = (
+        slippage_rate_lists.explode(empty_as_null=True).drop_nulls().to_numpy()
+    )
+    flat_slippage_fallbacks = (
+        slippage_fallback_lists.explode(empty_as_null=True)
+        .drop_nulls()
+        .to_numpy()
+    )
     traded_notionals = np.empty(periods, dtype=np.float64)
+    buy_notionals = np.empty(periods, dtype=np.float64)
+    sell_notionals = np.empty(periods, dtype=np.float64)
+    slippage_fees = np.empty(periods, dtype=np.float64)
+    slippage_fallback_asset_counts = np.empty(periods, dtype=np.int64)
     raw_fees = np.empty(periods, dtype=np.float64)
     min_fee_adjustments = np.empty(periods, dtype=np.float64)
+    commission_fees = np.empty(periods, dtype=np.float64)
+    stamp_tax_fees = np.empty(periods, dtype=np.float64)
     total_fees = np.empty(periods, dtype=np.float64)
     cost_returns = np.empty(periods, dtype=np.float64)
     net_returns = np.empty(periods, dtype=np.float64)
@@ -1690,17 +1815,35 @@ def _simulate_cost_adjusted_returns(
     for position in range(periods):
         time = times[position]
         traded_asset_count = int(traded_asset_counts[position])
-        weight_deltas = flat_deltas[offset : offset + traded_asset_count]
+        signed_weight_deltas = flat_deltas[offset : offset + traded_asset_count]
+        trade_slippage_rates = flat_slippage_rates[
+            offset : offset + traded_asset_count
+        ]
+        trade_slippage_fallbacks = flat_slippage_fallbacks[
+            offset : offset + traded_asset_count
+        ]
         offset += traded_asset_count
+        weight_deltas = np.abs(signed_weight_deltas)
         weight_delta = float(np.sum(weight_deltas))
         traded_notional = weight_delta * current_net_value
+        buy_notional = float(
+            np.maximum(signed_weight_deltas, 0.0).sum() * current_net_value
+        )
+        sell_notional = float(
+            np.maximum(-signed_weight_deltas, 0.0).sum() * current_net_value
+        )
+        slippage_fee = float(
+            (weight_deltas * current_net_value * trade_slippage_rates).sum()
+        )
         raw_fee = traded_notional * config.transaction_cost.rate
-        total_fee = float(
+        commission_fee = float(
             np.maximum(
                 weight_deltas * current_net_value * config.transaction_cost.rate,
                 config.transaction_cost.min_fee,
             ).sum()
         )
+        stamp_tax_fee = sell_notional * config.transaction_cost.stamp_tax_rate
+        total_fee = commission_fee + slippage_fee + stamp_tax_fee
 
         cost_return = total_fee / current_net_value if current_net_value else 0.0
         gross_return = float(gross_values[position])
@@ -1719,8 +1862,16 @@ def _simulate_cost_adjusted_returns(
         current_gross_value *= 1.0 + gross_return
         current_net_value = next_net_value
         traded_notionals[position] = traded_notional
+        buy_notionals[position] = buy_notional
+        sell_notionals[position] = sell_notional
+        slippage_fees[position] = slippage_fee
+        slippage_fallback_asset_counts[position] = int(
+            np.sum(trade_slippage_fallbacks)
+        )
         raw_fees[position] = raw_fee
-        min_fee_adjustments[position] = total_fee - raw_fee
+        min_fee_adjustments[position] = commission_fee - raw_fee
+        commission_fees[position] = commission_fee
+        stamp_tax_fees[position] = stamp_tax_fee
         total_fees[position] = total_fee
         cost_returns[position] = cost_return
         net_returns[position] = net_return
@@ -1731,9 +1882,15 @@ def _simulate_cost_adjusted_returns(
         {
             TIME: times,
             "traded_asset_count": traded_asset_counts,
+            "slippage_fallback_asset_count": slippage_fallback_asset_counts,
             "traded_notional": traded_notionals,
+            "buy_notional": buy_notionals,
+            "sell_notional": sell_notionals,
+            "slippage_fee": slippage_fees,
             "raw_fee": raw_fees,
             "min_fee_adjustment": min_fee_adjustments,
+            "commission_fee": commission_fees,
+            "stamp_tax_fee": stamp_tax_fees,
             "total_fee": total_fees,
             "cost_return": cost_returns,
         }
@@ -1759,15 +1916,73 @@ def _simulate_cost_adjusted_returns(
 
 def _trade_summary(
     deltas: pl.DataFrame,
+    *,
+    slippage_rates: pl.DataFrame | None,
+    default_slippage_rate: float,
 ) -> pl.DataFrame:
+    trades = _attach_slippage_rates(
+        deltas,
+        slippage_rates,
+        default_rate=default_slippage_rate,
+    )
     return (
-        deltas.group_by(TIME)
+        trades.group_by(TIME)
         .agg(
-            pl.col("weight_delta")
+            pl.col("signed_weight_delta")
             .filter(pl.col("weight_delta") > 0.0)
-            .alias("weight_deltas"),
+            .alias("signed_weight_deltas"),
+            pl.col("_slippage_rate")
+            .filter(pl.col("weight_delta") > 0.0)
+            .alias("slippage_rates"),
+            pl.col("_slippage_fallback")
+            .filter(pl.col("weight_delta") > 0.0)
+            .alias("slippage_fallbacks"),
         )
         .sort(TIME)
+    )
+
+
+def _attach_slippage_rates(
+    trades: pl.DataFrame,
+    slippage_rates: pl.DataFrame | None,
+    *,
+    default_rate: float,
+) -> pl.DataFrame:
+    """Attach the latest effective per-asset rate to sparse trade events."""
+
+    indexed = trades.with_row_index("_trade_order")
+    if slippage_rates is None:
+        return indexed.with_columns(
+            pl.lit(default_rate).alias("_slippage_rate"),
+            pl.lit(False).alias("_slippage_fallback"),
+        ).drop("_trade_order")
+    schedule = slippage_rates
+    if "is_fallback" not in schedule.columns:
+        schedule = schedule.with_columns(pl.lit(False).alias("is_fallback"))
+    joined = (
+        indexed.sort([ASSET_ID, TIME])
+        .join_asof(
+            schedule.sort([ASSET_ID, TIME]),
+            on=TIME,
+            by=ASSET_ID,
+            strategy="backward",
+            check_sortedness=False,
+        )
+        .with_columns(
+            pl.col("slippage_rate")
+            .fill_null(default_rate)
+            .alias("_slippage_rate"),
+            (
+                pl.col("slippage_rate").is_null()
+                | pl.col("is_fallback").fill_null(False)
+            ).alias("_slippage_fallback"),
+        )
+        .sort("_trade_order")
+    )
+    return joined.drop(
+        "_trade_order",
+        "slippage_rate",
+        "is_fallback",
     )
 
 

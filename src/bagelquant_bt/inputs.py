@@ -107,6 +107,47 @@ def validate_execution_availability(frame: pl.DataFrame) -> pl.DataFrame:
     return normalized.sort([TIME, ASSET_ID])
 
 
+def validate_slippage_rates(frame: pl.DataFrame) -> pl.DataFrame:
+    """Validate sparse effective-dated per-asset slippage rates."""
+
+    if not isinstance(frame, pl.DataFrame):
+        raise InputValidationError("slippage_rates must be a polars DataFrame")
+    required = {TIME, ASSET_ID, "slippage_rate"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise InputValidationError(
+            f"slippage_rates is missing required columns: {missing}"
+        )
+    expressions = [
+        pl.col(TIME).cast(pl.Date, strict=False),
+        pl.col(ASSET_ID).cast(pl.String),
+        pl.col("slippage_rate").cast(pl.Float64, strict=False),
+    ]
+    columns = [TIME, ASSET_ID, "slippage_rate"]
+    if "is_fallback" in frame.columns:
+        columns.append("is_fallback")
+        expressions.append(pl.col("is_fallback").cast(pl.Boolean, strict=False))
+    normalized = frame.select(columns).with_columns(*expressions)
+    required_values = [TIME, ASSET_ID, "slippage_rate"]
+    if "is_fallback" in columns:
+        required_values.append("is_fallback")
+    if normalized.select(
+        pl.any_horizontal(pl.col(column).is_null() for column in required_values).any()
+    ).item():
+        raise InputValidationError("slippage_rates must not contain null values")
+    if normalized.select(
+        ((~pl.col("slippage_rate").is_finite()) | (pl.col("slippage_rate") < 0)).any()
+    ).item():
+        raise InputValidationError(
+            "slippage_rates.slippage_rate must be finite and nonnegative"
+        )
+    if normalized.select(pl.struct(TIME, ASSET_ID).is_duplicated().any()).item():
+        raise InputValidationError(
+            "slippage_rates must be unique by (time, asset_id)"
+        )
+    return normalized.sort([ASSET_ID, TIME])
+
+
 def missing_price_keys(frame: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFrame:
     """Return frame keys without an exact matching price key."""
 

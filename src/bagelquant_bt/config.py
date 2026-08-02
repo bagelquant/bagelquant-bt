@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from .exceptions import BacktestConfigError
@@ -13,12 +14,20 @@ class TransactionCostConfig:
 
     rate: float = 0.00015
     min_fee: float = 5.0
+    slippage_rate: float = 0.0005
+    stamp_tax_rate: float = 0.0005
 
     def __post_init__(self) -> None:
-        if self.rate < 0:
-            raise BacktestConfigError("transaction cost rate must be nonnegative")
-        if self.min_fee < 0:
-            raise BacktestConfigError("transaction cost min_fee must be nonnegative")
+        for name, value in (
+            ("rate", self.rate),
+            ("min_fee", self.min_fee),
+            ("slippage_rate", self.slippage_rate),
+            ("stamp_tax_rate", self.stamp_tax_rate),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise BacktestConfigError(
+                    f"transaction cost {name} must be finite and nonnegative"
+                )
 
 
 @dataclass(frozen=True, slots=True)

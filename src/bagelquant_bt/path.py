@@ -22,8 +22,8 @@ from .performance import summarize_performance
 from .results import BacktestResult, PerformanceSummary, TransactionCostBreakdown
 from .returns import _prepare_price_data, cumulative_returns
 
-PORTFOLIO_PATH_VERSION = 1
-RESULT_SECTION_VERSION = 1
+PORTFOLIO_PATH_VERSION = 2
+RESULT_SECTION_VERSION = 2
 RESULT_SECTIONS = (
     "Summary & Coverage",
     "IC & ICIR",
@@ -144,6 +144,7 @@ def materialize_portfolio_path(
     prepared_forward_returns: pl.DataFrame | None = None,
     prepared_price_gaps: pl.DataFrame | None = None,
     prepared_active_assets: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> PortfolioPathChunk:
     """Build the first chunk of a reusable continuous portfolio path."""
 
@@ -155,6 +156,7 @@ def materialize_portfolio_path(
             aligned_prices,
             config=config,
             execution_availability=execution_availability,
+            slippage_rates=slippage_rates,
         )
     else:
         result = _backtest_weight_frame_with_forward_returns(
@@ -165,6 +167,7 @@ def materialize_portfolio_path(
             price_gaps=prepared_price_gaps,
             execution_availability=execution_availability,
             prepared_active_assets=prepared_active_assets,
+            slippage_rates=slippage_rates,
         )
     return _path_chunk(
         identity,
@@ -218,6 +221,7 @@ def resume_portfolio_path(
     prepared_forward_returns: pl.DataFrame | None = None,
     prepared_price_gaps: pl.DataFrame | None = None,
     prepared_active_assets: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> PortfolioPathChunk:
     """Continue a path from a checkpoint without charging a new initial trade."""
 
@@ -268,6 +272,7 @@ def resume_portfolio_path(
         initial_gross_value=checkpoint.gross_value,
         initial_net_value=checkpoint.net_value,
         prepared_active_assets=prepared_active_assets,
+        slippage_rates=slippage_rates,
     )
     return _path_chunk(
         identity,

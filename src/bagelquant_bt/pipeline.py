@@ -100,6 +100,7 @@ def run_signal_backtest(
     portfolio_inputs: Mapping[str, object] | None = None,
     config: BacktestConfig | None = None,
     execution_availability: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
 ) -> BacktestResult:
     """Schedule a SignalPanel, build target weights, and run the private engine."""
 
@@ -136,6 +137,7 @@ def run_signal_backtest(
         prices,
         config=config,
         execution_availability=execution_availability,
+        slippage_rates=slippage_rates,
     )
 
 

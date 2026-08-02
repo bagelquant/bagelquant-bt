@@ -76,9 +76,13 @@ def _weight_delta_plan(
             .alias("previous_weight")
         )
         .with_columns(
-            (pl.col("weight").fill_null(0.0) - pl.col("previous_weight"))
-            .abs()
-            .alias("weight_delta")
+            (
+                pl.col("weight").fill_null(0.0)
+                - pl.col("previous_weight")
+            ).alias("signed_weight_delta")
+        )
+        .with_columns(
+            pl.col("signed_weight_delta").abs().alias("weight_delta")
         )
         .drop("_initial_weight")
     )
