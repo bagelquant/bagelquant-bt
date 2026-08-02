@@ -219,9 +219,54 @@ def summary_report(
 ) -> str:
     """Build a self-contained HTML report for a backtest or factor result."""
 
+    return _summary_report(
+        result,
+        output_path=output_path,
+        missing_price_keys_output_path=missing_price_keys_output_path,
+        title=title,
+        annualization=annualization,
+        factor_figures=None,
+    )
+
+
+def _summary_report_with_factor_figures(
+    result: FactorEvaluationResult,
+    figures: tuple[ReportFigure, ...],
+    *,
+    output_path: str | Path | None = None,
+    missing_price_keys_output_path: str | Path | None = None,
+    title: str | None = None,
+) -> str:
+    """Render a factor report while reusing an already-built figure inventory."""
+
+    return _summary_report(
+        result,
+        output_path=output_path,
+        missing_price_keys_output_path=missing_price_keys_output_path,
+        title=title,
+        annualization=None,
+        factor_figures=figures,
+    )
+
+
+def _summary_report(
+    result: BacktestResult | FactorEvaluationResult,
+    *,
+    output_path: str | Path | None,
+    missing_price_keys_output_path: str | Path | None,
+    title: str | None,
+    annualization: int | None,
+    factor_figures: tuple[ReportFigure, ...] | None,
+) -> str:
+    """Shared report renderer with an internal precomputed-figure path."""
+
     if isinstance(result, FactorEvaluationResult):
         report_title = title or "Signal Evaluation Summary Report"
-        body = _factor_report(result, annualization=annualization)
+        body = _factor_report(
+            result,
+            annualization=annualization,
+            figures=factor_figures,
+        )
     elif isinstance(result, BacktestResult):
         report_title = title or "Backtest Summary Report"
         body = _backtest_report(result, annualization=annualization)
@@ -266,10 +311,15 @@ def _backtest_report(result: BacktestResult, *, annualization: int | None) -> st
 
 
 def _factor_report(
-    result: FactorEvaluationResult, *, annualization: int | None
+    result: FactorEvaluationResult,
+    *,
+    annualization: int | None,
+    figures: tuple[ReportFigure, ...] | None = None,
 ) -> str:
     figures_by_section = _figures_by_section(
         factor_evaluation_report_figures(result, annualization=annualization)
+        if figures is None
+        else figures
     )
     sections = [
         _table_section("Summary", _factor_summary(result), none_display="N/A")

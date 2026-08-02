@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
+import bagelquant_bt.reporting as reporting_module
 from bagelquant_bt import (
     BacktestConfig,
     summary_report,
@@ -10,6 +12,7 @@ from bagelquant_bt.engine import run_weight_backtest
 from bagelquant_bt.factor import run_factor_evaluation
 from bagelquant_bt.reporting import (
     _dataframe_to_html,
+    _summary_report_with_factor_figures,
     factor_evaluation_report_figures,
 )
 from bagelquant_bt.visualization import _label_with_mean
@@ -57,7 +60,9 @@ def test_summary_report_renders_and_writes_backtest_html(tmp_path) -> None:
     ]
 
 
-def test_summary_report_renders_factor_tables_and_plots() -> None:
+def test_summary_report_renders_factor_tables_and_plots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prices = pl.DataFrame(
         {
             "time": [
@@ -140,6 +145,16 @@ def test_summary_report_renders_factor_tables_and_plots() -> None:
     )
 
     figures = factor_evaluation_report_figures(result, annualization=4)
+    monkeypatch.setattr(
+        reporting_module,
+        "factor_evaluation_report_figures",
+        lambda *_args, **_kwargs: pytest.fail(
+            "precomputed figures must not be rebuilt"
+        ),
+    )
+    reused_html = _summary_report_with_factor_figures(result, figures)
+    assert "Signal Coverage" in reused_html
+    assert "Spread Net Lag Cumulative Returns" in reused_html
     assert [item.section for item in figures] == [
         "Summary & Coverage",
             *["IC & ICIR"] * 4,
