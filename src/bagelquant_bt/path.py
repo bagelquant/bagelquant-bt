@@ -10,7 +10,6 @@ from datetime import date
 
 import polars as pl
 
-from .benchmarks import benchmark_performance, top_n_excess_returns
 from .config import BacktestConfig
 from .engine import (
     _backtest_weight_frame_with_forward_returns,
@@ -18,19 +17,19 @@ from .engine import (
 )
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_prices, validate_weights
-from .performance import summarize_performance
-from .results import BacktestResult, PerformanceSummary, TransactionCostBreakdown
-from .returns import _prepare_price_data, cumulative_returns
+from .results import BacktestResult
+from .returns import _prepare_price_data
+from .window import compute_window_tables
 
 PORTFOLIO_PATH_VERSION = 2
-RESULT_SECTION_VERSION = 2
+RESULT_SECTION_VERSION = 3
 RESULT_SECTIONS = (
-    "Summary & Coverage",
-    "IC & ICIR",
-    "Quantiles",
-    "TOP N",
-    "TOP N vs Benchmarks",
-    "Spread Performance",
+    "summary",
+    "ic",
+    "spread",
+    "top_n",
+    "quantiles",
+    "statistical_tests",
 )
 
 
@@ -129,7 +128,7 @@ class ResultSection:
 
     spec: ResultSectionSpec
     window: ResultWindow
-    metrics: Mapping[str, float | int | None]
+    metrics: Mapping[str, bool | float | int | None]
     tables: Mapping[str, pl.DataFrame] = field(default_factory=dict)
     version: int = RESULT_SECTION_VERSION
 
@@ -238,17 +237,13 @@ def resume_portfolio_path(
         else prepared_forward_returns
     )
     price_gaps = (
-        price_data.price_gaps
-        if price_data is not None
-        else prepared_price_gaps
+        price_data.price_gaps if price_data is not None else prepared_price_gaps
     )
     if forward_returns.is_empty():
         raise InputValidationError("resume prices require at least one return interval")
     first_time = forward_returns.get_column(TIME).min()
     if first_time != checkpoint.time:
-        raise InputValidationError(
-            "resume prices must begin at the checkpoint time"
-        )
+        raise InputValidationError("resume prices must begin at the checkpoint time")
     carry = checkpoint.target_weights.select(
         pl.lit(first_time, dtype=pl.Date).alias(TIME),
         ASSET_ID,
@@ -289,12 +284,13 @@ def compute_result_section(
     window: ResultWindow,
     *,
     annualization: int,
+    ic_annualization: int | None = None,
+    benchmark_returns: pl.DataFrame | None = None,
 ) -> ResultSection:
     """Compute one independently publishable section from a continuous path."""
 
     intervals = path.returns.filter(
-        (pl.col(TIME) >= window.start)
-        & (pl.col("next_time") <= window.end)
+        (pl.col(TIME) >= window.start) & (pl.col("next_time") <= window.end)
     ).sort(TIME)
     if intervals.is_empty():
         raise InputValidationError(
@@ -307,38 +303,24 @@ def compute_result_section(
     )
     costs = path.costs.join(intervals.select(TIME), on=TIME, how="inner")
     returns = intervals.select(TIME, "gross_return", "net_return")
-    summary, performance = summarize_performance(
+    window_series = {
+        name: (
+            frame.filter(pl.col(TIME).is_between(window.start, window.end))
+            if TIME in frame.columns
+            else frame
+        )
+        for name, frame in path.series.items()
+    }
+    metrics, tables = compute_window_tables(
+        spec.section,
+        spec.items,
         returns=returns,
         turnover=turnover,
-        costs=TransactionCostBreakdown(costs),
-        initial_capital=1.0,
+        costs=costs,
+        series=window_series,
         annualization=annualization,
-    )
-    value = (
-        cumulative_returns(returns, "gross_return")
-        .join(cumulative_returns(returns, "net_return"), on=TIME)
-        .sort(TIME)
-    )
-    metrics: dict[str, float | int | None] = (
-        _summary_metrics(summary)
-        if spec.section
-        in {"Summary & Coverage", "TOP N", "TOP N vs Benchmarks"}
-        else {}
-    )
-    tables = {
-        "returns": intervals,
-        "value": value,
-        "performance": performance,
-        "turnover": turnover,
-        "costs": costs,
-    }
-    _attach_section_series(
-        path,
-        spec,
-        window,
-        metrics,
-        tables,
-        annualization=annualization,
+        ic_annualization=ic_annualization or annualization,
+        benchmark_returns=benchmark_returns,
     )
     return ResultSection(
         spec=spec,
@@ -437,120 +419,6 @@ def _latest_checkpoint_weights(
     )
 
 
-def _attach_section_series(
-    path: PortfolioPathChunk,
-    spec: ResultSectionSpec,
-    window: ResultWindow,
-    metrics: dict[str, float | int | None],
-    tables: dict[str, pl.DataFrame],
-    *,
-    annualization: int,
-) -> None:
-    """Attach only the diagnostic series needed by the requested section."""
-
-    required = {
-        "Summary & Coverage": ("coverage",),
-        "IC & ICIR": ("ic",),
-        "Quantiles": ("quantile_returns",),
-        "TOP N": ("lag_analysis", "lag_returns"),
-        "TOP N vs Benchmarks": (
-            "benchmark_returns",
-            "benchmark_coverage",
-            "benchmark_performance",
-            "excess_returns",
-        ),
-        "Spread Performance": ("spread_returns",),
-    }[spec.section]
-    selected = set(spec.items)
-    for key in required:
-        if selected and key not in selected:
-            continue
-        if key in {"benchmark_performance", "excess_returns"}:
-            continue
-        frame = path.series.get(key)
-        if frame is None:
-            continue
-        if "time" in frame.columns:
-            if key in {"benchmark_returns", "benchmark_coverage"}:
-                frame = frame.join(
-                    tables["returns"].select(TIME),
-                    on=TIME,
-                    how="inner",
-                )
-            else:
-                frame = frame.filter(
-                    pl.col("time").is_between(window.start, window.end)
-                )
-        tables[key] = frame
-    benchmark_returns = tables.get("benchmark_returns")
-    if benchmark_returns is not None and not benchmark_returns.is_empty():
-        if not selected or "benchmark_performance" in selected:
-            tables["benchmark_performance"] = benchmark_performance(
-                benchmark_returns,
-                annualization=annualization,
-            )
-        if not selected or "excess_returns" in selected:
-            tables["excess_returns"] = top_n_excess_returns(
-                tables["returns"].select(
-                    TIME,
-                    "gross_return",
-                    "net_return",
-                ),
-                benchmark_returns,
-            )
-    ic = tables.get("ic")
-    if ic is not None and "ic" in ic.columns and not ic.is_empty():
-        values = ic.get_column("ic").drop_nulls()
-        metrics.update(
-            {
-                "ic_mean": values.mean(),
-                "ic_std": values.std(),
-                "icir": (
-                    None
-                    if values.std() in {None, 0.0}
-                    else float(values.mean())
-                    / float(values.std())
-                    * annualization**0.5
-                ),
-            }
-        )
-    coverage = tables.get("coverage")
-    if (
-        coverage is not None
-        and "coverage_ratio" in coverage.columns
-        and not coverage.is_empty()
-    ):
-        metrics["mean_coverage"] = coverage.get_column("coverage_ratio").mean()
-        metrics["minimum_coverage"] = coverage.get_column("coverage_ratio").min()
-    quantiles = tables.get("quantile_returns")
-    if (
-        quantiles is not None
-        and "quantile" in quantiles.columns
-        and not quantiles.is_empty()
-    ):
-        metrics["quantile_count"] = quantiles.get_column("quantile").n_unique()
-    spread = tables.get("spread_returns")
-    if spread is not None and "return" in spread.columns and not spread.is_empty():
-        values = spread.get_column("return").drop_nulls()
-        total = float((values + 1.0).product() - 1.0)
-        volatility = values.std()
-        metrics.update(
-            {
-                "spread_total_return": total,
-                "spread_annualized_return": (
-                    (1.0 + total) ** (annualization / len(values)) - 1.0
-                ),
-                "spread_sharpe": (
-                    None
-                    if volatility in {None, 0.0}
-                    else float(values.mean())
-                    / float(volatility)
-                    * annualization**0.5
-                ),
-            }
-        )
-
-
 def _sparse_weight_changes(
     weights: pl.DataFrame,
     initial_weights: pl.DataFrame | None,
@@ -578,21 +446,6 @@ def _sparse_weight_changes(
         .select(TIME, ASSET_ID, "weight")
         .sort([TIME, ASSET_ID])
     )
-
-
-def _summary_metrics(summary: PerformanceSummary) -> dict[str, float]:
-    return {
-        "gross_total_return": summary.gross_total_return,
-        "net_total_return": summary.net_total_return,
-        "gross_annualized_return": summary.gross_annualized_return,
-        "net_annualized_return": summary.net_annualized_return,
-        "gross_sharpe": summary.gross_sharpe,
-        "net_sharpe": summary.net_sharpe,
-        "gross_max_drawdown": summary.gross_max_drawdown,
-        "net_max_drawdown": summary.net_max_drawdown,
-        "average_turnover": summary.average_turnover,
-        "total_transaction_cost": summary.total_transaction_cost,
-    }
 
 
 __all__ = [

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import date
 
 import polars as pl
@@ -197,24 +196,25 @@ def test_result_window_uses_complete_intervals_and_rebases() -> None:
 
     section = compute_result_section(
         path,
-        ResultSectionSpec("TOP N", ("net_total_return",)),
+        ResultSectionSpec("top_n", ("benchmark_comparison",)),
         ResultWindow(date(2024, 1, 2), date(2024, 1, 4)),
         annualization=4,
     )
 
-    assert section.tables["returns"].get_column("time").to_list() == [
+    assert section.metrics["benchmark_available"] is False
+    assert section.tables["top_n_returns"].get_column("time").to_list() == [
         date(2024, 1, 2),
         date(2024, 1, 3),
     ]
     expected = (
-        section.tables["returns"]
+        section.tables["top_n_returns"]
         .select((1.0 + pl.col("net_return")).product() - 1.0)
         .item()
     )
-    assert section.metrics["net_total_return"] == expected
-    assert section.tables["value"].get_column(
-        "net_return_cumulative"
-    )[-1] == expected
+    assert (
+        section.tables["top_n_returns"].get_column("net_return_cumulative")[-1]
+        == expected
+    )
 
 
 def test_benchmark_metrics_are_recomputed_for_result_window() -> None:
@@ -236,18 +236,20 @@ def test_benchmark_metrics_are_recomputed_for_result_window() -> None:
             "return": [0.5, 0.01, 0.02, -0.5],
         }
     )
-    path = replace(path, series={"benchmark_returns": benchmark})
-
     section = compute_result_section(
         path,
         ResultSectionSpec(
-            "TOP N vs Benchmarks",
-            ("benchmark_returns", "benchmark_performance", "excess_returns"),
+            "top_n",
+            ("benchmark_comparison", "excess_return"),
         ),
         ResultWindow(date(2024, 1, 2), date(2024, 1, 4)),
         annualization=4,
+        benchmark_returns=benchmark.filter(
+            pl.col("time").is_between(date(2024, 1, 2), date(2024, 1, 3))
+        ),
     )
 
+    assert section.metrics["benchmark_available"] is True
     assert section.tables["benchmark_returns"]["return"].to_list() == [0.01, 0.02]
     assert section.tables["benchmark_performance"].item(
         0, "total_return"

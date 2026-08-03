@@ -181,6 +181,37 @@ def materialize_signal_diagnostics(
         value_columns=("signal",),
     )
     factor = aligned.select(TIME, ASSET_ID, pl.col("signal").alias("factor"))
+    return materialize_factor_diagnostics(
+        factor,
+        prices,
+        config=resolved_config,
+        market_data=market_data,
+        execution_availability=execution_availability,
+        include_quantiles=include_quantiles,
+        include_spread=include_spread,
+        include_lags=include_lags,
+        slippage_rates=slippage_rates,
+    )
+
+
+def materialize_factor_diagnostics(
+    factor: pl.DataFrame,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig | None = None,
+    market_data: PreparedFactorMarketData | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    include_quantiles: bool = False,
+    include_spread: bool = False,
+    include_lags: bool = False,
+    slippage_rates: pl.DataFrame | None = None,
+) -> Mapping[str, pl.DataFrame]:
+    """Build requested heavyweight diagnostics from a cached factor frame."""
+
+    if not (include_quantiles or include_spread or include_lags):
+        return {}
+    resolved_config = _require_config(config)
+    factor = validate_factor(factor)
     prepared = market_data or prepare_factor_market_data(prices)
     resolved_execution_availability = (
         None
@@ -216,9 +247,7 @@ def materialize_signal_diagnostics(
             lags=FACTOR_LAGS,
             forward_returns=prepared.forward_returns,
             price_gaps=(
-                None
-                if prepared.price_data is None
-                else prepared.price_data.price_gaps
+                None if prepared.price_data is None else prepared.price_data.price_gaps
             ),
             execution_availability=resolved_execution_availability,
             execution_availability_validated=True,
@@ -267,10 +296,14 @@ def _validate_prepared_evaluation_returns(
         label="evaluation_returns",
         value_columns=("forward_return",),
     ).select(TIME, ASSET_ID, "forward_return")
-    unexpected_times = normalized.select(TIME).unique().join(
-        factor.select(TIME).unique(),
-        on=TIME,
-        how="anti",
+    unexpected_times = (
+        normalized.select(TIME)
+        .unique()
+        .join(
+            factor.select(TIME).unique(),
+            on=TIME,
+            how="anti",
+        )
     )
     if unexpected_times.height:
         raise InputValidationError(
@@ -434,9 +467,7 @@ def evaluate_factor_frame(
     default_benchmark, default_coverage = build_universe_benchmark_returns(
         forward_returns,
         universe=(
-            benchmark_universe
-            if benchmark_universe is not None
-            else coverage_universe
+            benchmark_universe if benchmark_universe is not None else coverage_universe
         ),
         name=DEFAULT_BENCHMARK,
     )
@@ -456,15 +487,13 @@ def evaluate_factor_frame(
             if benchmark_coverage is not None
             else _benchmark_return_coverage(external)
         )
-        resolved_coverage = pl.concat(
-            [default_coverage, external_coverage]
-        ).sort(["benchmark", TIME])
+        resolved_coverage = pl.concat([default_coverage, external_coverage]).sort(
+            ["benchmark", TIME]
+        )
     benchmark_metrics = benchmark_performance(
         resolved_benchmarks, annualization=config.annualization
     )
-    excess_returns = top_n_excess_returns(
-        top_n_backtest.returns, resolved_benchmarks
-    )
+    excess_returns = top_n_excess_returns(top_n_backtest.returns, resolved_benchmarks)
 
     return FactorEvaluationResult(
         factor=factor,
@@ -506,16 +535,18 @@ def _validate_benchmark_coverage(frame: pl.DataFrame) -> pl.DataFrame:
         raise InputValidationError(
             f"benchmark_coverage is missing required columns: {missing}"
         )
-    normalized = frame.select(*sorted(required)).with_columns(
-        pl.col(TIME).cast(pl.Date, strict=False),
-        pl.col("benchmark").cast(pl.String),
-        pl.col("expected_count").cast(pl.Int64),
-        pl.col("observed_count").cast(pl.Int64),
-        pl.col("coverage_ratio").cast(pl.Float64),
-    ).drop_nulls()
-    if normalized.select(
-        pl.struct(TIME, "benchmark").is_duplicated().any()
-    ).item():
+    normalized = (
+        frame.select(*sorted(required))
+        .with_columns(
+            pl.col(TIME).cast(pl.Date, strict=False),
+            pl.col("benchmark").cast(pl.String),
+            pl.col("expected_count").cast(pl.Int64),
+            pl.col("observed_count").cast(pl.Int64),
+            pl.col("coverage_ratio").cast(pl.Float64),
+        )
+        .drop_nulls()
+    )
+    if normalized.select(pl.struct(TIME, "benchmark").is_duplicated().any()).item():
         raise InputValidationError(
             "benchmark_coverage must be unique by (time, benchmark)"
         )
@@ -529,16 +560,20 @@ def _validate_benchmark_coverage(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def _benchmark_return_coverage(frame: pl.DataFrame) -> pl.DataFrame:
-    return frame.select(TIME, "benchmark").with_columns(
-        pl.lit(1, dtype=pl.Int64).alias("expected_count"),
-        pl.lit(1, dtype=pl.Int64).alias("observed_count"),
-        pl.lit(1.0).alias("coverage_ratio"),
-    ).select(
-        TIME,
-        "benchmark",
-        "expected_count",
-        "observed_count",
-        "coverage_ratio",
+    return (
+        frame.select(TIME, "benchmark")
+        .with_columns(
+            pl.lit(1, dtype=pl.Int64).alias("expected_count"),
+            pl.lit(1, dtype=pl.Int64).alias("observed_count"),
+            pl.lit(1.0).alias("coverage_ratio"),
+        )
+        .select(
+            TIME,
+            "benchmark",
+            "expected_count",
+            "observed_count",
+            "coverage_ratio",
+        )
     )
 
 
@@ -817,8 +852,7 @@ def _traded_factor_quantile_returns_with_forward_returns(
     )
     resolved_availability = (
         validate_execution_availability(execution_availability)
-        if execution_availability is not None
-        and not execution_availability_validated
+        if execution_availability is not None and not execution_availability_validated
         else execution_availability
     )
     if not nonempty_weights:
@@ -1038,14 +1072,12 @@ def _quantile_execution_corrections(
             category=UserWarning,
         )
         after_rules = (
-            execution_availability.select(
-                pl.col(TIME).alias("_rule_time"), ASSET_ID
-            )
+            execution_availability.select(pl.col(TIME).alias("_rule_time"), ASSET_ID)
             .sort([ASSET_ID, "_rule_time"])
             .join_asof(
-                market_keys.select(
-                    pl.col(TIME).alias("_next_time"), ASSET_ID
-                ).sort([ASSET_ID, "_next_time"]),
+                market_keys.select(pl.col(TIME).alias("_next_time"), ASSET_ID).sort(
+                    [ASSET_ID, "_next_time"]
+                ),
                 left_on="_rule_time",
                 right_on="_next_time",
                 by=ASSET_ID,
@@ -1124,12 +1156,9 @@ def _quantile_execution_corrections(
         if bool(target_changed[position]):
             cancelled_targets[state_index] = False
         delta = target - retained
-        blocked = (
-            has_rule[position]
-            and (
-                (delta > 0.0 and not can_buy[position])
-                or (delta < 0.0 and not can_sell[position])
-            )
+        blocked = has_rule[position] and (
+            (delta > 0.0 and not can_buy[position])
+            or (delta < 0.0 and not can_sell[position])
         )
         if blocked:
             resolved[position] = retained
@@ -1180,8 +1209,7 @@ def _quantile_execution_corrections(
     return (
         corrected.with_columns(
             (
-                pl.col("_weight_difference").fill_null(0.0)
-                * pl.col("forward_return")
+                pl.col("_weight_difference").fill_null(0.0) * pl.col("forward_return")
             ).alias("_correction")
         )
         .group_by(TIME, "quantile")
@@ -1333,6 +1361,61 @@ def factor_ic_decay(
     return pl.DataFrame(rows).sort(["method", "lag"])
 
 
+def factor_ic_decay_series(
+    factor: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    trading_sessions: pl.DataFrame | None = None,
+    return_provider: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
+    lags: tuple[int, ...] = FACTOR_LAGS,
+) -> pl.DataFrame:
+    """Compute per-date Pearson and Spearman IC values for every lag."""
+
+    calendar = (
+        _trading_sessions(trading_sessions)
+        if trading_sessions is not None
+        else _trading_sessions(forward_returns)
+    )
+    if return_provider is None:
+        return _batched_factor_ic_decay_series(
+            factor,
+            forward_returns,
+            trading_sessions=calendar,
+            lags=lags,
+        )
+    frames: list[pl.DataFrame] = []
+    for lag in lags:
+        lagged = lag_factor(factor, lag=lag, trading_sessions=calendar)
+        if lagged.is_empty():
+            continue
+        ic = information_coefficients(lagged, return_provider(lagged))
+        frames.append(
+            ic.unpivot(
+                index=TIME,
+                on=["pearson_ic", "spearman_ic"],
+                variable_name="method",
+                value_name="ic",
+            ).with_columns(
+                pl.lit(lag).alias("lag"),
+                pl.col("method").str.replace("_ic$", ""),
+            )
+        )
+    if not frames:
+        return pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                "lag": pl.Int64,
+                "method": pl.String,
+                "ic": pl.Float64,
+            }
+        )
+    return (
+        pl.concat(frames)
+        .select(TIME, "lag", "method", "ic")
+        .sort(["method", "lag", TIME])
+    )
+
+
 def _batched_factor_ic_decay(
     factor: pl.DataFrame,
     forward_returns: pl.DataFrame,
@@ -1351,16 +1434,52 @@ def _batched_factor_ic_decay(
         how="cross",
     )
     if factor.is_empty() or not lags:
-        return result_grid.with_columns(
-            pl.lit(float("nan")).alias("ic_mean")
-        ).sort(["method", "lag"])
+        return result_grid.with_columns(pl.lit(float("nan")).alias("ic_mean")).sort(
+            ["method", "lag"]
+        )
+
+    series = _batched_factor_ic_decay_series(
+        factor,
+        forward_returns,
+        trading_sessions=trading_sessions,
+        lags=lags,
+    )
+    aggregated = (
+        series.group_by("lag", "method").agg(pl.col("ic").mean().alias("ic_mean"))
+        if not series.is_empty()
+        else pl.DataFrame(
+            schema={"lag": pl.Int64, "method": pl.String, "ic_mean": pl.Float64}
+        )
+    )
+    return (
+        result_grid.join(aggregated, on=["lag", "method"], how="left")
+        .with_columns(pl.col("ic_mean").fill_null(float("nan")))
+        .sort(["method", "lag"])
+    )
+
+
+def _batched_factor_ic_decay_series(
+    factor: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    trading_sessions: pl.DataFrame,
+    lags: tuple[int, ...],
+) -> pl.DataFrame:
+    """Map every fixed-horizon IC lag while retaining observation dates."""
+
+    if factor.is_empty() or not lags:
+        return pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                "lag": pl.Int64,
+                "method": pl.String,
+                "ic": pl.Float64,
+            }
+        )
 
     sessions = trading_sessions.with_row_index("_session_index")
     ranked_factor = factor.drop_nulls("factor").with_columns(
-        pl.col("factor")
-        .rank("average")
-        .over(TIME)
-        .alias("_source_factor_rank"),
+        pl.col("factor").rank("average").over(TIME).alias("_source_factor_rank"),
         pl.len().over(TIME).alias("_source_count"),
     )
     lagged_parts: list[pl.DataFrame] = []
@@ -1370,10 +1489,14 @@ def _batched_factor_ic_decay(
             {"lag": lags[start : start + chunk_size]},
             schema={"lag": pl.Int64},
         )
-        lag_mapping = sessions.lazy().join(chunk.lazy(), how="cross").select(
-            (pl.col("_session_index") - pl.col("lag")).alias("_source_index"),
-            pl.col(TIME).alias("_lagged_time"),
-            "lag",
+        lag_mapping = (
+            sessions.lazy()
+            .join(chunk.lazy(), how="cross")
+            .select(
+                (pl.col("_session_index") - pl.col("lag")).alias("_source_index"),
+                pl.col(TIME).alias("_lagged_time"),
+                "lag",
+            )
         )
         paired = (
             ranked_factor.lazy()
@@ -1402,9 +1525,7 @@ def _batched_factor_ic_decay(
         if paired.is_empty():
             continue
         complete = paired.filter(pl.col("_paired_count") == pl.col("_source_count"))
-        incomplete = paired.filter(
-            pl.col("_paired_count") != pl.col("_source_count")
-        )
+        incomplete = paired.filter(pl.col("_paired_count") != pl.col("_source_count"))
         if incomplete.height:
             incomplete = incomplete.with_columns(
                 pl.col("factor")
@@ -1428,9 +1549,7 @@ def _batched_factor_ic_decay(
             .group_by("lag", TIME)
             .agg(
                 _corr_expr("factor", "forward_return").alias("pearson"),
-                _corr_expr("_source_factor_rank", "_return_rank").alias(
-                    "spearman"
-                ),
+                _corr_expr("_source_factor_rank", "_return_rank").alias("spearman"),
             )
             .unpivot(
                 index=["lag", TIME],
@@ -1438,21 +1557,19 @@ def _batched_factor_ic_decay(
                 variable_name="method",
                 value_name="ic",
             )
-            .group_by("lag", "method")
-            .agg(pl.col("ic").mean().alias("ic_mean"))
             .collect(engine="streaming")
         )
-    lagged = (
-        pl.concat(lagged_parts)
+    return (
+        pl.concat(lagged_parts).sort(["method", "lag", TIME])
         if lagged_parts
         else pl.DataFrame(
-            schema={"lag": pl.Int64, "method": pl.String, "ic_mean": pl.Float64}
+            schema={
+                TIME: pl.Date,
+                "lag": pl.Int64,
+                "method": pl.String,
+                "ic": pl.Float64,
+            }
         )
-    )
-    return (
-        result_grid.join(lagged, on=["lag", "method"], how="left")
-        .with_columns(pl.col("ic_mean").fill_null(float("nan")))
-        .sort(["method", "lag"])
     )
 
 
@@ -1584,8 +1701,7 @@ def _lag_outputs(
     )
     resolved_availability = (
         validate_execution_availability(execution_availability)
-        if execution_availability is not None
-        and not execution_availability_validated
+        if execution_availability is not None and not execution_availability_validated
         else execution_availability
     )
     portfolio_weights: dict[str, list[tuple[int, pl.DataFrame]]] = {
@@ -1673,18 +1789,26 @@ def _lag_outputs(
                     }
                 )
                 return_frames.append(
-                    backtest.value.select(
+                    backtest.returns.select(
                         pl.lit(lag).alias("lag"),
                         pl.lit(portfolio).alias("portfolio"),
                         TIME,
-                        pl.col("gross_return_cumulative").alias(
-                            "gross_cumulative_return"
+                        "gross_return",
+                        "net_return",
+                    ).join(
+                        backtest.value.select(
+                            TIME,
+                            pl.col("gross_return_cumulative").alias(
+                                "gross_cumulative_return"
+                            ),
+                            pl.col("net_return_cumulative").alias(
+                                "net_cumulative_return"
+                            ),
+                            pl.lit(backtest.summary.gross_sharpe).alias("gross_sharpe"),
+                            pl.lit(backtest.summary.net_sharpe).alias("net_sharpe"),
                         ),
-                        pl.col("net_return_cumulative").alias(
-                            "net_cumulative_return"
-                        ),
-                        pl.lit(backtest.summary.gross_sharpe).alias("gross_sharpe"),
-                        pl.lit(backtest.summary.net_sharpe).alias("net_sharpe"),
+                        on=TIME,
+                        how="left",
                     )
                 )
             analysis_rows.append(row)
@@ -1695,6 +1819,8 @@ def _lag_outputs(
                 "lag": pl.Int64,
                 "portfolio": pl.String,
                 TIME: pl.Date,
+                "gross_return": pl.Float64,
+                "net_return": pl.Float64,
                 "gross_cumulative_return": pl.Float64,
                 "net_cumulative_return": pl.Float64,
                 "gross_sharpe": pl.Float64,

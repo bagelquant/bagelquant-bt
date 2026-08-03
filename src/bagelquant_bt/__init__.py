@@ -9,10 +9,13 @@ from .exceptions import (
 )
 from .factor import (
     PreparedFactorMarketData,
+    factor_ic_decay_series,
     information_coefficients,
+    materialize_factor_diagnostics,
     materialize_signal_diagnostics,
     prepare_factor_market_data,
     run_signal_evaluation,
+    signal_forward_returns,
 )
 from .orders import OrderPlan, OrderSizingPolicy
 from .path import (
@@ -57,6 +60,7 @@ from .signal import (
     resolve_signal_date_policy,
     signal_date_policies,
 )
+from .statistics import OneSampleTest, cross_sectional_factor_returns, one_sample_t_test
 
 __all__ = [
     "RESULT_SECTIONS",
@@ -71,6 +75,7 @@ __all__ = [
     "HolidayAdjustment",
     "InputValidationError",
     "MissingSnapshotAction",
+    "OneSampleTest",
     "OrderPlan",
     "OrderSizingPolicy",
     "PerformanceSummary",
@@ -95,10 +100,14 @@ __all__ = [
     "build_universe_benchmark_returns",
     "compose_signal",
     "compute_result_section",
+    "cross_sectional_factor_returns",
     "execution_policies",
+    "factor_ic_decay_series",
     "information_coefficients",
+    "materialize_factor_diagnostics",
     "materialize_portfolio_path",
     "materialize_signal_diagnostics",
+    "one_sample_t_test",
     "portfolio_path_from_backtest",
     "prepare_factor_market_data",
     "prepare_price_data",
@@ -109,5 +118,6 @@ __all__ = [
     "run_signal_evaluation",
     "signal_date_policies",
     "signal_evaluation_report_figures",
+    "signal_forward_returns",
     "summary_report",
 ]
