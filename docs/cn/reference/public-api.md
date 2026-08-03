@@ -17,6 +17,14 @@ from bagelquant_bt import compose_signal, run_signal_backtest, run_signal_evalua
 - `run_signal_evaluation(scheduled_signal, prices, ...)`：计算 IC、分位数、
   lag、IC decay 和 Signal 驱动的组合结果。
 
+候选预测验证由 `score_ic_validation`、`select_top_n_stable`、
+`top_n_monthly_performance` 和 `score_top_n_performance` 提供。IC 未定义或 prediction
+为常数的月份不会按零计分；有效月份不足时候选无效。Top-N 对 cutoff tie 使用 prediction
+降序、asset ID 升序，稳定选取恰好 N 只并返回 cutoff/tie 审计。换手正则目标明确定义为
+`net_sharpe - lambda * average_turnover`。
+`top_n_monthly_performance` 可以使用紧凑的比例换手成本，也可以分别接收佣金、逐资产
+最低佣金、卖出税、滑点与初始资金。
+
 `PortfolioPolicy` 接收 `ScheduledSignal`，返回
 `PortfolioBuild(weights: Panel, skipped: DataFrame)`。`OrderSizingPolicy` 与
 `OrderPlan` 只预留 weights 到订单的边界，本版本不实现手数计算。

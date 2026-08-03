@@ -21,6 +21,18 @@ from bagelquant_bt import compose_signal, run_signal_backtest, run_signal_evalua
 - `summary_report(...)` builds a static HTML report for a backtest or signal
   evaluation result.
 
+Candidate-prediction validation is available through `score_ic_validation`,
+`select_top_n_stable`, `top_n_monthly_performance`, and
+`score_top_n_performance`. Undefined or constant-prediction IC months are
+excluded rather than scored as zero; candidates fail below their minimum valid
+month count. Top-N selection always returns exactly N eligible assets using
+prediction descending then asset ID ascending for cutoff ties, and reports the
+cutoff/tie audit. Turnover regularization is explicitly
+`net_sharpe - lambda * average_turnover`.
+`top_n_monthly_performance` accepts either a compact proportional-turnover
+cost or detailed commission, per-asset minimum fee, sell-tax, slippage, and
+initial-capital inputs.
+
 `SignalDatePolicy` and `ExecutionPolicy` are separate contracts. A portfolio
 policy receives `ScheduledSignal` and returns
 `PortfolioBuild(weights: Panel, skipped: DataFrame)`. `OrderSizingPolicy` and

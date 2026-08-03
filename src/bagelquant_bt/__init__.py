@@ -61,6 +61,16 @@ from .signal import (
     signal_date_policies,
 )
 from .statistics import OneSampleTest, cross_sectional_factor_returns, one_sample_t_test
+from .validation import (
+    MonthlyIcObservation,
+    TopNSelectionResult,
+    ValidationObjective,
+    ValidationScore,
+    score_ic_validation,
+    score_top_n_performance,
+    select_top_n_stable,
+    top_n_monthly_performance,
+)
 
 __all__ = [
     "RESULT_SECTIONS",
@@ -75,6 +85,7 @@ __all__ = [
     "HolidayAdjustment",
     "InputValidationError",
     "MissingSnapshotAction",
+    "MonthlyIcObservation",
     "OneSampleTest",
     "OrderPlan",
     "OrderSizingPolicy",
@@ -94,8 +105,11 @@ __all__ = [
     "SignalEvaluationResult",
     "SignalFrequency",
     "TargetVolatilityPolicy",
+    "TopNSelectionResult",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
+    "ValidationObjective",
+    "ValidationScore",
     "benchmark_performance",
     "build_universe_benchmark_returns",
     "compose_signal",
@@ -116,8 +130,12 @@ __all__ = [
     "resume_portfolio_path",
     "run_signal_backtest",
     "run_signal_evaluation",
+    "score_ic_validation",
+    "score_top_n_performance",
+    "select_top_n_stable",
     "signal_date_policies",
     "signal_evaluation_report_figures",
     "signal_forward_returns",
     "summary_report",
+    "top_n_monthly_performance",
 ]
