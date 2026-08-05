@@ -19,6 +19,7 @@ from .factor import (
 )
 from .orders import OrderPlan, OrderSizingPolicy
 from .path import (
+    RESULT_SECTION_VERSION,
     RESULT_SECTIONS,
     PortfolioPathChunk,
     PortfolioPathIdentity,
@@ -74,6 +75,7 @@ from .validation import (
 
 __all__ = [
     "RESULT_SECTIONS",
+    "RESULT_SECTION_VERSION",
     "BacktestConfig",
     "BacktestConfigError",
     "BacktestResult",
