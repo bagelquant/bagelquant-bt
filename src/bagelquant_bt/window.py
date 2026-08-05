@@ -10,6 +10,7 @@ import polars as pl
 
 from .benchmarks import benchmark_performance, top_n_excess_returns
 from .inputs import TIME
+from .performance import rolling_performance
 from .statistics import one_sample_t_test
 
 
@@ -29,7 +30,13 @@ def compute_window_tables(
 
     selected = set(items)
     if section == "summary":
-        return _summary(returns, series, annualization, ic_annualization)
+        return _summary(
+            returns,
+            turnover,
+            series,
+            annualization,
+            ic_annualization,
+        )
     if section == "ic":
         return {}, _ic_tables(series, selected, ic_annualization)
     if section == "spread":
@@ -51,6 +58,7 @@ def compute_window_tables(
 
 def _summary(
     returns: pl.DataFrame,
+    turnover: pl.DataFrame,
     series: Mapping[str, pl.DataFrame],
     annualization: int,
     ic_annualization: int,
@@ -69,8 +77,25 @@ def _summary(
         {
             "spread_net_annualized_return": spread_metrics["net_annualized_return"],
             "spread_net_sharpe": spread_metrics["net_sharpe"],
+            "spread_net_annualized_volatility": spread_metrics[
+                "net_annualized_volatility"
+            ],
+            "spread_net_max_drawdown": spread_metrics["net_max_drawdown"],
+            "spread_net_calmar": spread_metrics["net_calmar"],
             "top_n_net_annualized_return": top_n["net_annualized_return"],
             "top_n_net_sharpe": top_n["net_sharpe"],
+            "top_n_net_annualized_volatility": top_n[
+                "net_annualized_volatility"
+            ],
+            "top_n_net_max_drawdown": top_n["net_max_drawdown"],
+            "top_n_net_calmar": top_n["net_calmar"],
+            "top_n_annualized_turnover": _annualized_turnover(
+                turnover, annualization
+            ),
+            "top_n_annualized_cost_drag": _difference(
+                top_n["gross_annualized_return"],
+                top_n["net_annualized_return"],
+            ),
         }
     )
     coverage = series.get("coverage", pl.DataFrame())
@@ -131,7 +156,7 @@ def _spread_tables(
     if {"spread_time_series", "spread_histogram"} & selected:
         tables["spread_returns"] = _add_grouped_cumulative(lag_zero, ())
     if "spread_rolling_vol" in selected:
-        tables["spread_rolling_vol"] = _rolling_volatility(lag_zero, annualization)
+        tables["spread_rolling_vol"] = _rolling_performance(lag_zero, annualization)
     if "spread_lag_performance" in selected:
         tables["spread_lag_performance"] = _lag_performance(all_returns, annualization)
     return tables
@@ -173,7 +198,7 @@ def _top_n_tables(
             )
             tables["excess_drawdown"] = _excess_drawdowns(excess)
     if "rolling_vol" in selected:
-        tables["top_n_rolling_vol"] = _rolling_volatility(returns, annualization)
+        tables["top_n_rolling_vol"] = _rolling_performance(returns, annualization)
     if "lag_performance" in selected:
         lagged = _lag_period_returns(series, portfolio="top_n")
         tables["top_n_lag_performance"] = _lag_performance(lagged, annualization)
@@ -312,8 +337,8 @@ def _paired_return_metrics(
             frame.get_column(column) if column in frame.columns else [],
             annualization,
         )
-        result[f"{prefix}_annualized_return"] = metrics["annualized_return"]
-        result[f"{prefix}_sharpe"] = metrics["sharpe"]
+        for name, value in metrics.items():
+            result[f"{prefix}_{name}"] = value
     return result
 
 
@@ -328,16 +353,60 @@ def _single_return_metrics(
         ]
     )
     if finite.size == 0:
-        return {"annualized_return": None, "sharpe": None}
+        return {
+            "annualized_return": None,
+            "annualized_volatility": None,
+            "sharpe": None,
+            "max_drawdown": None,
+            "calmar": None,
+        }
     total = float(np.prod(1.0 + finite) - 1.0)
     annualized_return = float((1.0 + total) ** (annualization / finite.size) - 1.0)
     std = float(finite.std(ddof=1)) if finite.size > 1 else math.nan
+    annualized_volatility = (
+        float(std * math.sqrt(annualization)) if math.isfinite(std) else None
+    )
     sharpe = (
         float(finite.mean() / std * math.sqrt(annualization))
         if std != 0 and math.isfinite(std)
         else None
     )
-    return {"annualized_return": annualized_return, "sharpe": sharpe}
+    wealth = np.cumprod(1.0 + finite)
+    peaks = np.maximum.accumulate(np.maximum(wealth, 1.0))
+    max_drawdown = float(np.min(wealth / peaks - 1.0))
+    calmar = (
+        float(annualized_return / abs(max_drawdown))
+        if max_drawdown < 0 and math.isfinite(annualized_return)
+        else None
+    )
+    return {
+        "annualized_return": annualized_return,
+        "annualized_volatility": annualized_volatility,
+        "sharpe": sharpe,
+        "max_drawdown": max_drawdown,
+        "calmar": calmar,
+    }
+
+
+def _annualized_turnover(
+    turnover: pl.DataFrame, annualization: int
+) -> float | None:
+    if turnover.is_empty() or "turnover" not in turnover.columns:
+        return None
+    values = turnover.get_column("turnover").drop_nulls()
+    values = values.filter(values.is_finite())
+    mean = values.mean()
+    return (
+        float(mean) * annualization
+        if mean is not None and math.isfinite(float(mean))
+        else None
+    )
+
+
+def _difference(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return left - right
 
 
 def _ic_summary(values: object, annualization: int) -> dict[str, float | None]:
@@ -395,19 +464,12 @@ def _drawdowns(frame: pl.DataFrame, groups: tuple[str, ...]) -> pl.DataFrame:
     return value.with_columns(*expressions)
 
 
-def _rolling_volatility(frame: pl.DataFrame, annualization: int) -> pl.DataFrame:
+def _rolling_performance(frame: pl.DataFrame, annualization: int) -> pl.DataFrame:
     if frame.is_empty():
         return frame
-    return frame.sort(TIME).select(
-        TIME,
-        (
-            pl.col("gross_return").rolling_std(window_size=annualization)
-            * math.sqrt(annualization)
-        ).alias("gross_volatility"),
-        (
-            pl.col("net_return").rolling_std(window_size=annualization)
-            * math.sqrt(annualization)
-        ).alias("net_volatility"),
+    return rolling_performance(
+        frame.select(TIME, "gross_return", "net_return"),
+        annualization=annualization,
     )
 
 
