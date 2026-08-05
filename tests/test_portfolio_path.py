@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from bagelquant_bt import (
+    RESULT_SECTION_VERSION,
     BacktestConfig,
     PortfolioPathIdentity,
     ResultSectionSpec,
@@ -14,6 +15,10 @@ from bagelquant_bt import (
     materialize_portfolio_path,
     resume_portfolio_path,
 )
+
+
+def test_result_section_version_is_public() -> None:
+    assert RESULT_SECTION_VERSION == 3
 
 
 def _prices() -> pl.DataFrame:
