@@ -78,6 +78,7 @@ Continuous numerical values are regression-tested at `rtol=1e-12` and
 remain exact.
 
 The benchmark measures computation only. Persisting 126 monthly chunks,
-reloading artifacts, and calculating materialization hashes in `investments`
+reloading artifacts, and calculating materialization hashes in
+`bagelquant-workbench`
 can still dominate an end-to-end production run and should be optimized in
 that application rather than in this package.

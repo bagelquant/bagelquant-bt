@@ -47,4 +47,4 @@ AlphaValue 和 weights 是普通 core `Panel`；组合后的 prediction 是
 保存用于计算收益的数值价格。
 
 包依赖 `bagelquant-core` 的 Panel 与 composer 契约，但不导入
-`bagelquant-data` 或 investments 应用代码。
+`bagelquant-data` 或 `bagelquant-workbench` 应用代码。

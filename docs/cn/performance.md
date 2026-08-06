@@ -63,5 +63,5 @@ uv run python examples/benchmark_efficiency.py --case all --runs 3
 `rtol=1e-12, atol=1e-12` 做回归验证；日期、资产、事件计数、blocked
 trade 和 checkpoint 状态要求完全一致。
 
-基准只统计计算。`investments` 中逐月持久化、产物重载和 materialization
+基准只统计计算。`bagelquant-workbench` 中逐月持久化、产物重载和 materialization
 hash 仍可能主导 126 段生产链路的总耗时，应在应用层的后续优化中单独处理。
