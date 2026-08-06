@@ -18,7 +18,7 @@ from bagelquant_bt import (
 
 
 def test_result_section_version_is_public() -> None:
-    assert RESULT_SECTION_VERSION == 3
+    assert RESULT_SECTION_VERSION == 4
 
 
 def _prices() -> pl.DataFrame:
