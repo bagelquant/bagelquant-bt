@@ -29,6 +29,11 @@ from bagelquant_bt import compose_signal, run_signal_backtest, run_signal_evalua
 `PortfolioBuild(weights: Panel, skipped: DataFrame)`。`OrderSizingPolicy` 与
 `OrderPlan` 只预留 weights 到订单的边界，本版本不实现手数计算。
 
+`BacktestConfig.insolvency_action` 默认为 `"raise"`，保持严格失败语义。设为
+`"freeze_zero"` 后，资不抵债当日的有效费用封顶为可用财富，同时记录请求费用和未支付
+费用，净收益记为 `-100%`；之后 gross/net 收益与交易均冻结为零。return、lag 和
+quantile 路径会提供 `is_bankrupt` 与 `bankruptcy_event` 标记。
+
 `BacktestResult` 包含权重、收益、净值、换手、成本、执行阻塞和覆盖度。
 `SignalEvaluationResult` 包含 Signal、execution-to-execution forward returns、
 Pearson/Spearman IC、分位数、spread、TOP N、lag、IC decay 与基准结果。

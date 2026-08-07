@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import polars as pl
@@ -101,6 +101,7 @@ def _backtest_weight_frame_with_forward_returns(
     initial_executed_weights: pl.DataFrame | None = None,
     initial_gross_value: float | None = None,
     initial_net_value: float | None = None,
+    initial_is_bankrupt: bool = False,
     prepared_active_assets: pl.DataFrame | None = None,
     execution_availability_validated: bool = False,
 ) -> BacktestResult:
@@ -124,6 +125,7 @@ def _backtest_weight_frame_with_forward_returns(
         and initial_executed_weights is None
         and initial_gross_value is None
         and initial_net_value is None
+        and not initial_is_bankrupt
     )
     resolved_slippage_rates = (
         None
@@ -177,6 +179,7 @@ def _backtest_weight_frame_with_forward_returns(
             initial_executed_weights=initial_executed_weights,
             initial_gross_value=initial_gross_value,
             initial_net_value=initial_net_value,
+            initial_is_bankrupt=initial_is_bankrupt,
             execution_availability_validated=execution_availability_validated,
             slippage_rates=resolved_slippage_rates,
         )
@@ -950,11 +953,16 @@ def _calculate_sparse_portfolio_batch(
     commission_fees = np.zeros_like(gross_returns)
     stamp_tax_fees = np.zeros_like(gross_returns)
     total_fees = np.zeros_like(gross_returns)
+    requested_total_fees = np.zeros_like(gross_returns)
+    unfunded_fees = np.zeros_like(gross_returns)
     cost_returns = np.zeros_like(gross_returns)
+    is_bankrupt = np.zeros((periods, portfolio_count), dtype=np.bool_)
+    bankruptcy_events = np.zeros_like(is_bankrupt)
     gross_value_path = np.zeros_like(gross_returns)
     net_value_path = np.zeros_like(gross_returns)
     current_gross = np.full(portfolio_count, config.initial_capital, dtype=np.float64)
     current_net = np.full(portfolio_count, config.initial_capital, dtype=np.float64)
+    bankrupt = np.zeros(portfolio_count, dtype=np.bool_)
 
     first_session_indices = np.array(
         [
@@ -978,6 +986,9 @@ def _calculate_sparse_portfolio_batch(
             portfolio_index = int(event_portfolios[event_offset])
             asset_index = int(event_assets[event_offset])
             target = float(event_weights[event_offset])
+            if bankrupt[portfolio_index]:
+                event_offset += 1
+                continue
             delta = target - holdings[portfolio_index, asset_index]
             holdings[portfolio_index, asset_index] = target
             if delta != 0.0:
@@ -1065,6 +1076,7 @@ def _calculate_sparse_portfolio_batch(
 
         active = session_index >= first_session_indices
         gross_returns[session_index] = holdings @ return_matrix[session_index]
+        gross_returns[session_index, bankrupt] = 0.0
         traded_notionals[session_index] = (
             turnover_values[session_index] * current_net
         )
@@ -1076,6 +1088,7 @@ def _calculate_sparse_portfolio_batch(
             + slippage_fees[session_index]
             + stamp_tax_fees[session_index]
         )
+        requested_total_fees[session_index] = total_fees[session_index]
         np.divide(
             total_fees[session_index],
             current_net,
@@ -1086,8 +1099,9 @@ def _calculate_sparse_portfolio_batch(
             gross_returns[session_index] - cost_returns[session_index]
         )
         next_net = current_net * (1.0 + net_returns[session_index])
-        if np.any(next_net[active] <= 0.0):
-            failed = int(np.flatnonzero(active & (next_net <= 0.0))[0])
+        failed_mask = active & ~bankrupt & (next_net <= 0.0)
+        if np.any(failed_mask) and config.insolvency_action == "raise":
+            failed = int(np.flatnonzero(failed_mask)[0])
             time = session_lookup.get_column(TIME)[session_index]
             raise InputValidationError(
                 "net portfolio value became non-positive after transaction costs "
@@ -1096,6 +1110,47 @@ def _calculate_sparse_portfolio_batch(
                 f"cost_return={cost_returns[session_index, failed]:.6g}, "
                 "Increase initial_capital or reduce traded universe/turnover."
             )
+        if np.any(failed_mask):
+            failed_indices = np.flatnonzero(failed_mask)
+            available_wealth = np.maximum(
+                current_net[failed_indices]
+                * (1.0 + gross_returns[session_index, failed_indices]),
+                0.0,
+            )
+            requested_fees = requested_total_fees[
+                session_index, failed_indices
+            ]
+            scales = np.divide(
+                available_wealth,
+                requested_fees,
+                out=np.zeros_like(available_wealth),
+                where=requested_fees > 0.0,
+            )
+            scales = np.minimum(scales, 1.0)
+            for fee_path in (
+                slippage_fees,
+                raw_fees,
+                min_fee_adjustments,
+                commission_fees,
+                stamp_tax_fees,
+            ):
+                fee_path[session_index, failed_indices] *= scales
+            total_fees[session_index, failed_indices] = available_wealth
+            unfunded_fees[session_index, failed_indices] = np.maximum(
+                requested_fees - available_wealth,
+                0.0,
+            )
+            cost_returns[session_index, failed_indices] = np.divide(
+                available_wealth,
+                current_net[failed_indices],
+                out=np.zeros_like(available_wealth),
+                where=current_net[failed_indices] != 0.0,
+            )
+            net_returns[session_index, failed_indices] = -1.0
+            next_net[failed_indices] = 0.0
+            bankruptcy_events[session_index, failed_indices] = True
+            bankrupt[failed_indices] = True
+        is_bankrupt[session_index] = bankrupt
         current_gross *= 1.0 + gross_returns[session_index]
         current_net = next_net
         gross_value_path[session_index] = current_gross
@@ -1109,7 +1164,13 @@ def _calculate_sparse_portfolio_batch(
         gross = gross_returns[start:, portfolio_index]
         net = net_returns[start:, portfolio_index]
         returns = pl.DataFrame(
-            {TIME: selected_times, "gross_return": gross, "net_return": net}
+            {
+                TIME: selected_times,
+                "gross_return": gross,
+                "net_return": net,
+                "is_bankrupt": is_bankrupt[start:, portfolio_index],
+                "bankruptcy_event": bankruptcy_events[start:, portfolio_index],
+            }
         )
         turn = pl.DataFrame(
             {TIME: selected_times, "turnover": turnover_values[start:, portfolio_index]}
@@ -1130,6 +1191,10 @@ def _calculate_sparse_portfolio_batch(
                 "commission_fee": commission_fees[start:, portfolio_index],
                 "stamp_tax_fee": stamp_tax_fees[start:, portfolio_index],
                 "total_fee": total_fees[start:, portfolio_index],
+                "requested_total_fee": requested_total_fees[
+                    start:, portfolio_index
+                ],
+                "unfunded_fee": unfunded_fees[start:, portfolio_index],
                 "cost_return": cost_returns[start:, portfolio_index],
             }
         )
@@ -1143,6 +1208,21 @@ def _calculate_sparse_portfolio_batch(
             }
         )
         costs = TransactionCostBreakdown(costs_data)
+        result_state = states[label]
+        bankruptcy_positions = np.flatnonzero(
+            bankruptcy_events[start:, portfolio_index]
+        )
+        if bankruptcy_positions.size:
+            bankruptcy_time = selected_times[int(bankruptcy_positions[0])]
+            result_state = replace(
+                result_state,
+                executable_events=result_state.executable_events.filter(
+                    pl.col(TIME) <= bankruptcy_time
+                ),
+                execution_blocks=result_state.execution_blocks.filter(
+                    pl.col(TIME) <= bankruptcy_time
+                ),
+            )
         summary, performance = summarize_performance(
             returns=returns,
             turnover=turn,
@@ -1157,7 +1237,7 @@ def _calculate_sparse_portfolio_batch(
             costs=costs,
             summary=summary,
             performance=performance,
-            state=states[label],
+            state=result_state,
         )
     return results
 
@@ -1352,6 +1432,7 @@ def _run_weight_backtest_core(
     initial_executed_weights: pl.DataFrame | None = None,
     initial_gross_value: float | None = None,
     initial_net_value: float | None = None,
+    initial_is_bankrupt: bool = False,
     execution_availability_validated: bool = False,
     prepared_execution_keys: pl.DataFrame | None = None,
     slippage_rates: pl.DataFrame | None = None,
@@ -1401,7 +1482,34 @@ def _run_weight_backtest_core(
         slippage_rates=slippage_rates,
         initial_gross_value=initial_gross_value,
         initial_net_value=initial_net_value,
+        initial_is_bankrupt=initial_is_bankrupt,
     )
+    bankruptcy_time = (
+        returns.filter(pl.col("bankruptcy_event")).get_column(TIME).min()
+    )
+    if initial_is_bankrupt and initial_executed_weights is not None:
+        first_return_time = returns.get_column(TIME).min()
+        executable_weights = initial_executed_weights.select(
+            pl.lit(first_return_time, dtype=pl.Date).alias(TIME),
+            ASSET_ID,
+            "weight",
+        )
+        execution_blocks = execution_blocks.head(0)
+    elif bankruptcy_time is not None:
+        executable_weights = executable_weights.filter(
+            pl.col(TIME) <= bankruptcy_time
+        )
+        execution_blocks = execution_blocks.filter(pl.col(TIME) <= bankruptcy_time)
+    turn = turn.join(
+        returns.select(TIME, "is_bankrupt", "bankruptcy_event"),
+        on=TIME,
+        how="left",
+    ).with_columns(
+        pl.when(pl.col("is_bankrupt") & ~pl.col("bankruptcy_event"))
+        .then(0.0)
+        .otherwise(pl.col("turnover"))
+        .alias("turnover")
+    ).drop("is_bankrupt", "bankruptcy_event")
     summary, performance = summarize_performance(
         returns=returns,
         turnover=turn,
@@ -1754,6 +1862,7 @@ def _simulate_cost_adjusted_returns(
     slippage_rates: pl.DataFrame | None,
     initial_gross_value: float | None = None,
     initial_net_value: float | None = None,
+    initial_is_bankrupt: bool = False,
 ) -> tuple[TransactionCostBreakdown, pl.DataFrame, pl.DataFrame]:
     trade_summary = _trade_summary(
         deltas,
@@ -1778,7 +1887,8 @@ def _simulate_cost_adjusted_returns(
     )
     periods = timeline.height
     times = timeline.get_column(TIME)
-    gross_values = timeline.get_column("gross_return").to_numpy()
+    requested_gross_values = timeline.get_column("gross_return").to_numpy()
+    gross_values = requested_gross_values.copy()
     delta_lists = timeline.get_column("signed_weight_deltas")
     slippage_rate_lists = timeline.get_column("slippage_rates")
     slippage_fallback_lists = timeline.get_column("slippage_fallbacks")
@@ -1806,12 +1916,17 @@ def _simulate_cost_adjusted_returns(
     commission_fees = np.empty(periods, dtype=np.float64)
     stamp_tax_fees = np.empty(periods, dtype=np.float64)
     total_fees = np.empty(periods, dtype=np.float64)
+    requested_total_fees = np.empty(periods, dtype=np.float64)
+    unfunded_fees = np.empty(periods, dtype=np.float64)
     cost_returns = np.empty(periods, dtype=np.float64)
     net_returns = np.empty(periods, dtype=np.float64)
     gross_value_path = np.empty(periods, dtype=np.float64)
     net_value_path = np.empty(periods, dtype=np.float64)
+    is_bankrupt = np.empty(periods, dtype=np.bool_)
+    bankruptcy_events = np.zeros(periods, dtype=np.bool_)
 
     offset = 0
+    bankrupt = initial_is_bankrupt
     for position in range(periods):
         time = times[position]
         traded_asset_count = int(traded_asset_counts[position])
@@ -1823,6 +1938,27 @@ def _simulate_cost_adjusted_returns(
             offset : offset + traded_asset_count
         ]
         offset += traded_asset_count
+        if bankrupt:
+            gross_values[position] = 0.0
+            traded_asset_counts[position] = 0
+            traded_notionals[position] = 0.0
+            buy_notionals[position] = 0.0
+            sell_notionals[position] = 0.0
+            slippage_fees[position] = 0.0
+            slippage_fallback_asset_counts[position] = 0
+            raw_fees[position] = 0.0
+            min_fee_adjustments[position] = 0.0
+            commission_fees[position] = 0.0
+            stamp_tax_fees[position] = 0.0
+            total_fees[position] = 0.0
+            requested_total_fees[position] = 0.0
+            unfunded_fees[position] = 0.0
+            cost_returns[position] = 0.0
+            net_returns[position] = 0.0
+            gross_value_path[position] = current_gross_value
+            net_value_path[position] = current_net_value
+            is_bankrupt[position] = True
+            continue
         weight_deltas = np.abs(signed_weight_deltas)
         weight_delta = float(np.sum(weight_deltas))
         traded_notional = weight_delta * current_net_value
@@ -1846,10 +1982,10 @@ def _simulate_cost_adjusted_returns(
         total_fee = commission_fee + slippage_fee + stamp_tax_fee
 
         cost_return = total_fee / current_net_value if current_net_value else 0.0
-        gross_return = float(gross_values[position])
+        gross_return = float(requested_gross_values[position])
         net_return = gross_return - cost_return
         next_net_value = current_net_value * (1.0 + net_return)
-        if next_net_value <= 0.0:
+        if next_net_value <= 0.0 and config.insolvency_action == "raise":
             raise InputValidationError(
                 "net portfolio value became non-positive after transaction costs "
                 f"at {time}: current_value={current_net_value:.6g}, "
@@ -1859,6 +1995,31 @@ def _simulate_cost_adjusted_returns(
                 f"total_fee={total_fee:.6g}. "
                 "Increase initial_capital or reduce traded universe/turnover."
             )
+        requested_total_fee = total_fee
+        unfunded_fee = 0.0
+        if next_net_value <= 0.0:
+            available_wealth = max(
+                current_net_value * (1.0 + gross_return),
+                0.0,
+            )
+            scale = (
+                min(available_wealth / requested_total_fee, 1.0)
+                if requested_total_fee > 0.0
+                else 0.0
+            )
+            slippage_fee *= scale
+            raw_fee *= scale
+            commission_fee *= scale
+            stamp_tax_fee *= scale
+            total_fee = available_wealth
+            unfunded_fee = max(requested_total_fee - total_fee, 0.0)
+            cost_return = (
+                total_fee / current_net_value if current_net_value else 0.0
+            )
+            net_return = -1.0
+            next_net_value = 0.0
+            bankruptcy_events[position] = True
+            bankrupt = True
         current_gross_value *= 1.0 + gross_return
         current_net_value = next_net_value
         traded_notionals[position] = traded_notional
@@ -1873,10 +2034,13 @@ def _simulate_cost_adjusted_returns(
         commission_fees[position] = commission_fee
         stamp_tax_fees[position] = stamp_tax_fee
         total_fees[position] = total_fee
+        requested_total_fees[position] = requested_total_fee
+        unfunded_fees[position] = unfunded_fee
         cost_returns[position] = cost_return
         net_returns[position] = net_return
         gross_value_path[position] = current_gross_value
         net_value_path[position] = current_net_value
+        is_bankrupt[position] = bankrupt
 
     costs = pl.DataFrame(
         {
@@ -1892,6 +2056,8 @@ def _simulate_cost_adjusted_returns(
             "commission_fee": commission_fees,
             "stamp_tax_fee": stamp_tax_fees,
             "total_fee": total_fees,
+            "requested_total_fee": requested_total_fees,
+            "unfunded_fee": unfunded_fees,
             "cost_return": cost_returns,
         }
     )
@@ -1900,6 +2066,8 @@ def _simulate_cost_adjusted_returns(
             TIME: times,
             "gross_return": gross_values,
             "net_return": net_returns,
+            "is_bankrupt": is_bankrupt,
+            "bankruptcy_event": bankruptcy_events,
         }
     )
     value = pl.DataFrame(

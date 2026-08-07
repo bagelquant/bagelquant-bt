@@ -60,6 +60,11 @@ config = BacktestConfig(
 
 `initial_capital` must be positive. `quantiles` controls signal buckets and
 `top_n` controls the default equal-weight portfolio policy.
+`insolvency_action` defaults to `"raise"`. Setting it to `"freeze_zero"`
+caps effective fees at available wealth on the insolvency session, records
+requested and unfunded fees, sets net return to `-100%`, and freezes later
+gross/net returns and trading at zero. Return, lag, and quantile paths expose
+`is_bankrupt` and `bankruptcy_event` markers.
 
 ## Results
 

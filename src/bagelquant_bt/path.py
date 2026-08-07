@@ -21,8 +21,8 @@ from .results import BacktestResult
 from .returns import _prepare_price_data
 from .window import compute_window_tables
 
-PORTFOLIO_PATH_VERSION = 2
-RESULT_SECTION_VERSION = 4
+PORTFOLIO_PATH_VERSION = 3
+RESULT_SECTION_VERSION = 5
 RESULT_SECTIONS = (
     "summary",
     "ic",
@@ -78,6 +78,7 @@ class PortfolioStateCheckpoint:
     executed_weights: pl.DataFrame
     gross_value: float
     net_value: float
+    is_bankrupt: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +267,7 @@ def resume_portfolio_path(
         initial_executed_weights=checkpoint.executed_weights,
         initial_gross_value=checkpoint.gross_value,
         initial_net_value=checkpoint.net_value,
+        initial_is_bankrupt=checkpoint.is_bankrupt,
         prepared_active_assets=prepared_active_assets,
         slippage_rates=slippage_rates,
     )
@@ -302,7 +304,13 @@ def compute_result_section(
         how="inner",
     )
     costs = path.costs.join(intervals.select(TIME), on=TIME, how="inner")
-    returns = intervals.select(TIME, "gross_return", "net_return")
+    returns = intervals.select(
+        TIME,
+        "gross_return",
+        "net_return",
+        "is_bankrupt",
+        "bankruptcy_event",
+    )
     window_series = {
         name: (
             frame.filter(pl.col(TIME).is_between(window.start, window.end))
@@ -350,6 +358,8 @@ def _path_chunk(
         "next_time",
         "gross_return",
         "net_return",
+        "is_bankrupt",
+        "bankruptcy_event",
     )
     if returns.is_empty():
         raise InputValidationError("portfolio path contains no complete intervals")
@@ -369,6 +379,7 @@ def _path_chunk(
         executed_weights=executed_weights,
         gross_value=float(result.value.get_column("gross_value")[-1]),
         net_value=float(result.value.get_column("net_value")[-1]),
+        is_bankrupt=bool(returns.get_column("is_bankrupt")[-1]),
     )
     target_changes = _sparse_weight_changes(
         result.target_weights,

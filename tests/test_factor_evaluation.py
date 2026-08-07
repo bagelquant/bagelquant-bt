@@ -13,6 +13,7 @@ import bagelquant_bt.factor as factor_module
 from bagelquant_bt import (
     BacktestConfig,
     ScheduledSignal,
+    TransactionCostConfig,
     materialize_signal_diagnostics,
     run_signal_evaluation,
 )
@@ -1050,3 +1051,56 @@ def test_signal_diagnostics_skip_unrequested_family_builders(
         include_lags=True,
     )
     assert set(lags) == {"lag_analysis", "lag_returns"}
+
+
+def test_batched_lag_bankruptcy_is_isolated_per_portfolio() -> None:
+    times = [date(2024, 1, day) for day in range(1, 5)]
+    prices = pl.DataFrame(
+        {
+            "time": times * 4,
+            "asset_id": ["a"] * 4 + ["b"] * 4 + ["c"] * 4 + ["d"] * 4,
+            "price": [10.0] * 16,
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": [times[0]] * 4,
+            "asset_id": ["a", "b", "c", "d"],
+            "signal": [4.0, 3.0, 2.0, 1.0],
+        }
+    )
+    diagnostics = materialize_signal_diagnostics(
+        _scheduled_signal(signals),
+        prices,
+        config=BacktestConfig(
+            initial_capital=10,
+            quantiles=2,
+            top_n=1,
+            transaction_cost=TransactionCostConfig(
+                rate=0.0,
+                min_fee=5.0,
+                slippage_rate=0.0,
+                stamp_tax_rate=0.0,
+            ),
+            insolvency_action="freeze_zero",
+        ),
+        include_lags=True,
+    )
+
+    analysis = diagnostics["lag_analysis"].filter(pl.col("lag") == 0)
+    assert analysis.filter(pl.col("portfolio") == "spread").item(
+        0, "is_bankrupt"
+    ) is True
+    assert analysis.filter(pl.col("portfolio") == "top_n").item(
+        0, "is_bankrupt"
+    ) is False
+    spread = diagnostics["lag_returns"].filter(
+        (pl.col("portfolio") == "spread") & (pl.col("lag") == 0)
+    )
+    top_n = diagnostics["lag_returns"].filter(
+        (pl.col("portfolio") == "top_n") & (pl.col("lag") == 0)
+    )
+    assert spread["net_return"].to_list() == [-1.0, 0.0, 0.0]
+    assert spread["bankruptcy_event"].to_list() == [True, False, False]
+    assert top_n["net_return"].to_list() == [-0.5, 0.0, 0.0]
+    assert top_n["is_bankrupt"].to_list() == [False, False, False]

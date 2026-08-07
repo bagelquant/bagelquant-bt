@@ -30,29 +30,69 @@ def compute_window_tables(
 
     selected = set(items)
     if section == "summary":
-        return _summary(
+        metrics, tables = _summary(
             returns,
             turnover,
             series,
             annualization,
             ic_annualization,
         )
+        tables["bankruptcies"] = _bankruptcies(
+            returns=returns,
+            lag_returns=series.get("lag_returns", pl.DataFrame()).filter(
+                (pl.col("portfolio") == "spread") & (pl.col("lag") == 0)
+            )
+            if not series.get("lag_returns", pl.DataFrame()).is_empty()
+            else pl.DataFrame(),
+        )
+        return metrics, tables
     if section == "ic":
         return {}, _ic_tables(series, selected, ic_annualization)
     if section == "spread":
-        return {}, _spread_tables(series, selected, annualization)
+        tables = _spread_tables(series, selected, annualization)
+        tables["bankruptcies"] = _bankruptcies(
+            lag_returns=series.get("lag_returns", pl.DataFrame()).filter(
+                pl.col("portfolio") == "spread"
+            )
+            if not series.get("lag_returns", pl.DataFrame()).is_empty()
+            else pl.DataFrame()
+        )
+        return {}, tables
     if section == "top_n":
-        return {"benchmark_available": benchmark_returns is not None}, _top_n_tables(
+        tables = _top_n_tables(
             returns,
             series,
             selected,
             annualization,
             benchmark_returns,
         )
+        tables["bankruptcies"] = _bankruptcies(
+            returns=returns,
+            lag_returns=series.get("lag_returns", pl.DataFrame()).filter(
+                pl.col("portfolio") == "top_n"
+            )
+            if not series.get("lag_returns", pl.DataFrame()).is_empty()
+            else pl.DataFrame(),
+        )
+        return {"benchmark_available": benchmark_returns is not None}, tables
     if section == "quantiles":
-        return {}, _quantile_tables(series, selected, ic_annualization)
+        tables = _quantile_tables(series, selected, ic_annualization)
+        tables["bankruptcies"] = _bankruptcies(
+            quantile_returns=series.get("quantile_returns", pl.DataFrame())
+        )
+        return {}, tables
     if section == "statistical_tests":
-        return {}, {"statistical_tests": _statistical_tests(series)}
+        lag_returns = series.get("lag_returns", pl.DataFrame())
+        return {}, {
+            "statistical_tests": _statistical_tests(series),
+            "bankruptcies": _bankruptcies(
+                lag_returns=lag_returns.filter(
+                    (pl.col("portfolio") == "spread") & (pl.col("lag") == 0)
+                )
+                if not lag_returns.is_empty()
+                else pl.DataFrame()
+            ),
+        }
     raise ValueError(f"unknown result section: {section}")
 
 
@@ -62,12 +102,12 @@ def _summary(
     series: Mapping[str, pl.DataFrame],
     annualization: int,
     ic_annualization: int,
-) -> tuple[dict[str, float | int | None], dict[str, pl.DataFrame]]:
+) -> tuple[dict[str, bool | float | int | None], dict[str, pl.DataFrame]]:
     top_n = _paired_return_metrics(returns, annualization)
     spread = _lag_period_returns(series, portfolio="spread", lag=0)
     spread_metrics = _paired_return_metrics(spread, annualization)
     ic = _ic_frame(series)
-    row: dict[str, float | int | None] = {}
+    row: dict[str, bool | float | int | None] = {}
     for method, column in (("pearson", "pearson_ic"), ("spearman", "spearman_ic")):
         values = ic.get_column(column).drop_nulls() if column in ic.columns else []
         summary = _ic_summary(values, ic_annualization)
@@ -96,6 +136,8 @@ def _summary(
                 top_n["gross_annualized_return"],
                 top_n["net_annualized_return"],
             ),
+            "top_n_is_bankrupt": _is_bankrupt(returns),
+            "spread_is_bankrupt": _is_bankrupt(spread),
         }
     )
     coverage = series.get("coverage", pl.DataFrame())
@@ -223,7 +265,15 @@ def _quantile_tables(
         rows = []
         for frame in returns.partition_by("quantile", maintain_order=True):
             metrics = _single_return_metrics(frame.get_column("return"), annualization)
-            rows.append({"quantile": frame.get_column("quantile")[0], **metrics})
+            bankruptcy_time = _bankruptcy_time(frame)
+            rows.append(
+                {
+                    "quantile": frame.get_column("quantile")[0],
+                    **metrics,
+                    "is_bankrupt": bankruptcy_time is not None,
+                    "bankruptcy_time": bankruptcy_time,
+                }
+            )
         tables["quantile_performance"] = pl.DataFrame(rows)
     if "time_series" in selected:
         tables["quantile_returns"] = returns.sort(["quantile", TIME]).with_columns(
@@ -318,14 +368,26 @@ def _lag_period_returns(
                 TIME: pl.Date,
                 "gross_return": pl.Float64,
                 "net_return": pl.Float64,
+                "is_bankrupt": pl.Boolean,
+                "bankruptcy_event": pl.Boolean,
             }
         )
     filtered = frame.filter(pl.col("portfolio") == portfolio)
     if lag is not None:
         filtered = filtered.filter(pl.col("lag") == lag)
-    return filtered.select("lag", "portfolio", TIME, "gross_return", "net_return").sort(
-        ["lag", TIME]
-    )
+    if "is_bankrupt" not in filtered.columns:
+        filtered = filtered.with_columns(pl.lit(False).alias("is_bankrupt"))
+    if "bankruptcy_event" not in filtered.columns:
+        filtered = filtered.with_columns(pl.lit(False).alias("bankruptcy_event"))
+    return filtered.select(
+        "lag",
+        "portfolio",
+        TIME,
+        "gross_return",
+        "net_return",
+        "is_bankrupt",
+        "bankruptcy_event",
+    ).sort(["lag", TIME])
 
 
 def _paired_return_metrics(
@@ -483,8 +545,91 @@ def _lag_performance(frame: pl.DataFrame, annualization: int) -> pl.DataFrame:
             metrics = _single_return_metrics(part.get_column(column), annualization)
             row[f"{prefix}_annualized_return"] = metrics["annualized_return"]
             row[f"{prefix}_sharpe"] = metrics["sharpe"]
+        bankruptcy_time = _bankruptcy_time(part)
+        row["is_bankrupt"] = bankruptcy_time is not None
+        row["bankruptcy_time"] = bankruptcy_time
         rows.append(row)
     return pl.DataFrame(rows).sort("lag")
+
+
+def _is_bankrupt(frame: pl.DataFrame) -> bool:
+    return bool(
+        not frame.is_empty()
+        and "is_bankrupt" in frame.columns
+        and frame.get_column("is_bankrupt").any()
+    )
+
+
+def _bankruptcy_time(frame: pl.DataFrame) -> object:
+    if frame.is_empty() or "bankruptcy_event" not in frame.columns:
+        return None
+    return frame.filter(pl.col("bankruptcy_event")).get_column(TIME).min()
+
+
+def _bankruptcies(
+    *,
+    returns: pl.DataFrame | None = None,
+    lag_returns: pl.DataFrame | None = None,
+    quantile_returns: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    schema = {
+        "portfolio": pl.String,
+        "lag": pl.Int64,
+        "quantile": pl.String,
+        "bankruptcy_time": pl.Date,
+    }
+    frames: list[pl.DataFrame] = []
+    if (
+        returns is not None
+        and not returns.is_empty()
+        and "bankruptcy_event" in returns.columns
+    ):
+        events = returns.filter(pl.col("bankruptcy_event"))
+        if not events.is_empty():
+            frames.append(
+                events.select(
+                    pl.lit("top_n").alias("portfolio"),
+                    pl.lit(None, dtype=pl.Int64).alias("lag"),
+                    pl.lit(None, dtype=pl.String).alias("quantile"),
+                    pl.col(TIME).alias("bankruptcy_time"),
+                )
+            )
+    if (
+        lag_returns is not None
+        and not lag_returns.is_empty()
+        and "bankruptcy_event" in lag_returns.columns
+    ):
+        events = lag_returns.filter(pl.col("bankruptcy_event"))
+        if not events.is_empty():
+            frames.append(
+                events.select(
+                    "portfolio",
+                    "lag",
+                    pl.lit(None, dtype=pl.String).alias("quantile"),
+                    pl.col(TIME).alias("bankruptcy_time"),
+                )
+            )
+    if (
+        quantile_returns is not None
+        and not quantile_returns.is_empty()
+        and "bankruptcy_event" in quantile_returns.columns
+    ):
+        events = quantile_returns.filter(pl.col("bankruptcy_event"))
+        if not events.is_empty():
+            frames.append(
+                events.select(
+                    pl.lit("quantile").alias("portfolio"),
+                    pl.lit(None, dtype=pl.Int64).alias("lag"),
+                    "quantile",
+                    pl.col(TIME).alias("bankruptcy_time"),
+                )
+            )
+    if not frames:
+        return pl.DataFrame(schema=schema)
+    return pl.concat(frames).unique().sort(
+        ["portfolio", "lag", "quantile", "bankruptcy_time"],
+        nulls_last=True,
+    )
 
 
 def _benchmark_paths(frame: pl.DataFrame) -> pl.DataFrame:

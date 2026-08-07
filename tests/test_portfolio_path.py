@@ -11,14 +11,18 @@ from bagelquant_bt import (
     PortfolioPathIdentity,
     ResultSectionSpec,
     ResultWindow,
+    TransactionCostConfig,
     compute_result_section,
     materialize_portfolio_path,
     resume_portfolio_path,
 )
+from bagelquant_bt.path import PORTFOLIO_PATH_VERSION
+from bagelquant_bt.window import compute_window_tables
 
 
 def test_result_section_version_is_public() -> None:
-    assert RESULT_SECTION_VERSION == 4
+    assert PORTFOLIO_PATH_VERSION == 3
+    assert RESULT_SECTION_VERSION == 5
 
 
 def _prices() -> pl.DataFrame:
@@ -104,6 +108,59 @@ def test_resumed_path_matches_one_shot_path_across_pending_trade() -> None:
     assert resumed_turnover.equals(whole.turnover)
     assert resumed_costs.equals(whole.costs)
     assert second.checkpoint.net_value == whole.checkpoint.net_value
+
+
+def test_resumed_path_preserves_bankruptcy_state() -> None:
+    times = ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"]
+    prices = pl.DataFrame(
+        {
+            "time": times * 3,
+            "asset_id": ["a"] * 4 + ["b"] * 4 + ["c"] * 4,
+            "price": [10.0] * 4 + [20.0] * 4 + [30.0] * 4,
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01"] * 3 + ["2024-01-03"] * 3,
+            "asset_id": ["a", "b", "c"] * 2,
+            "weight": [1 / 3, 1 / 3, 1 / 3, 0.0, 0.0, 1.0],
+        }
+    )
+    config = BacktestConfig(
+        initial_capital=10,
+        transaction_cost=TransactionCostConfig(
+            rate=0.001,
+            min_fee=5.0,
+            slippage_rate=0.0,
+            stamp_tax_rate=0.0,
+        ),
+        insolvency_action="freeze_zero",
+    )
+    whole = materialize_portfolio_path(
+        weights,
+        prices,
+        identity=_identity(),
+        config=config,
+    )
+    first = materialize_portfolio_path(
+        weights.filter(pl.col("time") == "2024-01-01"),
+        prices.filter(pl.col("time") <= "2024-01-02"),
+        identity=_identity(),
+        config=config,
+    )
+    second = resume_portfolio_path(
+        weights.filter(pl.col("time") >= "2024-01-03"),
+        prices.filter(pl.col("time") >= "2024-01-02"),
+        identity=_identity(),
+        checkpoint=first.checkpoint,
+        config=config,
+    )
+
+    assert first.checkpoint.is_bankrupt is True
+    assert pl.concat([first.returns, second.returns]).equals(whole.returns)
+    assert pl.concat([first.turnover, second.turnover]).equals(whole.turnover)
+    assert pl.concat([first.costs, second.costs]).equals(whole.costs)
+    assert second.checkpoint.is_bankrupt is True
 
 
 def test_resume_replaces_sparse_target_at_checkpoint_time() -> None:
@@ -260,3 +317,117 @@ def test_benchmark_metrics_are_recomputed_for_result_window() -> None:
         0, "total_return"
     ) == pytest.approx(0.0302)
     assert section.tables["excess_returns"]["time"].min() == date(2024, 1, 2)
+
+
+def test_window_sections_preserve_bankruptcy_markers_and_outputs() -> None:
+    times = [date(2024, 1, day) for day in range(2, 5)]
+    returns = pl.DataFrame(
+        {
+            "time": times,
+            "gross_return": [0.0, 0.0, 0.0],
+            "net_return": [-1.0, 0.0, 0.0],
+            "is_bankrupt": [True, True, True],
+            "bankruptcy_event": [True, False, False],
+        }
+    )
+    lag_returns = pl.DataFrame(
+        {
+            "portfolio": ["spread"] * 3 + ["spread"] * 3 + ["top_n"] * 3,
+            "lag": [0] * 3 + [1] * 3 + [0] * 3,
+            "time": times * 3,
+            "gross_return": [0.0] * 6 + [0.01, 0.0, 0.0],
+            "net_return": [-1.0, 0.0, 0.0] + [0.01, 0.0, 0.0] * 2,
+            "is_bankrupt": [True, True, True] + [False] * 6,
+            "bankruptcy_event": [True, False, False] + [False] * 6,
+        }
+    )
+    quantile_returns = pl.DataFrame(
+        {
+            "quantile": ["Q1"] * 3 + ["Q2"] * 3,
+            "time": times * 2,
+            "return": [-1.0, 0.0, 0.0, 0.01, 0.0, 0.0],
+            "is_bankrupt": [True, True, True, False, False, False],
+            "bankruptcy_event": [True, False, False, False, False, False],
+        }
+    )
+    series = {
+        "factor": pl.DataFrame({"time": [date(2024, 1, 1), *times]}),
+        "lag_returns": lag_returns,
+        "quantile_returns": quantile_returns,
+    }
+    turnover = pl.DataFrame({"time": times, "turnover": [1.0, 0.0, 0.0]})
+
+    summary_metrics, summary_tables = compute_window_tables(
+        "summary",
+        (),
+        returns=returns,
+        turnover=turnover,
+        costs=pl.DataFrame(),
+        series=series,
+        annualization=3,
+        ic_annualization=3,
+    )
+    assert summary_metrics["top_n_is_bankrupt"] is True
+    assert summary_metrics["spread_is_bankrupt"] is True
+    assert summary_metrics["top_n_net_annualized_return"] == -1.0
+    assert summary_tables["bankruptcies"].height == 2
+
+    _, spread_tables = compute_window_tables(
+        "spread",
+        ("spread_time_series", "spread_lag_performance"),
+        returns=returns,
+        turnover=turnover,
+        costs=pl.DataFrame(),
+        series=series,
+        annualization=3,
+        ic_annualization=3,
+    )
+    assert spread_tables["spread_lag_performance"].filter(
+        pl.col("lag") == 0
+    ).item(0, "bankruptcy_time") == times[0]
+    assert spread_tables["bankruptcies"].height == 1
+
+    _, top_n_tables = compute_window_tables(
+        "top_n",
+        ("benchmark_comparison", "lag_performance"),
+        returns=returns,
+        turnover=turnover,
+        costs=pl.DataFrame(),
+        series=series,
+        annualization=3,
+        ic_annualization=3,
+    )
+    assert top_n_tables["top_n_returns"]["net_return_cumulative"].to_list() == [
+        -1.0,
+        -1.0,
+        -1.0,
+    ]
+    assert top_n_tables["bankruptcies"].height == 1
+
+    _, quantile_tables = compute_window_tables(
+        "quantiles",
+        ("annualized_return", "time_series"),
+        returns=returns,
+        turnover=turnover,
+        costs=pl.DataFrame(),
+        series=series,
+        annualization=3,
+        ic_annualization=3,
+    )
+    q1 = quantile_tables["quantile_performance"].filter(pl.col("quantile") == "Q1")
+    assert q1.item(0, "is_bankrupt") is True
+    assert q1.item(0, "bankruptcy_time") == times[0]
+    assert quantile_tables["bankruptcies"].height == 1
+
+    _, statistics_tables = compute_window_tables(
+        "statistical_tests",
+        (),
+        returns=returns,
+        turnover=turnover,
+        costs=pl.DataFrame(),
+        series=series,
+        annualization=3,
+        ic_annualization=3,
+    )
+    assert statistics_tables["statistical_tests"].height == 4
+    assert statistics_tables["bankruptcies"].height == 1

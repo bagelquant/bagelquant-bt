@@ -35,7 +35,13 @@ def test_weight_backtest_returns_polars_result_frames() -> None:
         config=BacktestConfig(initial_capital=100_000, annualization=252),
     )
 
-    assert result.returns.columns == ["time", "gross_return", "net_return"]
+    assert result.returns.columns == [
+        "time",
+        "gross_return",
+        "net_return",
+        "is_bankrupt",
+        "bankruptcy_event",
+    ]
     assert result.value.columns == [
         "time",
         "gross_value",
@@ -387,6 +393,69 @@ def test_weight_backtest_raises_when_transaction_costs_exhaust_capital() -> None
                 transaction_cost=TransactionCostConfig(rate=0.001, min_fee=5.0),
             ),
         )
+
+
+def test_weight_backtest_can_freeze_at_zero_when_costs_exhaust_capital() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"] * 3,
+            "asset_id": ["a"] * 3 + ["b"] * 3 + ["c"] * 3,
+            "price": [10.0] * 3 + [20.0] * 3 + [30.0] * 3,
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "time": ["2024-01-01"] * 3 + ["2024-01-02"] * 3,
+            "asset_id": ["a", "b", "c"] * 2,
+            "weight": [1 / 3, 1 / 3, 1 / 3, 0.0, 0.0, 1.0],
+        }
+    )
+
+    result = run_weight_backtest(
+        weights,
+        prices,
+        config=BacktestConfig(
+            initial_capital=10,
+            transaction_cost=TransactionCostConfig(
+                rate=0.001,
+                min_fee=5.0,
+                slippage_rate=0.0,
+                stamp_tax_rate=0.0,
+            ),
+            insolvency_action="freeze_zero",
+        ),
+    )
+
+    assert result.returns["gross_return"].to_list() == [0.0, 0.0]
+    assert result.returns["net_return"].to_list() == [-1.0, 0.0]
+    assert result.returns["is_bankrupt"].to_list() == [True, True]
+    assert result.returns["bankruptcy_event"].to_list() == [True, False]
+    assert result.value["net_value"].to_list() == [0.0, 0.0]
+    assert result.transaction_costs.data["requested_total_fee"].to_list() == [
+        15.0,
+        0.0,
+    ]
+    assert result.transaction_costs.data["total_fee"].to_list() == [10.0, 0.0]
+    assert result.transaction_costs.data["unfunded_fee"].to_list() == [5.0, 0.0]
+    event_cost = result.transaction_costs.data.row(0, named=True)
+    assert event_cost["requested_total_fee"] == pytest.approx(
+        event_cost["total_fee"] + event_cost["unfunded_fee"]
+    )
+    assert event_cost["total_fee"] == pytest.approx(
+        event_cost["commission_fee"]
+        + event_cost["slippage_fee"]
+        + event_cost["stamp_tax_fee"]
+    )
+    assert event_cost["commission_fee"] == pytest.approx(
+        event_cost["raw_fee"] + event_cost["min_fee_adjustment"]
+    )
+    assert result.turnover["turnover"].to_list() == [1.0, 0.0]
+    assert result.target_weights.filter(
+        (pl.col("time") == date(2024, 1, 2)) & (pl.col("asset_id") == "c")
+    ).item(0, "weight") == 1.0
+    assert result.weights.filter(
+        (pl.col("time") == date(2024, 1, 2)) & (pl.col("asset_id") == "c")
+    ).item(0, "weight") == pytest.approx(1 / 3)
 
 
 def test_non_price_weight_date_is_dropped() -> None:

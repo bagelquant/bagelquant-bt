@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Literal
 
 from .exceptions import BacktestConfigError
 
@@ -44,6 +45,7 @@ class BacktestConfig:
     quantiles: int = 5
     top_n: int = 50
     retry_blocked_orders: bool = True
+    insolvency_action: Literal["raise", "freeze_zero"] = "raise"
 
     def __post_init__(self) -> None:
         if self.initial_capital <= 0:
@@ -58,6 +60,10 @@ class BacktestConfig:
             raise BacktestConfigError("quantiles must be at least 2")
         if self.top_n <= 0:
             raise BacktestConfigError("top_n must be positive")
+        if self.insolvency_action not in {"raise", "freeze_zero"}:
+            raise BacktestConfigError(
+                "insolvency_action must be 'raise' or 'freeze_zero'"
+            )
 
     @property
     def resolved_ic_annualization(self) -> int:

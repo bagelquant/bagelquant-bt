@@ -773,6 +773,8 @@ def factor_quantile_returns(
                 "quantile": pl.String,
                 "return": pl.Float64,
                 "cumulative_return": pl.Float64,
+                "is_bankrupt": pl.Boolean,
+                "bankruptcy_event": pl.Boolean,
             }
         )
     quantile_grid = _quantile_grid(paired.select(TIME).unique(), quantiles)
@@ -898,6 +900,8 @@ def _quantile_returns_from_compact_results(
             TIME,
             pl.lit(label).alias("quantile"),
             pl.col("gross_return").alias("return"),
+            "is_bankrupt",
+            "bankruptcy_event",
         )
         for label in quantile_weights
         if label in compact_results
@@ -916,7 +920,11 @@ def _quantile_returns_from_compact_results(
             on=[TIME, "quantile"],
             how="left",
         )
-        .with_columns(pl.col("return").fill_null(0.0))
+        .with_columns(
+            pl.col("return").fill_null(0.0),
+            pl.col("is_bankrupt").fill_null(False),
+            pl.col("bankruptcy_event").fill_null(False),
+        )
         .sort([TIME, "quantile"])
         .with_columns(
             ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
@@ -1778,14 +1786,23 @@ def _lag_outputs(
                 "net_cumulative_return": math.nan,
                 "gross_sharpe": math.nan,
                 "net_sharpe": math.nan,
+                "is_bankrupt": False,
+                "bankruptcy_time": None,
             }
             if backtest is not None:
+                bankruptcy_time = (
+                    backtest.returns.filter(pl.col("bankruptcy_event"))
+                    .get_column(TIME)
+                    .min()
+                )
                 row.update(
                     {
                         "gross_cumulative_return": backtest.summary.gross_total_return,
                         "net_cumulative_return": backtest.summary.net_total_return,
                         "gross_sharpe": backtest.summary.gross_sharpe,
                         "net_sharpe": backtest.summary.net_sharpe,
+                        "is_bankrupt": bankruptcy_time is not None,
+                        "bankruptcy_time": bankruptcy_time,
                     }
                 )
                 return_frames.append(
@@ -1795,6 +1812,8 @@ def _lag_outputs(
                         TIME,
                         "gross_return",
                         "net_return",
+                        "is_bankrupt",
+                        "bankruptcy_event",
                     ).join(
                         backtest.value.select(
                             TIME,
@@ -1825,6 +1844,8 @@ def _lag_outputs(
                 "net_cumulative_return": pl.Float64,
                 "gross_sharpe": pl.Float64,
                 "net_sharpe": pl.Float64,
+                "is_bankrupt": pl.Boolean,
+                "bankruptcy_event": pl.Boolean,
             }
         )
     else:
