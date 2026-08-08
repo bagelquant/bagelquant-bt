@@ -191,4 +191,4 @@ class FactorEvaluationResult:
     excess_returns: pl.DataFrame
 
 
-SignalEvaluationResult = FactorEvaluationResult
+PredictionEvaluationResult = FactorEvaluationResult

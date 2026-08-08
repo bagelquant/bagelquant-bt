@@ -1,20 +1,19 @@
-"""Deterministic signal-to-weight portfolio policies."""
+"""Deterministic prediction-to-weight policies."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import polars as pl
-from bagelquant_core import Panel
+from bagelquant_core import Panel, PredictionPanel
 
 from .engine import backtest_weight_frame
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_panel_frame
-from .signal import ScheduledSignal
 
 
 @dataclass(frozen=True, slots=True)
-class PortfolioBuild:
+class WeightBuild:
     weights: Panel
     skipped: pl.DataFrame
 
@@ -23,10 +22,10 @@ class PortfolioBuild:
 class EqualWeightPolicy:
     top_n: int
 
-    def build(self, signals: ScheduledSignal, **_: object) -> PortfolioBuild:
-        selected = _top_n(signals, self.top_n)
-        return PortfolioBuild(
-            _weight_panel(_normalise(selected, "_unit"), signals),
+    def build(self, prediction: PredictionPanel, **_: object) -> WeightBuild:
+        selected = _top_n(prediction, self.top_n)
+        return WeightBuild(
+            _weight_panel(_normalise(selected, "_unit"), prediction),
             _empty_skipped(),
         )
 
@@ -38,14 +37,14 @@ class FloatMarketCapWeightPolicy:
 
     def build(
         self,
-        signals: ScheduledSignal,
+        prediction: PredictionPanel,
         *,
         market_caps: pl.DataFrame | None = None,
         **_: object,
-    ) -> PortfolioBuild:
+    ) -> WeightBuild:
         if market_caps is None:
             raise InputValidationError("float market-cap policy requires market_caps")
-        selected = _top_n(signals, self.top_n)
+        selected = _top_n(prediction, self.top_n)
         caps = validate_panel_frame(
             market_caps, label="market_caps", value_columns=(self.market_cap_column,)
         )
@@ -56,7 +55,7 @@ class FloatMarketCapWeightPolicy:
                 str(value) for value in missing.get_column(TIME).unique().sort()
             )
             raise InputValidationError(
-                f"missing float market cap for selected signals at: {dates}"
+                f"missing float market cap for selected predictions at: {dates}"
             )
         invalid = weighted.filter(
             ~pl.col(self.market_cap_column).is_finite()
@@ -66,9 +65,9 @@ class FloatMarketCapWeightPolicy:
             raise InputValidationError(
                 "float market caps must be finite and positive"
             )
-        return PortfolioBuild(
+        return WeightBuild(
             _weight_panel(
-                _normalise(weighted, self.market_cap_column), signals
+                _normalise(weighted, self.market_cap_column), prediction
             ),
             _empty_skipped(),
         )
@@ -94,17 +93,17 @@ class TargetVolatilityPolicy:
 
     def build(
         self,
-        signals: ScheduledSignal,
+        prediction: PredictionPanel,
         *,
         prices: pl.DataFrame | None = None,
         config=None,
         **kwargs: object,
-    ) -> PortfolioBuild:
+    ) -> WeightBuild:
         if prices is None or config is None:
             raise InputValidationError(
                 "target-volatility policy requires prices and config"
             )
-        base_panel = self.base.build(signals, **kwargs).weights
+        base_panel = self.base.build(prediction, **kwargs).weights
         base = _weight_frame(base_panel)
         history = backtest_weight_frame(base, prices, config=config).returns
         dates = base.select(TIME).unique().sort(TIME)
@@ -139,28 +138,28 @@ class TargetVolatilityPolicy:
             .select(TIME, ASSET_ID, "weight")
         )
         skipped = scale_frame.filter(pl.col("scale").is_null()).select(TIME, "reason")
-        return PortfolioBuild(
+        return WeightBuild(
             Panel.from_domain(
                 weights.rename({"weight": "value"}),
-                signals.signal.domain,
+                prediction.domain,
                 name="weights",
             ),
             skipped,
         )
 
 
-def _top_n(signals: ScheduledSignal, top_n: int) -> pl.DataFrame:
+def _top_n(prediction: PredictionPanel, top_n: int) -> pl.DataFrame:
     if top_n <= 0:
         raise ValueError("top_n must be positive")
-    if not isinstance(signals, ScheduledSignal):
-        raise TypeError("portfolio policies require a ScheduledSignal")
+    if not isinstance(prediction, PredictionPanel):
+        raise TypeError("weight policies require a PredictionPanel")
     frame = validate_panel_frame(
-        signals.signal.collect(dense=False).rename({"value": "signal"}),
-        label="signals",
-        value_columns=("signal",),
+        prediction.collect(dense=False).rename({"value": "prediction"}),
+        label="predictions",
+        value_columns=("prediction",),
     )
     return (
-        frame.sort([TIME, "signal"], descending=[False, True])
+        frame.sort([TIME, "prediction"], descending=[False, True])
         .with_columns(pl.int_range(1, pl.len() + 1).over(TIME).alias("_rank"))
         .filter(pl.col("_rank") <= top_n)
         .with_columns(pl.lit(1.0).alias("_unit"))
@@ -181,10 +180,10 @@ def _empty_skipped() -> pl.DataFrame:
     return pl.DataFrame(schema={TIME: pl.Date, "reason": pl.String})
 
 
-def _weight_panel(frame: pl.DataFrame, signals: ScheduledSignal) -> Panel:
+def _weight_panel(frame: pl.DataFrame, prediction: PredictionPanel) -> Panel:
     return Panel.from_domain(
         frame.rename({"weight": "value"}),
-        signals.signal.domain,
+        prediction.domain,
         name="weights",
     )
 

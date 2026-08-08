@@ -6,18 +6,18 @@ import polars as pl
 import pytest
 from bagelquant_core import (
     Domain,
-    ICWeightedSignalComposer,
-    IdentitySignalComposer,
+    ICWeightedPredictionComposer,
+    IdentityPredictionComposer,
     Panel,
-    SignalPanel,
+    PredictionPanel,
 )
 
 from bagelquant_bt import (
     BacktestConfig,
     EqualWeightPolicy,
-    compose_signal,
-    resolve_signal_date_policy,
-    run_signal_backtest,
+    compose_prediction,
+    resolve_alpha_policy,
+    run_prediction_backtest,
 )
 
 
@@ -46,45 +46,50 @@ def _inputs() -> tuple[pl.DataFrame, Panel, pl.DataFrame]:
     return calendar, alpha, prices
 
 
-def test_compose_and_backtest_enforce_typed_signal_boundary() -> None:
+def test_compose_and_backtest_enforce_typed_prediction_boundary() -> None:
     calendar, alpha, prices = _inputs()
-    policy = resolve_signal_date_policy("daily")
+    policy = resolve_alpha_policy("daily", standardization="z_score")
 
-    signal = compose_signal(
+    prediction = compose_prediction(
         {"alpha": alpha},
-        IdentitySignalComposer(),
+        IdentityPredictionComposer(),
         calendar,
         policy,
     )
-    result = run_signal_backtest(
-        signal,
+    result = run_prediction_backtest(
+        prediction,
         prices,
         calendar,
-        policy,
-        portfolio_policy=EqualWeightPolicy(1),
+        weight_policy=EqualWeightPolicy(1),
         config=BacktestConfig(initial_capital=10_000),
     )
 
-    assert isinstance(signal, SignalPanel)
-    assert signal.metadata["standardization"] == "zscore"
+    assert isinstance(prediction, PredictionPanel)
+    assert prediction.metadata["standardization"] == "z_score"
     assert result.returns.height == 2
-    with pytest.raises(TypeError, match="requires a SignalPanel"):
-        run_signal_backtest(  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="requires a PredictionPanel"):
+        run_prediction_backtest(  # type: ignore[arg-type]
             alpha,
             prices,
             calendar,
-            policy,
+            weight_policy=EqualWeightPolicy(1),
             config=BacktestConfig(initial_capital=10_000),
         )
 
 
-def test_signal_date_policy_rejects_untyped_frames() -> None:
+def test_alpha_policy_rejects_untyped_frames() -> None:
     calendar, _, _ = _inputs()
-    with pytest.raises(TypeError, match="requires a SignalPanel"):
-        resolve_signal_date_policy("daily").select(  # type: ignore[arg-type]
-            pl.DataFrame(
-                {"time": [date(2024, 1, 1)], "asset_id": ["a"], "value": [1.0]}
-            ),
+    with pytest.raises(TypeError, match="ordinary Panel"):
+        resolve_alpha_policy("daily").apply(  # type: ignore[dict-item]
+            {
+                "alpha": pl.DataFrame(
+                    {
+                        "time": [date(2024, 1, 1)],
+                        "asset_id": ["a"],
+                        "value": [1.0],
+                    }
+                )
+            },
             calendar,
         )
 
@@ -136,11 +141,11 @@ def test_monthly_supervised_composition_uses_completed_execution_periods() -> No
             ],
         }
     )
-    policy = resolve_signal_date_policy("month_end")
+    policy = resolve_alpha_policy("month_end")
 
-    signal = compose_signal(
+    signal = compose_prediction(
         {"positive": positive, "negative": negative},
-        ICWeightedSignalComposer(1),
+        ICWeightedPredictionComposer(1),
         calendar,
         policy,
         prices=prices,

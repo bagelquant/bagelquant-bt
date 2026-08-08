@@ -1,22 +1,22 @@
 # Public API
 
-The stable public API is exported from `bagelquant_bt`. Version 0.2 accepts
-strongly typed signals only; ordinary `Panel`, raw DataFrames, and direct
+The stable public API is exported from `bagelquant_bt`. Version 0.3 accepts
+strongly typed predictions only; ordinary `Panel`, raw DataFrames, and direct
 weights are not public backtest inputs.
 
 ## Entry points
 
 ```python
-from bagelquant_bt import compose_signal, run_signal_backtest, run_signal_evaluation
+from bagelquant_bt import compose_prediction, run_prediction_backtest, run_prediction_evaluation
 ```
 
-- `compose_signal(...) -> SignalPanel` applies a `SignalComposer` at the
-  cadence selected by `SignalDatePolicy`. Supervised composers derive labels
+- `compose_prediction(...) -> PredictionPanel` applies a `PredictionComposer` at the
+  cadence selected by `AlphaPolicy`. Supervised composers derive labels
   from one execution price to the next and enforce label-availability cutoffs.
-- `run_signal_backtest(signal, prices, calendar, signal_date_policy, ...)`
-  schedules a `SignalPanel`, applies `ExecutionPolicy` and `PortfolioPolicy`,
+- `run_prediction_backtest(prediction, prices, calendar, weight_policy=..., ...)`
+  schedules a `PredictionPanel`, applies `ExecutionPolicy` and `WeightPolicy`,
   and returns `BacktestResult`.
-- `run_signal_evaluation(scheduled_signal, prices, ...)` computes IC,
+- `run_prediction_evaluation(scheduled_signal, prices, ...)` computes IC,
   quantiles, lag diagnostics, and signal-driven portfolio results.
 - `summary_report(...)` builds a static HTML report for a backtest or signal
   evaluation result.
@@ -33,11 +33,11 @@ cutoff/tie audit. Turnover regularization is explicitly
 cost or detailed commission, per-asset minimum fee, sell-tax, slippage, and
 initial-capital inputs.
 
-`SignalDatePolicy` and `ExecutionPolicy` are separate contracts. A portfolio
-policy receives `ScheduledSignal` and returns
-`PortfolioBuild(weights: Panel, skipped: DataFrame)`. `OrderSizingPolicy` and
+`AlphaPolicy` and `ExecutionPolicy` are separate contracts. A weight policy
+receives `PredictionPanel` and returns
+`WeightBuild(weights: Panel, skipped: DataFrame)`. `OrderSizingPolicy` and
 `OrderPlan` reserve the later target-weight-to-order boundary; quantity sizing
-is not implemented in 0.2.
+is not implemented in 0.3.
 
 ## Configuration
 
@@ -58,8 +58,9 @@ config = BacktestConfig(
 )
 ```
 
-`initial_capital` must be positive. `quantiles` controls signal buckets and
-`top_n` controls the default equal-weight portfolio policy.
+`initial_capital` must be positive. `quantiles` and `top_n` control evaluation
+metrics; portfolio construction parameters belong to the selected
+`WeightPolicy`.
 `insolvency_action` defaults to `"raise"`. Setting it to `"freeze_zero"`
 caps effective fees at available wealth on the insolvency session, records
 requested and unfunded fees, sets net return to `-100%`, and freezes later
@@ -71,11 +72,11 @@ gross/net returns and trading at zero. Return, lag, and quantile paths expose
 `BacktestResult` exposes weights, returns, value, turnover, transaction costs,
 performance, execution blocks, coverage, and missing price keys.
 
-`SignalEvaluationResult` exposes the evaluated signal, execution-to-execution
+`PredictionEvaluationResult` exposes the evaluated prediction, execution-to-execution
 forward returns, Pearson and Spearman IC, quantile and spread results, TOP N
 portfolios, lag analysis, IC decay, benchmarks, coverage, and missing price
 keys. `FactorEvaluationResult` remains the internal result class name for the
-statistical implementation; operator-facing APIs use Signal terminology.
+statistical implementation; operator-facing APIs use Prediction terminology.
 
 ## Exceptions
 

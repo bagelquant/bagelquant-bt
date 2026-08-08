@@ -6,39 +6,39 @@ application, performance metrics, and Plotly visualization.
 The public investment flow is:
 
 ```text
-AlphaValue Panel -> SignalComposer -> SignalPanel -> SignalDatePolicy
--> ScheduledSignal -> ExecutionPolicy -> PortfolioPolicy -> Weights Panel
+AlphaValue Panel -> PredictionComposer -> PredictionPanel -> AlphaPolicy
+-> ScheduledPrediction -> ExecutionPolicy -> WeightPolicy -> Weights Panel
 ```
 
-Public backtests require a core `SignalPanel`. Ordinary panels, raw DataFrames,
+Public backtests require a core `PredictionPanel`. Ordinary panels, raw DataFrames,
 and direct weights cannot enter the backtest API. Prices remain explicit
 long-form Polars data with `time`, `asset_id`, and `price`.
 
 ```python
-from bagelquant_core import IdentitySignalComposer, Panel
+from bagelquant_core import IdentityPredictionComposer, Panel
 from bagelquant_bt import (
     BacktestConfig,
     MissingSnapshotAction,
-    SignalAnchor,
-    SignalDatePolicy,
-    compose_signal,
-    run_signal_backtest,
+    EvaluationAnchor,
+    AlphaPolicy,
+    compose_prediction,
+    run_prediction_backtest,
 )
 
 alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
-policy = SignalDatePolicy(
+policy = AlphaPolicy(
     id="month_end",
     frequency="monthly",
-    anchor=SignalAnchor.LAST_TRADING_DAY,
+    anchor=EvaluationAnchor.LAST_TRADING_DAY,
     missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
 )
-signal = compose_signal(
+signal = compose_prediction(
     {"quality": alpha_value},
-    IdentitySignalComposer(),
+    IdentityPredictionComposer(),
     calendar,
     policy,
 )
-result = run_signal_backtest(
+result = run_prediction_backtest(
     signal,
     prices,
     calendar,
@@ -47,8 +47,8 @@ result = run_signal_backtest(
 )
 ```
 
-`run_signal_evaluation` computes execution-to-execution IC, quantiles, spread,
-TOP N, lag, and IC-decay diagnostics from `ScheduledSignal`. Sparse or monthly
+`run_prediction_evaluation` computes execution-to-execution IC, quantiles, spread,
+TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`. Sparse or monthly
 signals rebalance only on their snapshot dates; positions are held between
 snapshots. `OrderSizingPolicy` reserves the later target-weight-to-order
 boundary, but quantity sizing is not implemented yet.

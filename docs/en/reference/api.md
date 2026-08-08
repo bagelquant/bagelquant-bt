@@ -1,67 +1,67 @@
 # API
 
-## `compose_signal`
+## `compose_prediction`
 
 ```python
-compose_signal(
+compose_prediction(
     alpha_values,
     composer,
     calendar,
-    signal_date_policy,
+    alpha_policy,
     *,
-    standardization="zscore",
     execution_policy="next_open",
     prices=None,
 )
 ```
 
-`alpha_values` maps stable aliases to ordinary core `Panel` values. The result
-is a terminal `SignalPanel`. Standardization is mandatory and is either
-`zscore` or `percentile_rank`. IC-weighted, OLS, and GLS composers require
-prices so the package can construct execution-to-next-execution labels without
-look-ahead.
+`alpha_values` maps stable aliases to ordinary core `Panel` values. `AlphaPolicy`
+first aligns evaluation-date snapshots and then applies its configured
+standardization. The result is a terminal `PredictionPanel`. IC-weighted, OLS,
+and GLS composers require prices so the package can construct
+execution-to-next-execution labels without look-ahead.
 
-## `run_signal_backtest`
+## `run_prediction_backtest`
 
 ```python
-run_signal_backtest(
-    signal,
+run_prediction_backtest(
+    prediction,
     prices,
     calendar,
-    signal_date_policy,
     *,
+    weight_policy,
     execution_policy="next_open",
-    portfolio_policy=None,
-    portfolio_inputs=None,
+    weight_inputs=None,
     config,
     execution_availability=None,
+    slippage_rates=None,
 )
 ```
 
-The public backtest boundary requires a `SignalPanel`. It applies
-`SignalDatePolicy`, `ExecutionPolicy`, and a portfolio policy before invoking
-the private weight engine. Raw DataFrames, ordinary `Panel` instances, and
-direct weight frames raise a type error.
+The public backtest boundary requires a `PredictionPanel`. `WeightPolicy`
+creates evaluation-date target weights, then `ExecutionPolicy` maps those
+weights to executable dates before invoking the private weight engine. Raw
+DataFrames, ordinary `Panel` instances, and direct weight frames raise a type
+error.
 
 Market-rule availability is supplied as a sparse frame with `time`,
 `asset_id`, `can_buy`, `can_sell`, and `reason`. Missing rows are tradable. A
 blocked change retains the prior executed weight and is retried until a newer
 target supersedes it.
 
-## `run_signal_evaluation`
+## `run_prediction_evaluation`
 
 ```python
-run_signal_evaluation(scheduled_signal, prices, *, config, ...)
+run_prediction_evaluation(scheduled_signal, prices, *, config, ...)
 ```
 
-The input is a `ScheduledSignal`, normally produced by
-`SignalDatePolicy.select`. Forward returns run from the current execution price
+The input is a `ScheduledPrediction`, normally produced by
+`AlphaPolicy.select`. Forward returns run from the current execution price
 to the next signal execution price. The result includes Spearman and Pearson
 IC, quantiles, spread, TOP N, lag and IC-decay diagnostics, benchmarks, and
 coverage.
 
 ## Data boundaries
 
-Signals use core `SignalPanel(time, asset_id, value)`. Prices remain long-form
-Polars data with `time`, `asset_id`, and `price`. Portfolio policies emit an
+Predictions use core `PredictionPanel(time, asset_id, value)`. Prices remain
+long-form Polars data with `time`, `asset_id`, and `price`. Weight policies emit an
 ordinary weights `Panel`; weights are deliberately not a public entry point.

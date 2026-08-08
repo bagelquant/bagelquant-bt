@@ -6,19 +6,19 @@ signals. It does not retrieve market data.
 The expected workflow is:
 
 ```text
-AlphaValue Panel -> SignalComposer -> SignalPanel -> policies -> result
+AlphaValue Panel -> PredictionComposer -> PredictionPanel -> policies -> result
 ```
 
-The package is Polars-first. Public backtests require core `SignalPanel`; prices
+The package is Polars-first. Public backtests require core `PredictionPanel`; prices
 remain long-form Polars frames keyed by `time` and `asset_id`.
 
 ## Main Entry Points
 
 ```python
-from bagelquant_bt import compose_signal, run_signal_backtest
+from bagelquant_bt import compose_prediction, run_prediction_backtest
 ```
 
-Use `compose_signal` to create a typed signal and `run_signal_backtest` to apply
+Use `compose_prediction` to create a typed signal and `run_prediction_backtest` to apply
 date, execution, market, and portfolio policies.
 
 ## Docs

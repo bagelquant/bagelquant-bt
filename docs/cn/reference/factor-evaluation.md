@@ -1,6 +1,6 @@
 # Signal 评估
 
-Signal 评估会把 `ScheduledSignal` 中的每个 `SignalPanel` 快照解释为截面
+Signal 评估会把 `ScheduledPrediction` 中的每个 `PredictionPanel` 快照解释为截面
 prediction，数值越高代表越正向。
 
 ## IC 和 ICIR
@@ -27,12 +27,12 @@ mean(IC) / standard_deviation(IC) * sqrt(每年 IC 观测数)
 
 ## Signal 与 Execution Policy
 
-`SignalDatePolicy.select` 从 `SignalPanel` 选择完整截面，返回带调度、执行日期
-lineage 和强类型 signal 的 `ScheduledSignal`。`month_end` 优先选择月末最后一个
+`AlphaPolicy.select` 从 `PredictionPanel` 选择完整截面，返回带调度、执行日期
+lineage 和强类型 signal 的 `ScheduledPrediction`。`month_end` 优先选择月末最后一个
 开市交易日；若整张截面不存在，只能回退到同一自然月内最近的此前完整截面，
 否则记录 skip。单个资产绝不会从此前日期回填。
 
-`ExecutionPolicy("next_open")` 独立把再平衡日映射到下一开市交易日。`run_signal_evaluation` 接收已经解析的统一 selection，IC 使用本次 execution date 到下一次 execution date 的收益，组合则在两次执行之间逐日估值；最后一条没有完整后续执行期的信号不进入 IC。
+`ExecutionPolicy("next_open")` 独立把再平衡日映射到下一开市交易日。`run_prediction_evaluation` 接收已经解析的统一 selection，IC 使用本次 execution date 到下一次 execution date 的收益，组合则在两次执行之间逐日估值；最后一条没有完整后续执行期的信号不进入 IC。
 
 ## 分位数组合收益
 

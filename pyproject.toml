@@ -1,13 +1,13 @@
 [project]
 name = "bagelquant-bt"
-version = "0.2.0"
-description = "Typed signal composition, evaluation, and backtesting for BagelQuant"
+version = "0.3.0"
+description = "Typed prediction composition, evaluation, and backtesting for BagelQuant"
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
 authors = [{ name = "BagelQuant" }]
 dependencies = [
-    "bagelquant-core>=0.3.0",
+    "bagelquant-core>=0.4.0",
     "numpy>=2.4.0",
     "plotly>=6.0.0",
     "polars>=1.35.0",

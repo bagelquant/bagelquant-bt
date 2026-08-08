@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
-from bagelquant_core import Domain, SignalPanel
+from bagelquant_core import Domain, PredictionPanel
 
 from .benchmarks import (
     DEFAULT_BENCHMARK,
@@ -38,10 +38,10 @@ from .inputs import (
     validate_panel_frame,
     validate_prices,
 )
+from .policy import ScheduledPrediction
 from .portfolio import EqualWeightPolicy
 from .results import BacktestResult, FactorEvaluationResult
 from .returns import PreparedPriceData, _prepare_price_data, prepare_price_data
-from .signal import ScheduledSignal
 
 FACTOR_LAGS = (0, 1, 2, 3, 4, 5, 10, 20, 30, 60)
 
@@ -99,8 +99,8 @@ def run_factor_evaluation(
     )
 
 
-def run_signal_evaluation(
-    signals: ScheduledSignal,
+def run_prediction_evaluation(
+    signals: ScheduledPrediction,
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
@@ -118,9 +118,9 @@ def run_signal_evaluation(
     """Evaluate executable signals against returns through the next signal."""
 
     resolved_config = _require_config(config)
-    if not isinstance(signals, ScheduledSignal):
-        raise TypeError("run_signal_evaluation requires a ScheduledSignal")
-    signal_frame = signals.signal.collect(dense=False).rename({"value": "signal"})
+    if not isinstance(signals, ScheduledPrediction):
+        raise TypeError("run_prediction_evaluation requires a ScheduledPrediction")
+    signal_frame = signals.prediction.collect(dense=False).rename({"value": "signal"})
     aligned = validate_panel_frame(
         signal_frame, label="signals", value_columns=("signal",)
     )
@@ -133,7 +133,7 @@ def run_signal_evaluation(
             prices=prepared.prices,
         )
         if evaluation_returns is not None
-        else signal_forward_returns(factor, prepared.prices)
+        else prediction_forward_returns(factor, prepared.prices)
     )
     return evaluate_factor_frame(
         factor,
@@ -143,7 +143,7 @@ def run_signal_evaluation(
         coverage_universe=coverage_universe,
         benchmark_universe=benchmark_universe,
         evaluation_returns=resolved_evaluation_returns,
-        lag_return_provider=lambda lagged: signal_forward_returns(
+        lag_return_provider=lambda lagged: prediction_forward_returns(
             lagged, prepared.prices
         ),
         portfolio_policy=portfolio_policy,
@@ -155,8 +155,8 @@ def run_signal_evaluation(
     )
 
 
-def materialize_signal_diagnostics(
-    signals: ScheduledSignal,
+def materialize_prediction_diagnostics(
+    signals: ScheduledPrediction,
     prices: pl.DataFrame,
     *,
     config: BacktestConfig | None = None,
@@ -172,9 +172,11 @@ def materialize_signal_diagnostics(
     if not (include_quantiles or include_spread or include_lags):
         return {}
     resolved_config = _require_config(config)
-    if not isinstance(signals, ScheduledSignal):
-        raise TypeError("materialize_signal_diagnostics requires a ScheduledSignal")
-    signal_frame = signals.signal.collect(dense=False).rename({"value": "signal"})
+    if not isinstance(signals, ScheduledPrediction):
+        raise TypeError(
+            "materialize_prediction_diagnostics requires a ScheduledPrediction"
+        )
+    signal_frame = signals.prediction.collect(dense=False).rename({"value": "signal"})
     aligned = validate_panel_frame(
         signal_frame,
         label="signals",
@@ -577,7 +579,10 @@ def _benchmark_return_coverage(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def signal_forward_returns(signals: pl.DataFrame, prices: pl.DataFrame) -> pl.DataFrame:
+def prediction_forward_returns(
+    signals: pl.DataFrame,
+    prices: pl.DataFrame,
+) -> pl.DataFrame:
     """Return each signal's asset return through its next executable signal."""
 
     schedule = (
@@ -625,22 +630,20 @@ def _policy_weights(
     selected = policy or EqualWeightPolicy(config.top_n)
     build = getattr(selected, "build", None)
     if build is None:
-        raise TypeError("portfolio_policy must define build(signals, ...)")
-    signal_frame = factor.select(
+        raise TypeError("weight_policy must define build(PredictionPanel, ...)")
+    prediction_frame = factor.select(
         TIME,
         ASSET_ID,
         pl.col("factor").alias("value"),
     )
     domain = Domain(
-        calendar=signal_frame.get_column(TIME).unique().sort(),
-        universe=signal_frame.get_column(ASSET_ID).unique().sort(),
-    )
-    scheduled = ScheduledSignal(
-        schedule=signal_frame.select(TIME).unique().sort(TIME),
-        signal=SignalPanel.from_domain(signal_frame, domain, name="signal"),
+        calendar=prediction_frame.get_column(TIME).unique().sort(),
+        universe=prediction_frame.get_column(ASSET_ID).unique().sort(),
     )
     output = build(
-        scheduled,
+        PredictionPanel.from_domain(
+            prediction_frame, domain, name="prediction"
+        ),
         prices=prices,
         config=config,
         **dict(inputs or {}),

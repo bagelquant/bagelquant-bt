@@ -1,7 +1,7 @@
 # bagelquant-bt 文档
 
 `bagelquant-bt` 将 AlphaValue Panel 组合成强类型 Signal 并执行评估。它不读取
-市场数据；公开回测入口只接受 `SignalPanel`。
+市场数据；公开回测入口只接受 `PredictionPanel`。
 
 ## 推荐阅读
 

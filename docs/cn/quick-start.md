@@ -4,31 +4,31 @@
 Signal 契约进入。
 
 ```python
-from bagelquant_core import IdentitySignalComposer, Panel
+from bagelquant_core import IdentityPredictionComposer, Panel
 from bagelquant_bt import (
     BacktestConfig,
     MissingSnapshotAction,
-    SignalAnchor,
-    SignalDatePolicy,
-    compose_signal,
-    run_signal_backtest,
+    EvaluationAnchor,
+    AlphaPolicy,
+    compose_prediction,
+    run_prediction_backtest,
 )
 
 alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
-policy = SignalDatePolicy(
+policy = AlphaPolicy(
     id="month_end",
     frequency="monthly",
-    anchor=SignalAnchor.LAST_TRADING_DAY,
+    anchor=EvaluationAnchor.LAST_TRADING_DAY,
     missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
 )
-signal = compose_signal(
+signal = compose_prediction(
     {"quality": alpha_value},
-    IdentitySignalComposer(),
+    IdentityPredictionComposer(),
     calendar,
     policy,
     standardization="zscore",
 )
-result = run_signal_backtest(
+result = run_prediction_backtest(
     signal,
     prices,
     calendar,
@@ -37,7 +37,7 @@ result = run_signal_backtest(
 )
 ```
 
-使用 `ICWeightedSignalComposer`、`OLSSignalComposer` 或
-`GLSSignalComposer` 时，还需向 `compose_signal` 提供 `prices`。rolling window
-按 SignalDatePolicy 的交易期计数，不按日频行计数。普通 Panel、裸 DataFrame
-与直接 weights 均不能传给 `run_signal_backtest`。
+使用 `ICWeightedPredictionComposer`、`OLSPredictionComposer` 或
+`GLSPredictionComposer` 时，还需向 `compose_prediction` 提供 `prices`。rolling window
+按 AlphaPolicy 的交易期计数，不按日频行计数。普通 Panel、裸 DataFrame
+与直接 weights 均不能传给 `run_prediction_backtest`。

@@ -6,7 +6,7 @@
 AlphaValue Panel + prices + policies
     |
     v
-SignalComposer -> SignalPanel
+PredictionComposer -> PredictionPanel
     |
     v
 schedule -> execution -> portfolio weights
@@ -21,7 +21,7 @@ visualization helpers
 ## Philosophy
 
 - Keep Alpha definitions and data retrieval outside the backtester.
-- Require `SignalPanel` at the public backtest boundary.
+- Require `PredictionPanel` at the public backtest boundary.
 - Make transaction costs explicit and reproducible.
 - Return structured result objects instead of printing reports.
 - Keep visualization as a thin layer over result objects.
@@ -37,7 +37,7 @@ visualization helpers
 - `costs`: turnover and transaction-cost calculations.
 - `pipeline`: signal composition and strict public backtest orchestration.
 - `signal`: signal-date selection and execution scheduling.
-- `portfolio`: `ScheduledSignal` to weights policies.
+- `portfolio`: `ScheduledPrediction` to weights policies.
 - `engine`: package-private weight simulation.
 - `factor`: information coefficient, quantile, and top-N signal evaluation.
 - `performance`: summary metrics.
@@ -47,7 +47,7 @@ visualization helpers
 ## Data Boundary
 
 `AlphaValue` and weights are ordinary core `Panel` values. Composed predictions
-are `SignalPanel`; scheduling adds explicit date lineage in `ScheduledSignal`.
+are `PredictionPanel`; scheduling adds explicit date lineage in `ScheduledPrediction`.
 Price frames contain numeric prices used to compute returns.
 
 The package depends on `bagelquant-core` for Panel and composer contracts. It

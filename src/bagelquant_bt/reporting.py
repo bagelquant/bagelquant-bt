@@ -706,4 +706,4 @@ def _format_value(value: object, *, none_display: str = "") -> str:
     return str(value)
 
 
-signal_evaluation_report_figures = factor_evaluation_report_figures
+prediction_evaluation_report_figures = factor_evaluation_report_figures

@@ -1,4 +1,4 @@
-"""Typed signal composition, evaluation, and backtesting for BagelQuant."""
+"""Typed prediction evaluation and backtesting for BagelQuant."""
 
 from .benchmarks import benchmark_performance, build_universe_benchmark_returns
 from .config import BacktestConfig, TransactionCostConfig
@@ -12,10 +12,10 @@ from .factor import (
     factor_ic_decay_series,
     information_coefficients,
     materialize_factor_diagnostics,
-    materialize_signal_diagnostics,
+    materialize_prediction_diagnostics,
+    prediction_forward_returns,
     prepare_factor_market_data,
-    run_signal_evaluation,
-    signal_forward_returns,
+    run_prediction_evaluation,
 )
 from .orders import OrderPlan, OrderSizingPolicy
 from .path import (
@@ -32,35 +32,42 @@ from .path import (
     portfolio_path_from_backtest,
     resume_portfolio_path,
 )
-from .pipeline import compose_signal, run_signal_backtest
+from .pipeline import compose_prediction, run_prediction_backtest
+from .policy import (
+    AlphaPolicy,
+    AlphaPolicyResult,
+    AlphaStandardization,
+    EvaluationAnchor,
+    EvaluationFrequency,
+    ExecutionPolicy,
+    HolidayAdjustment,
+    MissingSnapshotAction,
+    ScheduledPrediction,
+    ScheduledWeights,
+    alpha_policies,
+    execution_policies,
+    resolve_alpha_policy,
+    resolve_execution_policy,
+)
 from .portfolio import (
     EqualWeightPolicy,
     FloatMarketCapWeightPolicy,
-    PortfolioBuild,
     TargetVolatilityPolicy,
+    WeightBuild,
 )
-from .reporting import ReportFigure, signal_evaluation_report_figures, summary_report
+from .reporting import (
+    ReportFigure,
+    prediction_evaluation_report_figures,
+    summary_report,
+)
 from .results import (
     BacktestResult,
     FactorEvaluationResult,
     PerformanceSummary,
-    SignalEvaluationResult,
+    PredictionEvaluationResult,
     TransactionCostBreakdown,
 )
 from .returns import prepare_price_data
-from .signal import (
-    ExecutionPolicy,
-    HolidayAdjustment,
-    MissingSnapshotAction,
-    ScheduledSignal,
-    SignalAnchor,
-    SignalDatePolicy,
-    SignalFrequency,
-    execution_policies,
-    resolve_execution_policy,
-    resolve_signal_date_policy,
-    signal_date_policies,
-)
 from .statistics import OneSampleTest, cross_sectional_factor_returns, one_sample_t_test
 from .validation import (
     MonthlyIcObservation,
@@ -76,11 +83,16 @@ from .validation import (
 __all__ = [
     "RESULT_SECTIONS",
     "RESULT_SECTION_VERSION",
+    "AlphaPolicy",
+    "AlphaPolicyResult",
+    "AlphaStandardization",
     "BacktestConfig",
     "BacktestConfigError",
     "BacktestResult",
     "BagelQuantBacktestError",
     "EqualWeightPolicy",
+    "EvaluationAnchor",
+    "EvaluationFrequency",
     "ExecutionPolicy",
     "FactorEvaluationResult",
     "FloatMarketCapWeightPolicy",
@@ -92,29 +104,28 @@ __all__ = [
     "OrderPlan",
     "OrderSizingPolicy",
     "PerformanceSummary",
-    "PortfolioBuild",
     "PortfolioPathChunk",
     "PortfolioPathIdentity",
     "PortfolioStateCheckpoint",
+    "PredictionEvaluationResult",
     "PreparedFactorMarketData",
     "ReportFigure",
     "ResultSection",
     "ResultSectionSpec",
     "ResultWindow",
-    "ScheduledSignal",
-    "SignalAnchor",
-    "SignalDatePolicy",
-    "SignalEvaluationResult",
-    "SignalFrequency",
+    "ScheduledPrediction",
+    "ScheduledWeights",
     "TargetVolatilityPolicy",
     "TopNSelectionResult",
     "TransactionCostBreakdown",
     "TransactionCostConfig",
     "ValidationObjective",
     "ValidationScore",
+    "WeightBuild",
+    "alpha_policies",
     "benchmark_performance",
     "build_universe_benchmark_returns",
-    "compose_signal",
+    "compose_prediction",
     "compute_result_section",
     "cross_sectional_factor_returns",
     "execution_policies",
@@ -122,22 +133,21 @@ __all__ = [
     "information_coefficients",
     "materialize_factor_diagnostics",
     "materialize_portfolio_path",
-    "materialize_signal_diagnostics",
+    "materialize_prediction_diagnostics",
     "one_sample_t_test",
     "portfolio_path_from_backtest",
+    "prediction_evaluation_report_figures",
+    "prediction_forward_returns",
     "prepare_factor_market_data",
     "prepare_price_data",
+    "resolve_alpha_policy",
     "resolve_execution_policy",
-    "resolve_signal_date_policy",
     "resume_portfolio_path",
-    "run_signal_backtest",
-    "run_signal_evaluation",
+    "run_prediction_backtest",
+    "run_prediction_evaluation",
     "score_ic_validation",
     "score_top_n_performance",
     "select_top_n_stable",
-    "signal_date_policies",
-    "signal_evaluation_report_figures",
-    "signal_forward_returns",
     "summary_report",
     "top_n_monthly_performance",
 ]

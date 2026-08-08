@@ -1,6 +1,6 @@
 # Signal Evaluation
 
-Signal evaluation treats each scheduled `SignalPanel` snapshot as
+Signal evaluation treats each scheduled `PredictionPanel` snapshot as
 cross-sectional predictions. Higher values are better.
 
 ## IC and ICIR
@@ -32,14 +32,14 @@ benchmarks, and lag Sharpe use the daily-return annualization setting.
 
 ## Signal date and execution policies
 
-`SignalDatePolicy.select` chooses whole snapshots from a `SignalPanel` and
-returns `ScheduledSignal`, which contains the resolved schedule, execution-date
+`AlphaPolicy.select` chooses whole snapshots from a `PredictionPanel` and
+returns `ScheduledPrediction`, which contains the resolved schedule, execution-date
 lineage, and typed signal. `month_end` prefers the last open session, falls back
 only to an earlier whole snapshot in the same calendar month, and otherwise
 records a skip. It never fills one asset from an earlier date.
 
 `ExecutionPolicy("next_open")` separately maps rebalance dates to execution
-dates. `run_signal_evaluation` accepts the resolved `ScheduledSignal`, measures
+dates. `run_prediction_evaluation` accepts the resolved `ScheduledPrediction`, measures
 IC through the next execution date, and marks portfolios to market daily
 between executions. The final signal without a complete following execution
 period is excluded.

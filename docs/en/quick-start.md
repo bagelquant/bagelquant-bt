@@ -4,31 +4,31 @@
 backtests only through that signal contract.
 
 ```python
-from bagelquant_core import Domain, IdentitySignalComposer, Panel
+from bagelquant_core import Domain, IdentityPredictionComposer, Panel
 from bagelquant_bt import (
     BacktestConfig,
-    SignalAnchor,
-    SignalDatePolicy,
+    EvaluationAnchor,
+    AlphaPolicy,
     MissingSnapshotAction,
-    compose_signal,
-    run_signal_backtest,
+    compose_prediction,
+    run_prediction_backtest,
 )
 
 alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
-policy = SignalDatePolicy(
+policy = AlphaPolicy(
     id="month_end",
     frequency="monthly",
-    anchor=SignalAnchor.LAST_TRADING_DAY,
+    anchor=EvaluationAnchor.LAST_TRADING_DAY,
     missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
 )
-signal = compose_signal(
+signal = compose_prediction(
     {"quality": alpha_value},
-    IdentitySignalComposer(),
+    IdentityPredictionComposer(),
     calendar,
     policy,
     standardization="zscore",
 )
-result = run_signal_backtest(
+result = run_prediction_backtest(
     signal,
     prices,
     calendar,
@@ -37,7 +37,7 @@ result = run_signal_backtest(
 )
 ```
 
-For `ICWeightedSignalComposer`, `OLSSignalComposer`, or `GLSSignalComposer`,
-also pass `prices` to `compose_signal`. Their rolling window counts signal
+For `ICWeightedPredictionComposer`, `OLSPredictionComposer`, or `GLSPredictionComposer`,
+also pass `prices` to `compose_prediction`. Their rolling window counts signal
 periods, not daily rows. Ordinary panels, raw DataFrames, and direct weights
-cannot be passed to `run_signal_backtest`.
+cannot be passed to `run_prediction_backtest`.

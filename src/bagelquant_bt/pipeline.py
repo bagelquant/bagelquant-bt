@@ -1,4 +1,4 @@
-"""Strict AlphaValue-to-Signal-to-Weights backtest orchestration."""
+"""Strict AlphaValue-to-Prediction-to-Weights backtest orchestration."""
 
 from __future__ import annotations
 
@@ -7,128 +7,114 @@ from datetime import date
 
 import polars as pl
 from bagelquant_core import (
-    Domain,
     Panel,
-    SignalComposer,
-    SignalPanel,
-    SignalStandardization,
-    SignalTrainingContext,
+    PredictionComposer,
+    PredictionPanel,
+    PredictionTrainingContext,
 )
 
 from .config import BacktestConfig
 from .engine import run_weight_backtest
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_prices
-from .portfolio import EqualWeightPolicy
+from .policy import (
+    AlphaPolicy,
+    ExecutionPolicy,
+    resolve_execution_policy,
+)
 from .results import BacktestResult
-from .signal import ExecutionPolicy, SignalDatePolicy
 
 
-def compose_signal(
+def compose_prediction(
     alpha_values: Mapping[str, Panel],
-    composer: SignalComposer,
+    composer: PredictionComposer,
     calendar: pl.DataFrame,
-    signal_date_policy: SignalDatePolicy,
+    alpha_policy: AlphaPolicy,
     *,
-    standardization: str | SignalStandardization = SignalStandardization.ZSCORE,
     execution_policy: ExecutionPolicy | str = "next_open",
     prices: pl.DataFrame | None = None,
     start: date | None = None,
     end: date | None = None,
-) -> SignalPanel:
-    """Compose scheduled AlphaValue snapshots into an observation-time signal."""
+) -> PredictionPanel:
+    """Apply Alpha Policy, then compose a terminal PredictionPanel."""
 
-    if not alpha_values:
-        raise ValueError("compose_signal requires at least one AlphaValue Panel")
-    if not isinstance(signal_date_policy, SignalDatePolicy):
-        raise TypeError("signal_date_policy must be a SignalDatePolicy")
-    if any(
-        not isinstance(value, Panel) or isinstance(value, SignalPanel)
-        for value in alpha_values.values()
-    ):
-        raise TypeError("alpha_values must contain ordinary Panel values")
-    domains = [value.domain for value in alpha_values.values()]
-    if any(not domains[0].equivalent_to(domain) for domain in domains[1:]):
-        raise ValueError("AlphaValue Panels must use equivalent Domains")
-
-    schedule = signal_date_policy.schedule(calendar, start=start, end=end)
-    if schedule.is_empty():
-        raise InputValidationError("signal date policy resolves no observations")
-    scheduled_values = {
-        name: _scheduled_alpha_panel(value, schedule, signal_date_policy)
-        for name, value in alpha_values.items()
-    }
+    if not isinstance(alpha_policy, AlphaPolicy):
+        raise TypeError("alpha_policy must be an AlphaPolicy")
+    processed = alpha_policy.apply(
+        alpha_values,
+        calendar,
+        start=start,
+        end=end,
+    )
     training = None
     if composer.supervised:
         if prices is None:
             raise InputValidationError(
-                f"{composer.kind} signal composition requires execution prices"
+                f"{composer.kind} prediction composition requires execution prices"
             )
         training = _training_context(
-            scheduled_values,
-            schedule,
+            processed.alpha_values,
+            processed.schedule,
             calendar,
             execution_policy,
             prices,
         )
     graph = composer.compose(
-        *scheduled_values.values(),
-        standardization=standardization,
+        *processed.alpha_values.values(),
         training=training,
-        name="signal",
+        name="prediction",
         metadata={
-            "composer": composer.kind,
+            "prediction_composer": composer.kind,
             "window": composer.window,
-            "standardization": SignalStandardization(standardization).value,
-            "signal_date_policy": signal_date_policy.id,
+            "alpha_policy": alpha_policy.id,
+            "standardization": alpha_policy.standardization.value,
         },
     )
     result = graph.compute(dense_output=False)
-    if not isinstance(result, SignalPanel):
-        raise AssertionError("signal composer did not produce a SignalPanel")
+    if not isinstance(result, PredictionPanel):
+        raise AssertionError("prediction composer did not produce a PredictionPanel")
     return result
 
 
-def run_signal_backtest(
-    signal: SignalPanel,
+def run_prediction_backtest(
+    prediction: PredictionPanel,
     prices: pl.DataFrame,
     calendar: pl.DataFrame,
-    signal_date_policy: SignalDatePolicy,
     *,
+    weight_policy: object,
     execution_policy: ExecutionPolicy | str = "next_open",
-    portfolio_policy: object | None = None,
-    portfolio_inputs: Mapping[str, object] | None = None,
+    weight_inputs: Mapping[str, object] | None = None,
     config: BacktestConfig | None = None,
     execution_availability: pl.DataFrame | None = None,
     slippage_rates: pl.DataFrame | None = None,
 ) -> BacktestResult:
-    """Schedule a SignalPanel, build target weights, and run the private engine."""
+    """Build evaluation-date weights, schedule them, then run the engine."""
 
-    if not isinstance(signal, SignalPanel):
-        raise TypeError("run_signal_backtest requires a SignalPanel")
+    if not isinstance(prediction, PredictionPanel):
+        raise TypeError("run_prediction_backtest requires a PredictionPanel")
     if config is None:
         raise ValueError("config is required")
-    scheduled = signal_date_policy.select(
-        signal,
-        calendar,
-        execution_policy=execution_policy,
-    )
-    selected = portfolio_policy or EqualWeightPolicy(config.top_n)
-    build = getattr(selected, "build", None)
+    build = getattr(weight_policy, "build", None)
     if build is None:
-        raise TypeError("portfolio_policy must define build(ScheduledSignal, ...)")
-    portfolio = build(
-        scheduled,
+        raise TypeError("weight_policy must define build(PredictionPanel, ...)")
+    result = build(
+        prediction,
         prices=prices,
         config=config,
-        **dict(portfolio_inputs or {}),
+        **dict(weight_inputs or {}),
     )
-    if not isinstance(portfolio.weights, Panel) or isinstance(
-        portfolio.weights, SignalPanel
+    if not isinstance(result.weights, Panel) or isinstance(
+        result.weights, PredictionPanel
     ):
-        raise TypeError("PortfolioPolicy must return an ordinary weights Panel")
+        raise TypeError("WeightPolicy must return an ordinary weights Panel")
+    execution = (
+        resolve_execution_policy(execution_policy)
+        if isinstance(execution_policy, str)
+        else execution_policy
+    )
+    scheduled = execution.schedule_weights(result.weights, calendar)
     weights = (
-        portfolio.weights.collect(dense=False)
+        scheduled.weights.collect(dense=False)
         .drop_nulls("value")
         .rename({"value": "weight"})
     )
@@ -141,59 +127,13 @@ def run_signal_backtest(
     )
 
 
-def _scheduled_alpha_panel(
-    alpha: Panel,
-    schedule: pl.DataFrame,
-    policy: SignalDatePolicy,
-) -> Panel:
-    values = alpha.collect(dense=False).drop_nulls("value")
-    available = values.select(TIME).unique().sort(TIME).get_column(TIME)
-    frames: list[pl.DataFrame] = []
-    for row in schedule.iter_rows(named=True):
-        rebalance = row["rebalance_date"]
-        candidates = available.filter(available <= rebalance)
-        if policy.frequency == "monthly":
-            candidates = candidates.filter(
-                candidates.dt.strftime("%Y-%m") == row["period"]
-            )
-        selected = (
-            rebalance
-            if rebalance in candidates
-            else candidates.max()
-            if policy.missing_snapshot.value == "previous_in_period"
-            and not candidates.is_empty()
-            else None
-        )
-        if selected is None:
-            continue
-        frames.append(
-            values.filter(pl.col(TIME) == selected).with_columns(
-                pl.lit(rebalance, dtype=pl.Date).alias(TIME)
-            )
-        )
-    selected_values = (
-        pl.concat(frames).sort([TIME, ASSET_ID])
-        if frames
-        else pl.DataFrame(
-            schema={TIME: pl.Date, ASSET_ID: pl.String, "value": pl.Float64}
-        )
-    )
-    domain = Domain(
-        calendar=schedule.get_column("rebalance_date"),
-        universe=alpha.domain.asset_ids,
-    )
-    return Panel.from_domain(selected_values, domain, name=alpha.name)
-
-
 def _training_context(
     alpha_values: Mapping[str, Panel],
     schedule: pl.DataFrame,
     calendar: pl.DataFrame,
     execution_policy: ExecutionPolicy | str,
     prices: pl.DataFrame,
-) -> SignalTrainingContext:
-    from .signal import resolve_execution_policy
-
+) -> PredictionTrainingContext:
     execution = (
         resolve_execution_policy(execution_policy)
         if isinstance(execution_policy, str)
@@ -244,7 +184,7 @@ def _training_context(
         .alias("value"),
     )
     domain = next(iter(alpha_values.values())).domain
-    return SignalTrainingContext(
+    return PredictionTrainingContext(
         Panel.from_domain(
             targets.select(TIME, ASSET_ID, "value"),
             domain,
@@ -254,4 +194,4 @@ def _training_context(
     )
 
 
-__all__ = ["compose_signal", "run_signal_backtest"]
+__all__ = ["compose_prediction", "run_prediction_backtest"]
