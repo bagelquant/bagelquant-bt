@@ -22,7 +22,7 @@ from bagelquant_bt.window import compute_window_tables
 
 def test_result_section_version_is_public() -> None:
     assert PORTFOLIO_PATH_VERSION == 3
-    assert RESULT_SECTION_VERSION == 5
+    assert RESULT_SECTION_VERSION == 6
 
 
 def _prices() -> pl.DataFrame:

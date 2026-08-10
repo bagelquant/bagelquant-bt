@@ -79,6 +79,94 @@ def test_summary_reports_window_risk_turnover_and_cost_drag() -> None:
     assert tables["summary"].row(0, named=True) == metrics
 
 
+def test_summary_reports_ic_p_values_and_relative_wealth_excess() -> None:
+    dates = _dates(4)
+    series = _spread_series([0.01] * 4, [0.01] * 4)
+    series["ic"] = pl.DataFrame(
+        {
+            "time": dates,
+            "pearson_ic": [0.10, 0.20, 0.30, 0.40],
+            "spearman_ic": [0.20, 0.25, 0.30, 0.35],
+        }
+    )
+    top_n = _returns([0.03, 0.01, -0.01, 0.02], [0.02, 0.0, -0.02, 0.01])
+    benchmark = pl.DataFrame(
+        {
+            "time": dates,
+            "benchmark": ["selected"] * 4,
+            "return": [0.01, -0.01, 0.0, 0.005],
+        }
+    )
+
+    metrics, _ = compute_window_tables(
+        "summary",
+        ("summary_table", "coverage"),
+        returns=top_n,
+        turnover=pl.DataFrame(),
+        costs=pl.DataFrame(),
+        series=series,
+        annualization=8,
+        ic_annualization=4,
+        benchmark_returns=benchmark,
+    )
+
+    portfolio_wealth = float(np.prod(1.0 + np.asarray([0.02, 0.0, -0.02, 0.01])))
+    benchmark_wealth = float(np.prod(1.0 + np.asarray([0.01, -0.01, 0.0, 0.005])))
+    assert metrics["top_n_net_annualized_excess_return"] == pytest.approx(
+        (portfolio_wealth / benchmark_wealth) ** 2 - 1.0
+    )
+    assert metrics["pearson_ic_p_value"] == pytest.approx(0.0304662917)
+    assert metrics["spearman_ic_p_value"] == pytest.approx(0.0033957771)
+
+
+def test_summary_leaves_excess_unavailable_without_one_complete_benchmark() -> None:
+    returns = _returns([0.01, 0.02], [0.01, 0.02])
+    incomplete = pl.DataFrame(
+        {
+            "time": _dates(1),
+            "benchmark": ["selected"],
+            "return": [0.0],
+        }
+    )
+
+    for benchmark in (None, incomplete):
+        metrics, _ = compute_window_tables(
+            "summary",
+            ("summary_table",),
+            returns=returns,
+            turnover=pl.DataFrame(),
+            costs=pl.DataFrame(),
+            series=_spread_series([0.0, 0.0], [0.0, 0.0]),
+            annualization=2,
+            ic_annualization=2,
+            benchmark_returns=benchmark,
+        )
+        assert metrics["top_n_net_annualized_excess_return"] is None
+        assert metrics["top_n_net_annualized_return"] is not None
+
+
+def test_summary_reports_negative_one_excess_for_zero_top_n_wealth() -> None:
+    metrics, _ = compute_window_tables(
+        "summary",
+        ("summary_table",),
+        returns=_returns([0.0, 0.0], [-1.0, 0.0]),
+        turnover=pl.DataFrame(),
+        costs=pl.DataFrame(),
+        series=_spread_series([0.0, 0.0], [0.0, 0.0]),
+        annualization=4,
+        ic_annualization=4,
+        benchmark_returns=pl.DataFrame(
+            {
+                "time": _dates(2),
+                "benchmark": ["selected", "selected"],
+                "return": [0.0, 0.0],
+            }
+        ),
+    )
+
+    assert metrics["top_n_net_annualized_excess_return"] == -1.0
+
+
 def test_summary_handles_zero_drawdown_empty_and_non_finite_inputs() -> None:
     metrics, _ = compute_window_tables(
         "summary",

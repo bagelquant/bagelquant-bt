@@ -36,6 +36,7 @@ def compute_window_tables(
             series,
             annualization,
             ic_annualization,
+            benchmark_returns,
         )
         tables["bankruptcies"] = _bankruptcies(
             returns=returns,
@@ -102,6 +103,7 @@ def _summary(
     series: Mapping[str, pl.DataFrame],
     annualization: int,
     ic_annualization: int,
+    benchmark_returns: pl.DataFrame | None,
 ) -> tuple[dict[str, bool | float | int | None], dict[str, pl.DataFrame]]:
     top_n = _paired_return_metrics(returns, annualization)
     spread = _lag_period_returns(series, portfolio="spread", lag=0)
@@ -113,6 +115,7 @@ def _summary(
         summary = _ic_summary(values, ic_annualization)
         row[f"{method}_ic"] = summary["mean"]
         row[f"{method}_icir"] = summary["icir"]
+        row[f"{method}_ic_p_value"] = one_sample_t_test(values).p_value
     row.update(
         {
             "spread_net_annualized_return": spread_metrics["net_annualized_return"],
@@ -123,6 +126,13 @@ def _summary(
             "spread_net_max_drawdown": spread_metrics["net_max_drawdown"],
             "spread_net_calmar": spread_metrics["net_calmar"],
             "top_n_net_annualized_return": top_n["net_annualized_return"],
+            "top_n_net_annualized_excess_return": (
+                _annualized_relative_wealth_excess(
+                    returns,
+                    benchmark_returns,
+                    annualization,
+                )
+            ),
             "top_n_net_sharpe": top_n["net_sharpe"],
             "top_n_net_annualized_volatility": top_n[
                 "net_annualized_volatility"
@@ -469,6 +479,49 @@ def _difference(left: float | None, right: float | None) -> float | None:
     if left is None or right is None:
         return None
     return left - right
+
+
+def _annualized_relative_wealth_excess(
+    returns: pl.DataFrame,
+    benchmark_returns: pl.DataFrame | None,
+    annualization: int,
+) -> float | None:
+    """Annualize the relative wealth of net returns over one benchmark."""
+
+    if (
+        returns.is_empty()
+        or benchmark_returns is None
+        or benchmark_returns.is_empty()
+        or not {TIME, "net_return"}.issubset(returns.columns)
+        or not {TIME, "benchmark", "return"}.issubset(benchmark_returns.columns)
+        or benchmark_returns.get_column("benchmark").n_unique() != 1
+    ):
+        return None
+    aligned = returns.select(TIME, "net_return").join(
+        benchmark_returns.select(TIME, "return"),
+        on=TIME,
+        how="inner",
+    )
+    if aligned.height != returns.height:
+        return None
+    portfolio = np.asarray(aligned.get_column("net_return"), dtype=float)
+    benchmark = np.asarray(aligned.get_column("return"), dtype=float)
+    if (
+        not np.isfinite(portfolio).all()
+        or not np.isfinite(benchmark).all()
+        or np.any(portfolio < -1.0)
+        or np.any(benchmark <= -1.0)
+    ):
+        return None
+    portfolio_wealth = float(np.prod(1.0 + portfolio))
+    benchmark_wealth = float(np.prod(1.0 + benchmark))
+    if benchmark_wealth <= 0.0 or portfolio_wealth < 0.0:
+        return None
+    return float(
+        (portfolio_wealth / benchmark_wealth)
+        ** (annualization / aligned.height)
+        - 1.0
+    )
 
 
 def _ic_summary(values: object, annualization: int) -> dict[str, float | None]:
