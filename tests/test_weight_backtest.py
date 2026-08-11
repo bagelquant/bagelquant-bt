@@ -54,6 +54,29 @@ def test_weight_backtest_returns_polars_result_frames() -> None:
     assert result.summary.gross_max_drawdown >= result.summary.net_max_drawdown
 
 
+def test_weight_backtest_rejects_empty_target_weights_without_key_error() -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-01", "2024-01-02"],
+            "asset_id": ["a", "a"],
+            "price": [10.0, 11.0],
+        }
+    )
+    weights = pl.DataFrame(
+        schema={"time": pl.Date, "asset_id": pl.String, "weight": pl.Float64}
+    )
+
+    with pytest.raises(
+        InputValidationError,
+        match="weights must contain at least one target",
+    ):
+        run_weight_backtest(
+            weights,
+            prices,
+            config=BacktestConfig(initial_capital=100_000),
+        )
+
+
 def test_weight_frames_materialize_once_on_first_access() -> None:
     prices = pl.DataFrame(
         {

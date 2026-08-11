@@ -107,6 +107,14 @@ def _backtest_weight_frame_with_forward_returns(
 ) -> BacktestResult:
     """Backtest a weight frame with a precomputed forward-return panel."""
 
+    if (
+        weights.is_empty()
+        and initial_target_weights is None
+        and initial_executed_weights is None
+    ):
+        raise InputValidationError(
+            "weights must contain at least one target on the executable price calendar"
+        )
     (
         active_prices,
         active_returns,
