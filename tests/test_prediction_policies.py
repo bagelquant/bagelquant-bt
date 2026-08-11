@@ -157,9 +157,10 @@ def test_alpha_policy_aligns_evaluation_date_before_standardization() -> None:
         name="alpha",
     )
 
-    result = resolve_alpha_policy(
+    applied = resolve_alpha_policy(
         "month_end", standardization="z_score"
-    ).apply({"alpha": alpha}, calendar).alpha_values["alpha"].collect(dense=False)
+    ).apply({"alpha": alpha}, calendar)
+    result = applied.alpha_values["alpha"].collect(dense=False)
 
     assert result.get_column("time").to_list() == [
         date(2024, 1, 31),
@@ -168,6 +169,13 @@ def test_alpha_policy_aligns_evaluation_date_before_standardization() -> None:
     assert result.get_column("value").to_list() == pytest.approx(
         [-2**-0.5, 2**-0.5]
     )
+    assert applied.alignments.to_dicts() == [
+        {
+            "alpha_name": "alpha",
+            "observation_date": source_date,
+            "evaluation_date": date(2024, 1, 31),
+        }
+    ]
 
 
 def test_month_end_uses_latest_previous_snapshot_only_within_month() -> None:

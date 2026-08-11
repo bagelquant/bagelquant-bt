@@ -32,7 +32,11 @@ from .path import (
     portfolio_path_from_backtest,
     resume_portfolio_path,
 )
-from .pipeline import compose_prediction, run_prediction_backtest
+from .pipeline import (
+    compose_prediction,
+    compose_processed_prediction,
+    run_prediction_backtest,
+)
 from .policy import (
     AlphaPolicy,
     AlphaPolicyResult,
@@ -126,6 +130,7 @@ __all__ = [
     "benchmark_performance",
     "build_universe_benchmark_returns",
     "compose_prediction",
+    "compose_processed_prediction",
     "compute_result_section",
     "cross_sectional_factor_returns",
     "execution_policies",

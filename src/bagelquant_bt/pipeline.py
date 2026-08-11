@@ -19,6 +19,7 @@ from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_prices
 from .policy import (
     AlphaPolicy,
+    AlphaPolicyResult,
     ExecutionPolicy,
     resolve_execution_policy,
 )
@@ -46,6 +47,42 @@ def compose_prediction(
         start=start,
         end=end,
     )
+    return compose_processed_prediction(
+        processed,
+        composer,
+        calendar,
+        execution_policy=execution_policy,
+        prices=prices,
+    )
+
+
+def compose_processed_prediction(
+    processed: AlphaPolicyResult,
+    composer: PredictionComposer,
+    calendar: pl.DataFrame,
+    *,
+    execution_policy: ExecutionPolicy | str = "next_open",
+    prices: pl.DataFrame | None = None,
+) -> PredictionPanel:
+    """Compose AlphaPolicy-processed Panels without applying the policy again."""
+
+    if not isinstance(processed, AlphaPolicyResult):
+        raise TypeError("processed must be an AlphaPolicyResult")
+    if not processed.alpha_values:
+        raise ValueError("processed AlphaPolicy result contains no AlphaValues")
+    if not isinstance(composer, PredictionComposer):
+        raise TypeError("composer must be a PredictionComposer")
+    panels = tuple(processed.alpha_values.values())
+    if any(not isinstance(panel, Panel) for panel in panels):
+        raise TypeError("processed alpha_values must contain Panel values")
+    policy_ids = {str(panel.metadata.get("alpha_policy", "")) for panel in panels}
+    standardizations = {
+        str(panel.metadata.get("standardization", "")) for panel in panels
+    }
+    if len(policy_ids) != 1 or "" in policy_ids:
+        raise ValueError("processed AlphaValues must share one Alpha Policy")
+    if len(standardizations) != 1 or "" in standardizations:
+        raise ValueError("processed AlphaValues must share one standardization")
     training = None
     if composer.supervised:
         if prices is None:
@@ -60,14 +97,14 @@ def compose_prediction(
             prices,
         )
     graph = composer.compose(
-        *processed.alpha_values.values(),
+        *panels,
         training=training,
         name="prediction",
         metadata={
             "prediction_composer": composer.kind,
             "window": composer.window,
-            "alpha_policy": alpha_policy.id,
-            "standardization": alpha_policy.standardization.value,
+            "alpha_policy": next(iter(policy_ids)),
+            "standardization": next(iter(standardizations)),
         },
     )
     result = graph.compute(dense_output=False)
@@ -194,4 +231,8 @@ def _training_context(
     )
 
 
-__all__ = ["compose_prediction", "run_prediction_backtest"]
+__all__ = [
+    "compose_prediction",
+    "compose_processed_prediction",
+    "run_prediction_backtest",
+]

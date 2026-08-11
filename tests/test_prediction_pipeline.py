@@ -16,6 +16,7 @@ from bagelquant_bt import (
     BacktestConfig,
     EqualWeightPolicy,
     compose_prediction,
+    compose_processed_prediction,
     resolve_alpha_policy,
     run_prediction_backtest,
 )
@@ -75,6 +76,28 @@ def test_compose_and_backtest_enforce_typed_prediction_boundary() -> None:
             weight_policy=EqualWeightPolicy(1),
             config=BacktestConfig(initial_capital=10_000),
         )
+
+
+def test_processed_prediction_matches_one_step_composition_without_reapplying_policy(
+) -> None:
+    calendar, alpha, _ = _inputs()
+    policy = resolve_alpha_policy("daily", standardization="z_score")
+    processed = policy.apply({"alpha": alpha}, calendar)
+
+    direct = compose_prediction(
+        {"alpha": alpha},
+        IdentityPredictionComposer(),
+        calendar,
+        policy,
+    )
+    cached = compose_processed_prediction(
+        processed,
+        IdentityPredictionComposer(),
+        calendar,
+    )
+
+    assert cached.collect(dense=False).equals(direct.collect(dense=False))
+    assert cached.metadata == direct.metadata
 
 
 def test_alpha_policy_rejects_untyped_frames() -> None:

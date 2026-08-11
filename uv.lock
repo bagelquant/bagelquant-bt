@@ -12,7 +12,7 @@ resolution-markers = [
 
 [[package]]
 name = "bagelquant-bt"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "bagelquant-core" },
@@ -45,7 +45,7 @@ dev = [
 
 [[package]]
 name = "bagelquant-core"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "../bagelquant-core" }
 dependencies = [
     { name = "numpy" },

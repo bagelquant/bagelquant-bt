@@ -49,10 +49,11 @@ class MissingSnapshotAction(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class AlphaPolicyResult:
-    """Evaluation schedule and one processed Panel for every AlphaValue."""
+    """Evaluation schedule, processed Panels, and exact source-date lineage."""
 
     schedule: pl.DataFrame
     alpha_values: Mapping[str, Panel]
+    alignments: pl.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,14 +313,36 @@ class AlphaPolicy:
         schedule = self.schedule(calendar, start=start, end=end)
         if schedule.is_empty():
             raise InputValidationError("alpha policy resolves no evaluation dates")
-        processed = {
-            name: self._process_panel(value, schedule)
-            for name, value in alpha_values.items()
-        }
-        return AlphaPolicyResult(schedule=schedule, alpha_values=processed)
+        processed: dict[str, Panel] = {}
+        alignments: list[pl.DataFrame] = []
+        for name, value in alpha_values.items():
+            panel, alignment = self._process_panel(value, schedule)
+            processed[name] = panel
+            if not alignment.is_empty():
+                alignments.append(
+                    alignment.with_columns(pl.lit(name).alias("alpha_name"))
+                )
+        lineage = (
+            pl.concat(alignments)
+            .select(
+                pl.col("alpha_name").cast(pl.String),
+                pl.col("observation_date").cast(pl.Date),
+                pl.col("evaluation_date").cast(pl.Date),
+            )
+            .sort("evaluation_date", "alpha_name")
+            if alignments
+            else _empty_alignments()
+        )
+        return AlphaPolicyResult(
+            schedule=schedule,
+            alpha_values=processed,
+            alignments=lineage,
+        )
 
-    def _process_panel(self, alpha: Panel, schedule: pl.DataFrame) -> Panel:
-        aligned = _align_alpha(alpha, schedule, self)
+    def _process_panel(
+        self, alpha: Panel, schedule: pl.DataFrame
+    ) -> tuple[Panel, pl.DataFrame]:
+        aligned, lineage = _align_alpha(alpha, schedule, self)
         value = pl.col("value").fill_nan(None)
         finite = pl.when(value.is_finite()).then(value).otherwise(None)
         if self.standardization == AlphaStandardization.NONE:
@@ -339,15 +362,18 @@ class AlphaPolicy:
             calendar=schedule.get_column("rebalance_date"),
             universe=alpha.domain.asset_ids,
         )
-        return Panel.from_domain(
-            frame,
-            domain,
-            name=alpha.name,
-            metadata={
-                **alpha.metadata,
-                "alpha_policy": self.id,
-                "standardization": self.standardization.value,
-            },
+        return (
+            Panel.from_domain(
+                frame,
+                domain,
+                name=alpha.name,
+                metadata={
+                    **alpha.metadata,
+                    "alpha_policy": self.id,
+                    "standardization": self.standardization.value,
+                },
+            ),
+            lineage,
         )
 
 
@@ -438,10 +464,11 @@ def _align_alpha(
     alpha: Panel,
     schedule: pl.DataFrame,
     policy: AlphaPolicy,
-) -> pl.DataFrame:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     values = alpha.collect(dense=False).drop_nulls("value")
     available = values.select(TIME).unique().sort(TIME).get_column(TIME)
     frames: list[pl.DataFrame] = []
+    alignment_rows: list[dict[str, date]] = []
     for row in schedule.iter_rows(named=True):
         rebalance = row["rebalance_date"]
         candidates = available.filter(available <= rebalance)
@@ -458,16 +485,41 @@ def _align_alpha(
             else None
         )
         if selected is not None:
+            alignment_rows.append(
+                {
+                    "observation_date": selected,
+                    "evaluation_date": rebalance,
+                }
+            )
             frames.append(
                 values.filter(pl.col(TIME) == selected).with_columns(
                     pl.lit(rebalance, dtype=pl.Date).alias(TIME)
                 )
             )
     if not frames:
-        return pl.DataFrame(
-            schema={TIME: pl.Date, ASSET_ID: pl.String, "value": pl.Float64}
+        return (
+            pl.DataFrame(
+                schema={TIME: pl.Date, ASSET_ID: pl.String, "value": pl.Float64}
+            ),
+            _empty_alignments().drop("alpha_name"),
         )
-    return pl.concat(frames).sort([TIME, ASSET_ID])
+    return (
+        pl.concat(frames).sort([TIME, ASSET_ID]),
+        pl.DataFrame(
+            alignment_rows,
+            schema={"observation_date": pl.Date, "evaluation_date": pl.Date},
+        ).sort("evaluation_date"),
+    )
+
+
+def _empty_alignments() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "alpha_name": pl.String,
+            "observation_date": pl.Date,
+            "evaluation_date": pl.Date,
+        }
+    )
 
 
 def _schedule_from_panel(values: pl.DataFrame) -> pl.DataFrame:
