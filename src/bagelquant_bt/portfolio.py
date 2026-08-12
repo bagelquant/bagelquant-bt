@@ -252,17 +252,27 @@ class PredictionRegularizedOptimizerPolicy:
                 )
 
             solution = np.asarray(variable.value, dtype=float).reshape(-1)
+            if not np.isfinite(solution).all():
+                raise InputValidationError(
+                    "optimizer returned a non-finite solution at "
+                    f"{evaluation_date}"
+                )
+            raw_violation = max(
+                abs(float(solution.sum()) - 1.0),
+                max(0.0, -float(solution.min())),
+                max(0.0, float(solution.max()) - self.max_weight),
+            )
+            solution = _project_capped_simplex(solution, self.max_weight)
             violation = max(
                 abs(float(solution.sum()) - 1.0),
                 max(0.0, -float(solution.min())),
                 max(0.0, float(solution.max()) - self.max_weight),
             )
-            if not np.isfinite(solution).all() or violation > self.constraint_tolerance:
+            if violation > self.constraint_tolerance:
                 raise InputValidationError(
                     "optimizer returned an invalid solution at "
                     f"{evaluation_date}: constraint violation {violation:.3g}"
                 )
-            solution = _project_capped_simplex(solution, self.max_weight)
             weight_rows.extend(
                 {
                     TIME: evaluation_date,
@@ -281,6 +291,7 @@ class PredictionRegularizedOptimizerPolicy:
                     "iterations": getattr(stats, "num_iters", None),
                     "objective": float(problem.value),
                     "constraint_violation": violation,
+                    "raw_solver_constraint_violation": raw_violation,
                 }
             )
 

@@ -139,3 +139,30 @@ def test_optimizer_fails_infeasible_cap_without_fallback_policy() -> None:
             turnover_penalty=0.0,
             max_weight=0.04,
         ).build(_prediction({f"a{index:02d}": float(index) for index in range(24)}))
+
+
+def test_optimizer_projects_finite_solver_noise_before_strict_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cvxpy as cp
+
+    original_solve = cp.Problem.solve
+
+    def noisy_solve(problem, *args, **kwargs):
+        result = original_solve(problem, *args, **kwargs)
+        variable = problem.variables()[0]
+        variable._value = variable.value + 8e-7
+        return result
+
+    monkeypatch.setattr(cp.Problem, "solve", noisy_solve)
+    result = PredictionRegularizedOptimizerPolicy(
+        concentration_penalty=10.0,
+        turnover_penalty=0.0,
+        max_weight=1.0,
+    ).build(_prediction({"a": 2.0, "b": -2.0}))
+
+    weights = result.weights.collect(dense=False).get_column("value")
+    assert weights.sum() == pytest.approx(1.0, abs=1e-12)
+    diagnostic = result.diagnostics.row(0, named=True)
+    assert diagnostic["raw_solver_constraint_violation"] > 1e-7
+    assert diagnostic["constraint_violation"] <= 1e-7
