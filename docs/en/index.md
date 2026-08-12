@@ -30,5 +30,6 @@ date, execution, market, and portfolio policies.
 - [API](reference/api.md)
 - [Public API](reference/public-api.md)
 - [Transaction costs](reference/transaction-costs.md)
+- [Whole-share account backtests](reference/account-backtest.md)
 - [Signal evaluation](reference/factor-evaluation.md)
 - [Internals](reference/internals.md)

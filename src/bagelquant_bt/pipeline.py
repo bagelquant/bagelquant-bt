@@ -110,7 +110,63 @@ def compose_processed_prediction(
     result = graph.compute(dense_output=False)
     if not isinstance(result, PredictionPanel):
         raise AssertionError("prediction composer did not produce a PredictionPanel")
-    return result
+    return normalize_prediction_panel(result)
+
+
+def normalize_prediction_panel(prediction: PredictionPanel) -> PredictionPanel:
+    """Apply the fixed finite-value cross-sectional population Z-score contract."""
+
+    if not isinstance(prediction, PredictionPanel):
+        raise TypeError("normalize_prediction_panel requires a PredictionPanel")
+    frame = prediction.collect(dense=False)
+    finite = frame.filter(pl.col("value").is_not_null() & pl.col("value").is_finite())
+    statistics = finite.group_by(TIME).agg(
+        pl.len().alias("valid_count"),
+        pl.col("value").mean().alias("mean"),
+        pl.col("value").std(ddof=0).alias("std"),
+    )
+    # A PredictionPanel may have a dense Domain calendar while intentionally
+    # emitting sparse snapshots (for example month-end predictions).  Only
+    # dates represented by prediction rows are normalization periods.
+    observed_dates = frame.select(TIME).unique()
+    invalid = (
+        observed_dates.join(statistics, on=TIME, how="left")
+        .filter(
+            (pl.col("valid_count").fill_null(0) < 2)
+            | pl.col("std").is_null()
+            | ~pl.col("std").is_finite()
+            | (pl.col("std") == 0)
+        )
+        .sort(TIME)
+    )
+    if invalid.height:
+        dates = ", ".join(str(value) for value in invalid.get_column(TIME))
+        raise InputValidationError(
+            "prediction cross-sectional Z-score requires at least two finite "
+            f"non-constant values; failed dates: {dates}"
+        )
+    normalized = (
+        finite.join(statistics.select(TIME, "mean", "std"), on=TIME, how="left")
+        .with_columns(
+            ((pl.col("value") - pl.col("mean")) / pl.col("std")).alias("value")
+        )
+        .select(TIME, ASSET_ID, "value")
+        .sort([TIME, ASSET_ID])
+    )
+    metadata = dict(prediction.metadata)
+    metadata["normalization"] = {
+        "method": "cross_sectional_zscore",
+        "finite_values_only": True,
+        "ddof": 0,
+        "minimum_valid_count": 2,
+        "zero_variance_action": "fail_date",
+    }
+    return PredictionPanel.from_domain(
+        normalized,
+        prediction.domain,
+        name=prediction.name,
+        metadata=metadata,
+    )
 
 
 def run_prediction_backtest(
@@ -180,17 +236,13 @@ def _training_context(
     pairs = (
         executable.select("rebalance_date", "execution_date")
         .sort("rebalance_date")
-        .with_columns(
-            pl.col("execution_date").shift(-1).alias("next_execution_date")
-        )
+        .with_columns(pl.col("execution_date").shift(-1).alias("next_execution_date"))
         .drop_nulls("next_execution_date")
     )
     aligned_prices = validate_prices(prices)
     targets = (
         pairs.join(
-            aligned_prices.rename(
-                {TIME: "execution_date", "price": "start_price"}
-            ),
+            aligned_prices.rename({TIME: "execution_date", "price": "start_price"}),
             on="execution_date",
             how="inner",
         )
@@ -234,5 +286,6 @@ def _training_context(
 __all__ = [
     "compose_prediction",
     "compose_processed_prediction",
+    "normalize_prediction_panel",
     "run_prediction_backtest",
 ]

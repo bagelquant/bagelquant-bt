@@ -47,11 +47,24 @@ result = run_prediction_backtest(
 )
 ```
 
-`run_prediction_evaluation` computes execution-to-execution IC, quantiles, spread,
-TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`. Sparse or monthly
-signals rebalance only on their snapshot dates; positions are held between
-snapshots. `OrderSizingPolicy` reserves the later target-weight-to-order
-boundary, but quantity sizing is not implemented yet.
+`run_prediction_evaluation` computes execution-to-execution IC, quantiles,
+spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`. Every
+new composed Prediction uses a finite-only cross-sectional population Z-score
+(`ddof=0`) and fails dates with fewer than two valid values or zero variance.
+
+`PredictionRegularizedOptimizerPolicy` converts a Prediction plus explicit
+reference weights into target weights under long-only, fully-invested, and
+maximum-weight constraints. CVXPY is available through the `optimizer` extra;
+OSQP is attempted first and CLARABEL second, with strict failure if neither
+solver succeeds.
+
+The separate `run_account_backtest` engine sizes target weights into integer
+positions and simulates cash, T+1 availability, lot rules, sell-first funding,
+orders, fills, unadjusted open/close marks, corporate-action receivables,
+external-flow units, pending withdrawals, and performance attribution. It
+returns `AccountBacktestResult` and does not change the legacy fractional-weight
+engine used by research diagnostics. See
+[Whole-share account backtests](docs/en/reference/account-backtest.md).
 
 During an asset-specific price gap, its holding is frozen at the last observed
 price. The gap sessions have zero return and the cumulative move is recognized

@@ -16,7 +16,10 @@ class TransactionCostConfig:
     rate: float = 0.00015
     min_fee: float = 5.0
     slippage_rate: float = 0.0005
+    buy_slippage_rate: float | None = None
+    sell_slippage_rate: float | None = None
     stamp_tax_rate: float = 0.0005
+    transfer_fee_rate: float = 0.0
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -24,11 +27,26 @@ class TransactionCostConfig:
             ("min_fee", self.min_fee),
             ("slippage_rate", self.slippage_rate),
             ("stamp_tax_rate", self.stamp_tax_rate),
+            ("transfer_fee_rate", self.transfer_fee_rate),
         ):
             if not math.isfinite(value) or value < 0:
                 raise BacktestConfigError(
                     f"transaction cost {name} must be finite and nonnegative"
                 )
+        for name, value in (
+            ("buy_slippage_rate", self.buy_slippage_rate),
+            ("sell_slippage_rate", self.sell_slippage_rate),
+        ):
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise BacktestConfigError(
+                    f"transaction cost {name} must be finite and nonnegative"
+                )
+
+    def slippage_for(self, side: Literal["buy", "sell"]) -> float:
+        """Return the side-specific rate, falling back to the legacy shared rate."""
+
+        value = self.buy_slippage_rate if side == "buy" else self.sell_slippage_rate
+        return self.slippage_rate if value is None else value
 
 
 @dataclass(frozen=True, slots=True)

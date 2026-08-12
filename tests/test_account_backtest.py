@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import polars as pl
+import pytest
+
+from bagelquant_bt import (
+    AccountBacktestConfig,
+    TransactionCostConfig,
+    run_account_backtest,
+)
+
+
+def _coverage(*days: date) -> pl.DataFrame:
+    return pl.DataFrame({"time": list(days), "is_complete": [True] * len(days)})
+
+
+def _zero_cost() -> TransactionCostConfig:
+    return TransactionCostConfig(
+        rate=0.0,
+        min_fee=0.0,
+        slippage_rate=0.0,
+        stamp_tax_rate=0.0,
+        transfer_fee_rate=0.0,
+    )
+
+
+def test_account_buys_and_sells_whole_lots_with_t_plus_one() -> None:
+    days = [date(2024, 1, day) for day in range(2, 5)]
+    prices = pl.DataFrame(
+        {
+            "time": days,
+            "asset_id": ["a"] * 3,
+            "open": [100.0] * 3,
+            "close": [100.0] * 3,
+        }
+    )
+    targets = pl.DataFrame(
+        {
+            "time": [days[0], days[1]],
+            "asset_id": ["a", "a"],
+            "weight": [1.0, 0.0],
+        }
+    )
+
+    result = run_account_backtest(
+        targets,
+        prices,
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=10_500.0,
+            settlement_sessions=1,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.fills.select("side", "quantity").to_dicts() == [
+        {"side": "buy", "quantity": 100},
+        {"side": "sell", "quantity": 100},
+    ]
+    assert result.account_value.get_column("equity").to_list() == pytest.approx(
+        [10_500.0, 10_500.0, 10_500.0]
+    )
+    assert result.final_checkpoint.cash == pytest.approx(10_500.0)
+
+
+def test_account_leaves_unaffordable_high_price_lot_pending() -> None:
+    day = date(2024, 1, 2)
+    result = run_account_backtest(
+        pl.DataFrame({"time": [day], "asset_id": ["a"], "weight": [1.0]}),
+        pl.DataFrame(
+            {
+                "time": [day],
+                "asset_id": ["a"],
+                "open": [6_000.0],
+                "close": [6_000.0],
+            }
+        ),
+        corporate_action_coverage=_coverage(day),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}),
+        config=AccountBacktestConfig(transaction_cost=_zero_cost()),
+    )
+
+    assert result.fills.is_empty()
+    assert result.orders.is_empty()
+    assert result.target_positions.get_column("target_quantity").to_list() == [0]
+
+
+def test_late_order_reason_does_not_depend_on_schema_inference_window() -> None:
+    days = [date(2024, 1, 2) + timedelta(days=index) for index in range(120)]
+    result = run_account_backtest(
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a"] * len(days),
+                "weight": [1.0 if index % 2 == 0 else 0.0 for index in range(120)],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a"] * len(days),
+                "open": [10.0] * len(days),
+                "close": [10.0] * len(days),
+            }
+        ),
+        corporate_action_coverage=_coverage(*days),
+        execution_availability=pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a"] * len(days),
+                "can_buy": [True] * 110 + [False] * 10,
+                "can_sell": [True] * len(days),
+                "reason": [None] * 110 + ["cn_a_share_price_limits:limit_up"] * 10,
+            }
+        ),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=1_000.0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.orders.schema["reason"] == pl.String
+    assert (
+        result.orders.get_column("reason").drop_nulls().tail(1).item()
+        == "cn_a_share_price_limits:limit_up"
+    )
+
+
+def test_account_applies_distinct_buy_and_sell_slippage_rates() -> None:
+    days = [date(2024, 1, 2), date(2024, 1, 3)]
+    result = run_account_backtest(
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a", "a"],
+                "weight": [1.0, 0.0],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a", "a"],
+                "open": [10.0, 10.0],
+                "close": [10.0, 10.0],
+            }
+        ),
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=1_010.0,
+            transaction_cost=TransactionCostConfig(
+                rate=0.0,
+                min_fee=0.0,
+                slippage_rate=0.0,
+                buy_slippage_rate=0.01,
+                sell_slippage_rate=0.02,
+                stamp_tax_rate=0.0,
+                transfer_fee_rate=0.0,
+            ),
+        ),
+    )
+
+    assert result.fills.select("side", "fill_price").to_dicts() == [
+        {"side": "buy", "fill_price": pytest.approx(10.1)},
+        {"side": "sell", "fill_price": pytest.approx(9.8)},
+    ]
+
+
+def test_fixed_notional_withdrawal_preserves_unit_nav() -> None:
+    days = [date(2024, 1, 2), date(2024, 1, 3)]
+    result = run_account_backtest(
+        pl.DataFrame({"time": [days[0]], "asset_id": ["a"], "weight": [1.0]}),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a", "a"],
+                "open": [100.0, 110.0],
+                "close": [110.0, 110.0],
+            }
+        ),
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}),
+        config=AccountBacktestConfig(
+            settlement_sessions=0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.external_flows.select("amount", "reason").to_dicts() == [
+        {"amount": -50_000.0, "reason": "fixed_notional_withdrawal"}
+    ]
+    assert result.account_value.get_column("equity").to_list() == pytest.approx(
+        [550_000.0, 500_000.0]
+    )
+    assert result.account_value.get_column("nav").to_list() == pytest.approx([1.1, 1.1])
+
+
+def test_cash_dividend_moves_from_receivable_to_cash() -> None:
+    days = [date(2024, 1, day) for day in range(2, 5)]
+    actions = pl.DataFrame(
+        {
+            "action_id": ["div-a"],
+            "asset_id": ["a"],
+            "is_implemented": [True],
+            "record_date": [days[0]],
+            "ex_date": [days[1]],
+            "cash_pay_date": [days[2]],
+            "share_available_date": [None],
+            "cash_dividend_per_share": [0.1],
+            "stock_dividend_per_share": [0.0],
+        }
+    )
+    result = run_account_backtest(
+        pl.DataFrame({"time": [days[0]], "asset_id": ["a"], "weight": [1.0]}),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a"] * 3,
+                "open": [10.0, 9.9, 9.9],
+                "close": [10.0, 9.9, 9.9],
+            }
+        ),
+        corporate_action_coverage=_coverage(*days),
+        corporate_actions=actions,
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=10_000.0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.receivables.select("kind", "amount").to_dicts() == [
+        {"kind": "cash_created", "amount": 100.0},
+        {"kind": "cash_paid", "amount": 100.0},
+    ]
+    assert result.account_value.get_column("equity").to_list() == pytest.approx(
+        [10_000.0, 10_000.0, 10_000.0]
+    )
+
+
+def test_checkpoint_resume_matches_full_account_values() -> None:
+    days = [date(2024, 1, day) for day in range(2, 6)]
+    targets = pl.DataFrame({"time": [days[0]], "asset_id": ["a"], "weight": [1.0]})
+    prices = pl.DataFrame(
+        {
+            "time": days,
+            "asset_id": ["a"] * 4,
+            "open": [10.0, 11.0, 12.0, 13.0],
+            "close": [11.0, 12.0, 13.0, 14.0],
+        }
+    )
+    config = AccountBacktestConfig(
+        capital_mode="compounding",
+        initial_capital=10_000.0,
+        transaction_cost=_zero_cost(),
+    )
+    full = run_account_backtest(
+        targets,
+        prices,
+        corporate_action_coverage=_coverage(*days),
+        config=config,
+    )
+    prefix = run_account_backtest(
+        targets,
+        prices.filter(pl.col("time") <= days[1]),
+        corporate_action_coverage=_coverage(*days[:2]),
+        config=config,
+    )
+    resumed = run_account_backtest(
+        targets.clear(),
+        prices.filter(pl.col("time") > days[1]),
+        corporate_action_coverage=_coverage(*days[2:]),
+        config=config,
+        checkpoint=prefix.final_checkpoint,
+    )
+
+    assert (
+        resumed.account_value.select("time", "equity", "nav").to_dicts()
+        == full.account_value.filter(pl.col("time") > days[1])
+        .select("time", "equity", "nav")
+        .to_dicts()
+    )

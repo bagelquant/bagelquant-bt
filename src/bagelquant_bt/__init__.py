@@ -1,5 +1,11 @@
 """Typed prediction evaluation and backtesting for BagelQuant."""
 
+from .account import (
+    AccountBacktestConfig,
+    AccountBacktestResult,
+    AccountStateCheckpoint,
+    run_account_backtest,
+)
 from .benchmarks import benchmark_performance, build_universe_benchmark_returns
 from .config import BacktestConfig, TransactionCostConfig
 from .exceptions import (
@@ -35,6 +41,7 @@ from .path import (
 from .pipeline import (
     compose_prediction,
     compose_processed_prediction,
+    normalize_prediction_panel,
     run_prediction_backtest,
 )
 from .policy import (
@@ -56,6 +63,7 @@ from .policy import (
 from .portfolio import (
     EqualWeightPolicy,
     FloatMarketCapWeightPolicy,
+    PredictionRegularizedOptimizerPolicy,
     TargetVolatilityPolicy,
     WeightBuild,
 )
@@ -87,6 +95,9 @@ from .validation import (
 __all__ = [
     "RESULT_SECTIONS",
     "RESULT_SECTION_VERSION",
+    "AccountBacktestConfig",
+    "AccountBacktestResult",
+    "AccountStateCheckpoint",
     "AlphaPolicy",
     "AlphaPolicyResult",
     "AlphaStandardization",
@@ -112,6 +123,7 @@ __all__ = [
     "PortfolioPathIdentity",
     "PortfolioStateCheckpoint",
     "PredictionEvaluationResult",
+    "PredictionRegularizedOptimizerPolicy",
     "PreparedFactorMarketData",
     "ReportFigure",
     "ResultSection",
@@ -139,6 +151,7 @@ __all__ = [
     "materialize_factor_diagnostics",
     "materialize_portfolio_path",
     "materialize_prediction_diagnostics",
+    "normalize_prediction_panel",
     "one_sample_t_test",
     "portfolio_path_from_backtest",
     "prediction_evaluation_report_figures",
@@ -148,6 +161,7 @@ __all__ = [
     "resolve_alpha_policy",
     "resolve_execution_policy",
     "resume_portfolio_path",
+    "run_account_backtest",
     "run_prediction_backtest",
     "run_prediction_evaluation",
     "score_ic_validation",
