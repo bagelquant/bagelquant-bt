@@ -183,13 +183,21 @@ def _ic_tables(
         )
     if "ic_decay" in selected:
         decay = series.get("ic_decay", pl.DataFrame())
-        tables["ic_decay"] = (
-            decay.group_by("lag", "method")
-            .agg(pl.col("ic").mean().alias("ic_mean"))
-            .sort(["method", "lag"])
-            if not decay.is_empty()
-            else decay
-        )
+        if decay.is_empty():
+            tables["ic_decay"] = decay
+        elif "ic" in decay.columns:
+            tables["ic_decay"] = (
+                decay.group_by("lag", "method")
+                .agg(pl.col("ic").mean().alias("ic_mean"))
+                .sort(["method", "lag"])
+            )
+        else:
+            # Canonical Strategy artifacts persist the already-aggregated
+            # decay table.  Reusing it must not attempt to aggregate a
+            # non-existent per-date ``ic`` column again.
+            tables["ic_decay"] = decay.select(
+                "lag", "method", "ic_mean"
+            ).sort(["method", "lag"])
     return tables
 
 

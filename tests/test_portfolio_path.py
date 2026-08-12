@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import polars as pl
@@ -22,7 +23,7 @@ from bagelquant_bt.window import compute_window_tables
 
 def test_result_section_version_is_public() -> None:
     assert PORTFOLIO_PATH_VERSION == 3
-    assert RESULT_SECTION_VERSION == 6
+    assert RESULT_SECTION_VERSION == 7
 
 
 def _prices() -> pl.DataFrame:
@@ -277,6 +278,40 @@ def test_result_window_uses_complete_intervals_and_rebases() -> None:
         section.tables["top_n_returns"].get_column("net_return_cumulative")[-1]
         == expected
     )
+
+
+def test_ic_section_accepts_preaggregated_decay_table() -> None:
+    path = materialize_portfolio_path(
+        _weights(),
+        _prices(),
+        identity=_identity(),
+        config=BacktestConfig(initial_capital=100_000, annualization=4),
+    )
+    path = replace(
+        path,
+        series={
+            **path.series,
+            "ic_decay": pl.DataFrame(
+                {
+                    "lag": [0, 1],
+                    "method": ["spearman", "spearman"],
+                    "ic_mean": [0.10, 0.08],
+                }
+            ),
+        },
+    )
+
+    section = compute_result_section(
+        path,
+        ResultSectionSpec("ic", ("ic_decay",)),
+        ResultWindow(date(2024, 1, 2), date(2024, 1, 4)),
+        annualization=4,
+    )
+
+    assert section.tables["ic_decay"].to_dicts() == [
+        {"lag": 0, "method": "spearman", "ic_mean": 0.10},
+        {"lag": 1, "method": "spearman", "ic_mean": 0.08},
+    ]
 
 
 def test_benchmark_metrics_are_recomputed_for_result_window() -> None:

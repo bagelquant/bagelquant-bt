@@ -7,6 +7,15 @@ from .account import (
     run_account_backtest,
 )
 from .benchmarks import benchmark_performance, build_universe_benchmark_returns
+from .comparison import (
+    ActualPerformancePath,
+    ContinuousTargetPath,
+    PortfolioPathComparison,
+    compare_portfolio_paths,
+    run_actual_performance_path,
+    run_continuous_target_path,
+    run_total_return_weight_paths,
+)
 from .config import BacktestConfig, TransactionCostConfig
 from .exceptions import (
     BacktestConfigError,
@@ -98,6 +107,7 @@ __all__ = [
     "AccountBacktestConfig",
     "AccountBacktestResult",
     "AccountStateCheckpoint",
+    "ActualPerformancePath",
     "AlphaPolicy",
     "AlphaPolicyResult",
     "AlphaStandardization",
@@ -105,6 +115,7 @@ __all__ = [
     "BacktestConfigError",
     "BacktestResult",
     "BagelQuantBacktestError",
+    "ContinuousTargetPath",
     "EqualWeightPolicy",
     "EvaluationAnchor",
     "EvaluationFrequency",
@@ -120,6 +131,7 @@ __all__ = [
     "OrderSizingPolicy",
     "PerformanceSummary",
     "PortfolioPathChunk",
+    "PortfolioPathComparison",
     "PortfolioPathIdentity",
     "PortfolioStateCheckpoint",
     "PredictionEvaluationResult",
@@ -141,6 +153,7 @@ __all__ = [
     "alpha_policies",
     "benchmark_performance",
     "build_universe_benchmark_returns",
+    "compare_portfolio_paths",
     "compose_prediction",
     "compose_processed_prediction",
     "compute_result_section",
@@ -162,8 +175,11 @@ __all__ = [
     "resolve_execution_policy",
     "resume_portfolio_path",
     "run_account_backtest",
+    "run_actual_performance_path",
+    "run_continuous_target_path",
     "run_prediction_backtest",
     "run_prediction_evaluation",
+    "run_total_return_weight_paths",
     "score_ic_validation",
     "score_top_n_performance",
     "select_top_n_stable",

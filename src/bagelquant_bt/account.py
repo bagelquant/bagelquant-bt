@@ -25,6 +25,7 @@ class AccountBacktestConfig:
     nav_base: float = 1.0
     default_buy_lot_size: int = 1
     settlement_sessions: int = 0
+    retry_blocked_orders: bool = True
     transaction_cost: TransactionCostConfig = field(
         default_factory=TransactionCostConfig
     )
@@ -61,6 +62,7 @@ class AccountStateCheckpoint:
     cash_receivables: pl.DataFrame
     stock_receivables: pl.DataFrame
     latest_target: pl.DataFrame
+    pending_target_positions: pl.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +165,8 @@ def run_account_backtest(
         _mark_positions(state, session_prices, use="open")
         preflow_equity = _state_equity(state)
         external_flow = 0.0
-        if resolved_config.capital_mode == "fixed_notional":
+        is_target_session = session in targets_by_date
+        if resolved_config.capital_mode == "fixed_notional" and is_target_session:
             external_flow += _rebalance_external_capital(
                 state,
                 resolved_config.fixed_notional,
@@ -171,7 +174,7 @@ def run_account_backtest(
                 rows["external_flows"],
             )
 
-        if session in targets_by_date:
+        if is_target_session:
             state["latest_target"] = targets_by_date[session]
             state["target_revision_time"] = session
         latest_target: dict[str, float] = state["latest_target"]
@@ -180,30 +183,36 @@ def run_account_backtest(
             if resolved_config.capital_mode == "fixed_notional"
             else _state_equity(state)
         )
-        desired = _desired_positions(
-            session,
-            sizing_capital,
-            latest_target,
-            state,
-            session_prices,
-            lots,
-            rows["target_weights"],
-            rows["target_positions"],
-        )
-        daily_cost, withdrawal_flow = _execute_rebalance(
-            session,
-            session_index,
-            calendar,
-            desired,
-            state,
-            session_prices,
-            availability,
-            lots,
-            resolved_config,
-            rows["orders"],
-            rows["fills"],
-            rows["external_flows"],
-        )
+        if is_target_session:
+            state["pending_target_positions"] = _desired_positions(
+                session,
+                sizing_capital,
+                latest_target,
+                state,
+                session_prices,
+                lots,
+                rows["target_weights"],
+                rows["target_positions"],
+            )
+        desired = state["pending_target_positions"]
+        daily_cost = 0.0
+        withdrawal_flow = 0.0
+        if is_target_session or desired:
+            daily_cost, withdrawal_flow, pending = _execute_rebalance(
+                session,
+                session_index,
+                calendar,
+                desired,
+                state,
+                session_prices,
+                availability,
+                lots,
+                resolved_config,
+                rows["orders"],
+                rows["fills"],
+                rows["external_flows"],
+            )
+            state["pending_target_positions"] = pending
         external_flow += withdrawal_flow
 
         _mark_positions(state, session_prices, use="close")
@@ -457,6 +466,14 @@ def _restore_state(
                 row[ASSET_ID]: float(row["weight"])
                 for row in checkpoint.latest_target.iter_rows(named=True)
             },
+            "pending_target_positions": {
+                row[ASSET_ID]: (
+                    None
+                    if row["target_quantity"] is None
+                    else int(row["target_quantity"])
+                )
+                for row in checkpoint.pending_target_positions.iter_rows(named=True)
+            },
             "target_revision_time": checkpoint.time,
         }
     cash = config.initial_capital if initial_cash is None else float(initial_cash)
@@ -497,6 +514,7 @@ def _restore_state(
         "cash_receivables": [],
         "stock_receivables": [],
         "latest_target": {},
+        "pending_target_positions": {},
         "target_revision_time": None,
     }
 
@@ -514,8 +532,9 @@ def _execute_rebalance(
     order_rows: list[dict[str, Any]],
     fill_rows: list[dict[str, Any]],
     flow_rows: list[dict[str, Any]],
-) -> tuple[float, float]:
+) -> tuple[float, float, dict[str, int | None]]:
     total_cost = 0.0
+    pending: dict[str, int | None] = {}
     assets = sorted(set(state["positions"]) | set(desired))
     for asset_id in assets:
         current = state["positions"].get(asset_id, 0)
@@ -526,14 +545,20 @@ def _execute_rebalance(
         sellable = state["available"].get(asset_id, 0)
         lot = lots.get(asset_id, config.default_buy_lot_size)
         executable = min(requested, sellable)
+        settlement_blocked = sellable < requested
         if target != 0 and executable < current:
             executable = executable // lot * lot
         can_sell = availability.get((session, asset_id), (True, True, ""))[1]
         reason = availability.get((session, asset_id), (True, True, ""))[2]
         open_price = prices.get(asset_id, {}).get("open")
-        if not can_sell or open_price is None:
+        market_blocked = not can_sell or open_price is None
+        if market_blocked:
             executable = 0
             reason = reason or "missing_open_price"
+        elif settlement_blocked:
+            reason = reason or "t_plus_one_unavailable"
+        elif executable < requested:
+            reason = "cash_or_lot_constraint"
         order = _order_row(
             session, state, asset_id, "sell", requested, executable, reason
         )
@@ -553,6 +578,12 @@ def _execute_rebalance(
                 order["order_id"],
             )
             total_cost += fill_cost
+        if (
+            requested > executable
+            and config.retry_blocked_orders
+            and (market_blocked or settlement_blocked)
+        ):
+            pending[asset_id] = target
 
     withdrawal_flow = 0.0
     if config.capital_mode == "fixed_notional":
@@ -627,7 +658,13 @@ def _execute_rebalance(
                 fill_rows,
                 order["order_id"],
             )
-    return total_cost, withdrawal_flow
+        if (
+            requested > planned
+            and config.retry_blocked_orders
+            and (not can_buy or prices.get(asset_id, {}).get("open") is None)
+        ):
+            pending[asset_id] = target
+    return total_cost, withdrawal_flow, pending
 
 
 def _apply_fill(
@@ -963,6 +1000,10 @@ def _checkpoint(session: date, state: dict[str, Any]) -> AccountStateCheckpoint:
         {ASSET_ID: asset_id, "weight": weight}
         for asset_id, weight in sorted(state["latest_target"].items())
     ]
+    pending_target_rows = [
+        {ASSET_ID: asset_id, "target_quantity": quantity}
+        for asset_id, quantity in sorted(state["pending_target_positions"].items())
+    ]
     return AccountStateCheckpoint(
         time=session,
         cash=state["cash"],
@@ -974,6 +1015,7 @@ def _checkpoint(session: date, state: dict[str, Any]) -> AccountStateCheckpoint:
         cash_receivables=_rows_frame(state["cash_receivables"]),
         stock_receivables=_rows_frame(state["stock_receivables"]),
         latest_target=_rows_frame(target_rows),
+        pending_target_positions=_rows_frame(pending_target_rows),
     )
 
 

@@ -16,6 +16,7 @@ from bagelquant_bt import (
     TransactionCostConfig,
     materialize_prediction_diagnostics,
     run_prediction_evaluation,
+    run_total_return_weight_paths,
 )
 from bagelquant_bt.engine import (
     _legacy_compact_backtest_weight_frame_with_active_market,
@@ -204,7 +205,6 @@ def test_batched_quantiles_match_sequential_portfolios(
         execution_availability=availability,
     ).select("time", "quantile", "return")
 
-    expected_frames = []
     weight_frames = quantile_equal_weights(factor, quantiles=2)
     batched = _run_sparse_compact_backtests(
         weight_frames,
@@ -241,10 +241,22 @@ def test_batched_quantiles_match_sequential_portfolios(
             assert getattr(batched[label].summary, field) == pytest.approx(
                 expected_value, rel=1e-12, abs=1e-12, nan_ok=True
             )
+    expected_frames = []
+    for label, weights in weight_frames.items():
+        held_units = run_total_return_weight_paths(
+            {label: weights},
+            market.prices.rename({"price": "total_return_price"}),
+            execution_availability=availability,
+            retry_blocked=retry_blocked,
+        )
         expected_frames.append(
-            backtest.returns.select(
+            held_units.with_columns(
+                pl.col("gross_return").shift(-1).over("portfolio")
+            )
+            .drop_nulls("gross_return")
+            .select(
                 "time",
-                pl.lit(label).alias("quantile"),
+                pl.col("portfolio").alias("quantile"),
                 pl.col("gross_return").alias("return"),
             )
         )

@@ -22,7 +22,7 @@ from .returns import _prepare_price_data
 from .window import compute_window_tables
 
 PORTFOLIO_PATH_VERSION = 3
-RESULT_SECTION_VERSION = 6
+RESULT_SECTION_VERSION = 7
 RESULT_SECTIONS = (
     "summary",
     "ic",

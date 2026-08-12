@@ -18,6 +18,7 @@ from .benchmarks import (
     top_n_excess_returns,
     validate_benchmark_returns,
 )
+from .comparison import run_total_return_weight_paths
 from .config import BacktestConfig
 from .engine import (
     _backtest_weight_frames_with_forward_returns,
@@ -53,6 +54,7 @@ class PreparedFactorMarketData:
     prices: pl.DataFrame
     forward_returns: pl.DataFrame
     price_data: PreparedPriceData | None = None
+    total_return_prices: pl.DataFrame | None = None
 
 
 def prepare_factor_market_data(prices: pl.DataFrame) -> PreparedFactorMarketData:
@@ -114,6 +116,7 @@ def run_prediction_evaluation(
     benchmark_returns: pl.DataFrame | None = None,
     benchmark_coverage: pl.DataFrame | None = None,
     slippage_rates: pl.DataFrame | None = None,
+    total_return_prices: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate executable signals against returns through the next signal."""
 
@@ -152,6 +155,7 @@ def run_prediction_evaluation(
         benchmark_returns=benchmark_returns,
         benchmark_coverage=benchmark_coverage,
         slippage_rates=slippage_rates,
+        total_return_prices=total_return_prices,
     )
 
 
@@ -240,9 +244,8 @@ def materialize_factor_diagnostics(
         diagnostic_quantile_weights = {
             label: all_quantile_weights[label] for label in requested_labels
         }
-    compact_quantiles: dict[str, _CompactBacktestResult] = {}
     if include_lags:
-        lag_analysis, lag_returns, compact_quantiles = _lag_outputs(
+        lag_analysis, lag_returns, _ = _lag_outputs(
             factor,
             prepared.prices,
             config=resolved_config,
@@ -259,21 +262,20 @@ def materialize_factor_diagnostics(
         )
         result["lag_analysis"] = lag_analysis
         result["lag_returns"] = lag_returns
-    elif diagnostic_quantile_weights:
-        compact_quantiles = _run_sparse_compact_backtests(
+    if diagnostic_quantile_weights:
+        quantile_returns = _batched_quantile_gross_returns(
             diagnostic_quantile_weights,
             prepared.prices,
             prepared.forward_returns,
-            config=resolved_config,
             execution_availability=resolved_execution_availability,
-            execution_availability_validated=True,
-            market_context=market_context,
-            slippage_rates=slippage_rates,
-        )
-    if diagnostic_quantile_weights:
-        quantile_returns = _quantile_returns_from_compact_results(
-            diagnostic_quantile_weights,
-            compact_quantiles,
+            retry_blocked=resolved_config.retry_blocked_orders,
+        ).rename({"gross_return": "return"}).with_columns(
+            (
+                (1.0 + pl.col("return").fill_null(0.0))
+                .cum_prod()
+                .over("quantile")
+                - 1.0
+            ).alias("cumulative_return")
         )
         if include_quantiles:
             result["quantile_returns"] = quantile_returns
@@ -348,6 +350,7 @@ def evaluate_factor_frame(
     benchmark_returns: pl.DataFrame | None = None,
     benchmark_coverage: pl.DataFrame | None = None,
     slippage_rates: pl.DataFrame | None = None,
+    total_return_prices: pl.DataFrame | None = None,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
@@ -433,13 +436,23 @@ def evaluate_factor_frame(
         },
         slippage_rates=slippage_rates,
     )
-    quantile_returns = _quantile_returns_from_compact_results(
+    quantile_returns = _batched_quantile_gross_returns(
         quantile_weights,
-        {
-            label.removeprefix("quantile:"): compact
-            for label, compact in primary_compact_results.items()
-            if label.startswith("quantile:")
-        },
+        (
+            aligned_prices
+            if total_return_prices is None
+            else total_return_prices
+        ),
+        forward_returns,
+        execution_availability=resolved_execution_availability,
+        retry_blocked=config.retry_blocked_orders,
+    ).rename({"gross_return": "return"}).with_columns(
+        (
+            (1.0 + pl.col("return").fill_null(0.0))
+            .cum_prod()
+            .over("quantile")
+            - 1.0
+        ).alias("cumulative_return")
     )
     spread_returns = _spread_returns(quantile_returns, config.quantiles)
     ic_decay = factor_ic_decay(
@@ -945,7 +958,54 @@ def _batched_quantile_gross_returns(
     execution_availability: pl.DataFrame | None,
     retry_blocked: bool,
 ) -> pl.DataFrame:
-    """Evaluate mutually exclusive quantile memberships in one market scan."""
+    """Evaluate quantiles as execution-date unit portfolios held to rebalance."""
+
+    del forward_returns  # Returns are implied by total-return index ratios.
+    paths = run_total_return_weight_paths(
+        quantile_weights,
+        (
+            prices.rename({"price": "total_return_price"})
+            if "price" in prices.columns
+            else prices
+        ),
+        execution_availability=execution_availability,
+        retry_blocked=retry_blocked,
+    )
+    if paths.is_empty():
+        return pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                "quantile": pl.String,
+                "gross_return": pl.Float64,
+            }
+        )
+    # Public quantile returns retain their historical forward-return label:
+    # the row at t contains the realized total return from t to t+1.  The
+    # performance ledger itself records that return when t+1 is observed.
+    return (
+        paths.sort("portfolio", TIME)
+        .with_columns(
+            pl.col("gross_return").shift(-1).over("portfolio")
+        )
+        .drop_nulls("gross_return")
+        .select(
+            TIME,
+            pl.col("portfolio").alias("quantile"),
+            "gross_return",
+        )
+        .sort(TIME, "quantile")
+    )
+
+
+def _legacy_batched_quantile_gross_returns(
+    quantile_weights: Mapping[str, pl.DataFrame],
+    prices: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    execution_availability: pl.DataFrame | None,
+    retry_blocked: bool,
+) -> pl.DataFrame:
+    """Legacy constant-weight implementation retained only as review evidence."""
 
     labeled = pl.concat(
         [

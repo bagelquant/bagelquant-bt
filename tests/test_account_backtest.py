@@ -67,6 +67,61 @@ def test_account_buys_and_sells_whole_lots_with_t_plus_one() -> None:
     assert result.final_checkpoint.cash == pytest.approx(10_500.0)
 
 
+def test_t_plus_one_pending_sell_has_reason_and_retries_once_available() -> None:
+    days = [date(2024, 1, day) for day in range(2, 6)]
+    result = run_account_backtest(
+        pl.DataFrame(
+            {
+                "time": [days[0], days[1]],
+                "asset_id": ["a", "a"],
+                "weight": [1.0, 0.0],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a"] * len(days),
+                "open": [100.0] * len(days),
+                "close": [100.0] * len(days),
+            }
+        ),
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=10_500.0,
+            settlement_sessions=2,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.orders.select(
+        "time", "side", "order_quantity", "status", "reason"
+    ).to_dicts() == [
+        {
+            "time": days[0],
+            "side": "buy",
+            "order_quantity": 100,
+            "status": "filled",
+            "reason": None,
+        },
+        {
+            "time": days[1],
+            "side": "sell",
+            "order_quantity": 0,
+            "status": "pending",
+            "reason": "t_plus_one_unavailable",
+        },
+        {
+            "time": days[2],
+            "side": "sell",
+            "order_quantity": 100,
+            "status": "filled",
+            "reason": None,
+        },
+    ]
+
+
 def test_account_leaves_unaffordable_high_price_lot_pending() -> None:
     day = date(2024, 1, 2)
     result = run_account_backtest(
@@ -173,15 +228,21 @@ def test_account_applies_distinct_buy_and_sell_slippage_rates() -> None:
 
 
 def test_fixed_notional_withdrawal_preserves_unit_nav() -> None:
-    days = [date(2024, 1, 2), date(2024, 1, 3)]
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
     result = run_account_backtest(
-        pl.DataFrame({"time": [days[0]], "asset_id": ["a"], "weight": [1.0]}),
+        pl.DataFrame(
+            {
+                "time": [days[0], days[2]],
+                "asset_id": ["a", "a"],
+                "weight": [1.0, 1.0],
+            }
+        ),
         pl.DataFrame(
             {
                 "time": days,
-                "asset_id": ["a", "a"],
-                "open": [100.0, 110.0],
-                "close": [110.0, 110.0],
+                "asset_id": ["a", "a", "a"],
+                "open": [100.0, 110.0, 110.0],
+                "close": [110.0, 110.0, 110.0],
             }
         ),
         corporate_action_coverage=_coverage(*days),
@@ -196,9 +257,91 @@ def test_fixed_notional_withdrawal_preserves_unit_nav() -> None:
         {"amount": -50_000.0, "reason": "fixed_notional_withdrawal"}
     ]
     assert result.account_value.get_column("equity").to_list() == pytest.approx(
-        [550_000.0, 500_000.0]
+        [550_000.0, 550_000.0, 500_000.0]
     )
-    assert result.account_value.get_column("nav").to_list() == pytest.approx([1.1, 1.1])
+    assert result.account_value.get_column("nav").to_list() == pytest.approx(
+        [1.1, 1.1, 1.1]
+    )
+
+
+def test_compounding_rebalances_only_on_target_sessions_using_full_equity() -> None:
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    result = run_account_backtest(
+        pl.DataFrame(
+            {
+                "time": [days[0], days[2]],
+                "asset_id": ["a", "a"],
+                "weight": [1.0, 1.0],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a", "a", "a"],
+                "open": [100.0, 110.0, 110.0],
+                "close": [110.0, 110.0, 110.0],
+            }
+        ),
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=500_000.0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.external_flows.is_empty()
+    assert result.orders.get_column("time").unique().sort().to_list() == [days[0]]
+    assert result.positions.filter(pl.col("time") == days[1]).get_column(
+        "quantity"
+    ).to_list() == [5_000]
+    assert result.target_positions.filter(pl.col("time") == days[2]).get_column(
+        "sizing_capital"
+    ).to_list() == pytest.approx([550_000.0])
+
+
+def test_blocked_order_retries_without_rebalancing_filled_assets() -> None:
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    result = run_account_backtest(
+        pl.DataFrame(
+            {
+                "time": [days[0], days[0]],
+                "asset_id": ["a", "b"],
+                "weight": [0.5, 0.5],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "time": days * 2,
+                "asset_id": ["a"] * 3 + ["b"] * 3,
+                "open": [10.0] * 6,
+                "close": [10.0] * 6,
+            }
+        ).sort("time", "asset_id"),
+        corporate_action_coverage=_coverage(*days),
+        execution_availability=pl.DataFrame(
+            {
+                "time": days * 2,
+                "asset_id": ["a"] * 3 + ["b"] * 3,
+                "can_buy": [True, True, True, False, True, True],
+                "can_sell": [True] * 6,
+                "reason": [None, None, None, "blocked", None, None],
+            }
+        ).sort("time", "asset_id"),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=10_000.0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    orders = result.orders.select("time", "asset_id", "status").to_dicts()
+    assert orders == [
+        {"time": days[0], "asset_id": "a", "status": "filled"},
+        {"time": days[0], "asset_id": "b", "status": "pending"},
+        {"time": days[1], "asset_id": "b", "status": "filled"},
+    ]
 
 
 def test_cash_dividend_moves_from_receivable_to_cash() -> None:
