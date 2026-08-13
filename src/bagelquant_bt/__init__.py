@@ -32,6 +32,7 @@ from .factor import (
     prepare_factor_market_data,
     run_prediction_evaluation,
 )
+from .live_account import ObservedAccountValuation, value_observed_account
 from .orders import OrderPlan, OrderSizingPolicy
 from .path import (
     RESULT_SECTION_VERSION,
@@ -126,6 +127,7 @@ __all__ = [
     "InputValidationError",
     "MissingSnapshotAction",
     "MonthlyIcObservation",
+    "ObservedAccountValuation",
     "OneSampleTest",
     "OrderPlan",
     "OrderSizingPolicy",
@@ -185,4 +187,5 @@ __all__ = [
     "select_top_n_stable",
     "summary_report",
     "top_n_monthly_performance",
+    "value_observed_account",
 ]
