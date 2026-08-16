@@ -19,8 +19,8 @@ from bagelquant_bt import (
     run_total_return_weight_paths,
 )
 from bagelquant_bt.engine import (
-    _legacy_compact_backtest_weight_frame_with_active_market,
     _run_sparse_compact_backtests,
+    _run_weight_backtest_core,
 )
 from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.factor import (
@@ -215,7 +215,7 @@ def test_batched_quantiles_match_sequential_portfolios(
         execution_availability_validated=False,
     )
     for label, weights in weight_frames.items():
-        backtest = _legacy_compact_backtest_weight_frame_with_active_market(
+        backtest = _run_weight_backtest_core(
             weights,
             market.prices,
             market.forward_returns,
@@ -344,7 +344,7 @@ def test_sparse_batch_matches_reference_across_listing_and_price_gaps() -> None:
     )
 
     for label, weights in weight_frames.items():
-        expected = _legacy_compact_backtest_weight_frame_with_active_market(
+        expected = _run_weight_backtest_core(
             weights,
             market.prices,
             market.forward_returns,
@@ -1091,7 +1091,8 @@ def test_batched_lag_bankruptcy_is_isolated_per_portfolio() -> None:
             transaction_cost=TransactionCostConfig(
                 rate=0.0,
                 min_fee=5.0,
-                slippage_rate=0.0,
+                buy_slippage_rate=0.0,
+                sell_slippage_rate=0.0,
                 stamp_tax_rate=0.0,
             ),
             insolvency_action="freeze_zero",

@@ -431,12 +431,6 @@ def plot_ic_decay(result: FactorEvaluationResult) -> go.Figure:
     return fig
 
 
-def plot_ic_decay_heatmap(result: FactorEvaluationResult) -> go.Figure:
-    """Compatibility alias for the IC decay line chart."""
-
-    return plot_ic_decay(result)
-
-
 def _plot_lag_return_path(
     result: FactorEvaluationResult,
     *,

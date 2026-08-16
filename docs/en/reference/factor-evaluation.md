@@ -17,7 +17,8 @@ result.ic.select("time", "pearson_ic", "spearman_ic")
 ```
 
 `result.ic_summary` includes mean, standard deviation, and ICIR for each method.
-The compatibility fields `ic_mean`, `ic_std`, and `icir` use Spearman IC.
+The result-level `ic_mean`, `ic_std`, and `icir` fields report the configured
+IC method.
 
 `icir` is:
 

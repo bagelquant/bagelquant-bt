@@ -132,7 +132,8 @@ def test_resumed_path_preserves_bankruptcy_state() -> None:
         transaction_cost=TransactionCostConfig(
             rate=0.001,
             min_fee=5.0,
-            slippage_rate=0.0,
+            buy_slippage_rate=0.0,
+            sell_slippage_rate=0.0,
             stamp_tax_rate=0.0,
         ),
         insolvency_action="freeze_zero",

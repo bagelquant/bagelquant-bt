@@ -26,8 +26,7 @@ from bagelquant_bt import compose_prediction, run_prediction_backtest, run_predi
 最低佣金、卖出税、滑点与初始资金。
 
 `WeightPolicy` 接收 `ScheduledPrediction`，返回
-`WeightBuild(weights: Panel, skipped: DataFrame)`。`OrderSizingPolicy` 与
-`OrderPlan` 只预留 weights 到订单的边界，本版本不实现手数计算。
+`WeightBuild(weights: Panel, skipped: DataFrame)`。手数计算与实盘报单不属于本包边界。
 
 `BacktestConfig.insolvency_action` 默认为 `"raise"`，保持严格失败语义。设为
 `"freeze_zero"` 后，资不抵债当日的有效费用封顶为可用财富，同时记录请求费用和未支付

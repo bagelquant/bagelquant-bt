@@ -185,7 +185,7 @@ def portfolio_path_from_backtest(
     identity: PortfolioPathIdentity,
     series: Mapping[str, pl.DataFrame] | None = None,
 ) -> PortfolioPathChunk:
-    """Publish an already-computed compatible backtest without rerunning it."""
+    """Publish an already-computed backtest without rerunning it."""
 
     chunk = _path_chunk(
         identity,

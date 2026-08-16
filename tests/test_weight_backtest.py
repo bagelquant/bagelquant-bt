@@ -208,7 +208,8 @@ def test_gross_and_net_value_paths_follow_independent_daily_ledgers() -> None:
             transaction_cost=TransactionCostConfig(
                 rate=0.01,
                 min_fee=0.0,
-                slippage_rate=0.0,
+                buy_slippage_rate=0.0,
+                sell_slippage_rate=0.0,
                 stamp_tax_rate=0.0,
             ),
         ),
@@ -251,7 +252,8 @@ def test_transaction_cost_min_fee_is_applied_per_traded_asset() -> None:
             transaction_cost=TransactionCostConfig(
                 rate=0.001,
                 min_fee=5.0,
-                slippage_rate=0.0,
+                buy_slippage_rate=0.0,
+                sell_slippage_rate=0.0,
                 stamp_tax_rate=0.0,
             ),
         ),
@@ -288,7 +290,8 @@ def test_transaction_cost_breakdown_separates_buy_and_sell_costs() -> None:
             transaction_cost=TransactionCostConfig(
                 rate=0.00015,
                 min_fee=5.0,
-                slippage_rate=0.0005,
+                buy_slippage_rate=0.0005,
+                sell_slippage_rate=0.0005,
                 stamp_tax_rate=0.0005,
             ),
         ),
@@ -348,7 +351,8 @@ def test_effective_slippage_schedule_and_missing_rate_fallback() -> None:
             transaction_cost=TransactionCostConfig(
                 rate=0.0,
                 min_fee=0.0,
-                slippage_rate=0.001,
+                buy_slippage_rate=0.001,
+                sell_slippage_rate=0.001,
                 stamp_tax_rate=0.0,
             ),
         ),
@@ -442,7 +446,8 @@ def test_weight_backtest_can_freeze_at_zero_when_costs_exhaust_capital() -> None
             transaction_cost=TransactionCostConfig(
                 rate=0.001,
                 min_fee=5.0,
-                slippage_rate=0.0,
+                buy_slippage_rate=0.0,
+                sell_slippage_rate=0.0,
                 stamp_tax_rate=0.0,
             ),
             insolvency_action="freeze_zero",

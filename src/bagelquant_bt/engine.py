@@ -934,7 +934,6 @@ def _calculate_sparse_portfolio_batch(
     events = _attach_slippage_rates(
         events,
         slippage_rates,
-        default_rate=config.transaction_cost.slippage_rate,
     )
     event_sessions = events.get_column("_session_index").to_numpy()
     event_portfolios = events.get_column("_portfolio_index").to_numpy()
@@ -1002,8 +1001,14 @@ def _calculate_sparse_portfolio_batch(
             if delta != 0.0:
                 changed_portfolios.append(portfolio_index)
                 changed_deltas.append(delta)
+                configured_rate = event_slippage_rates[event_offset]
                 changed_slippage_rates.append(
-                    float(event_slippage_rates[event_offset])
+                    config.transaction_cost.slippage_for(
+                        "buy" if delta > 0 else "sell"
+                    )
+                    if configured_rate is None
+                    or not np.isfinite(float(configured_rate))
+                    else float(configured_rate)
                 )
                 changed_slippage_fallbacks.append(
                     bool(event_slippage_fallbacks[event_offset])
@@ -1342,37 +1347,6 @@ def _sparse_execution_desired_weights(
             .drop_nulls("weight")
             .sort([TIME, ASSET_ID])
         )
-
-
-def _legacy_compact_backtest_weight_frame_with_active_market(
-    weights: pl.DataFrame,
-    active_prices: pl.DataFrame,
-    active_returns: pl.DataFrame,
-    *,
-    config: BacktestConfig,
-    execution_availability: pl.DataFrame | None,
-    execution_availability_validated: bool,
-    execution_keys: pl.DataFrame | None = None,
-) -> _CompactBacktestResult:
-    """Reference implementation retained for optimized-path regression tests."""
-
-    core = _run_weight_backtest_core(
-        weights,
-        active_prices,
-        active_returns,
-        config=config,
-        execution_availability=execution_availability,
-        execution_availability_validated=execution_availability_validated,
-        prepared_execution_keys=execution_keys,
-    )
-    return _CompactBacktestResult(
-        returns=core.returns,
-        value=core.value,
-        turnover=core.turnover,
-        costs=core.costs,
-        summary=core.summary,
-        performance=core.performance,
-    )
 
 
 def _active_market_inputs(
@@ -1875,7 +1849,8 @@ def _simulate_cost_adjusted_returns(
     trade_summary = _trade_summary(
         deltas,
         slippage_rates=slippage_rates,
-        default_slippage_rate=config.transaction_cost.slippage_rate,
+        default_buy_slippage_rate=config.transaction_cost.buy_slippage_rate,
+        default_sell_slippage_rate=config.transaction_cost.sell_slippage_rate,
     )
     timeline = (
         gross_returns.join(trade_summary, on=TIME, how="left")
@@ -2094,12 +2069,18 @@ def _trade_summary(
     deltas: pl.DataFrame,
     *,
     slippage_rates: pl.DataFrame | None,
-    default_slippage_rate: float,
+    default_buy_slippage_rate: float,
+    default_sell_slippage_rate: float,
 ) -> pl.DataFrame:
     trades = _attach_slippage_rates(
         deltas,
         slippage_rates,
-        default_rate=default_slippage_rate,
+    ).with_columns(
+        pl.col("_slippage_rate").fill_null(
+            pl.when(pl.col("signed_weight_delta") > 0)
+            .then(pl.lit(default_buy_slippage_rate))
+            .otherwise(pl.lit(default_sell_slippage_rate))
+        )
     )
     return (
         trades.group_by(TIME)
@@ -2121,16 +2102,14 @@ def _trade_summary(
 def _attach_slippage_rates(
     trades: pl.DataFrame,
     slippage_rates: pl.DataFrame | None,
-    *,
-    default_rate: float,
 ) -> pl.DataFrame:
     """Attach the latest effective per-asset rate to sparse trade events."""
 
     indexed = trades.with_row_index("_trade_order")
     if slippage_rates is None:
         return indexed.with_columns(
-            pl.lit(default_rate).alias("_slippage_rate"),
-            pl.lit(False).alias("_slippage_fallback"),
+            pl.lit(None, dtype=pl.Float64).alias("_slippage_rate"),
+            pl.lit(True).alias("_slippage_fallback"),
         ).drop("_trade_order")
     schedule = slippage_rates
     if "is_fallback" not in schedule.columns:
@@ -2145,9 +2124,7 @@ def _attach_slippage_rates(
             check_sortedness=False,
         )
         .with_columns(
-            pl.col("slippage_rate")
-            .fill_null(default_rate)
-            .alias("_slippage_rate"),
+            pl.col("slippage_rate").alias("_slippage_rate"),
             (
                 pl.col("slippage_rate").is_null()
                 | pl.col("is_fallback").fill_null(False)

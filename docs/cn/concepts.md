@@ -22,8 +22,7 @@ values:  price, value, 或 weight
 
 `AlphaPolicy` 选择 observation snapshot，`ExecutionPolicy` 映射执行 session，
 `WeightPolicy.build(ScheduledPrediction)` 返回包含普通 weights `Panel` 与 skipped rows 的
-`WeightBuild`。`MarketRule` 保持独立。`OrderSizingPolicy`/`OrderPlan` 仅预留边界；
-本版本不实现手数和真实下单。
+`WeightBuild`。`MarketRule` 保持独立。手数计算与实盘报单不属于本包边界。
 
 ## 时间约定
 

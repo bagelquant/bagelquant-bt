@@ -20,7 +20,8 @@ def _cost(rate: float = 0.0) -> TransactionCostConfig:
     return TransactionCostConfig(
         rate=rate,
         min_fee=0.0,
-        slippage_rate=0.0,
+        buy_slippage_rate=0.0,
+        sell_slippage_rate=0.0,
         stamp_tax_rate=0.0,
         transfer_fee_rate=0.0,
     )

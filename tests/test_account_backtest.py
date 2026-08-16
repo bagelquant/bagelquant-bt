@@ -20,7 +20,8 @@ def _zero_cost() -> TransactionCostConfig:
     return TransactionCostConfig(
         rate=0.0,
         min_fee=0.0,
-        slippage_rate=0.0,
+        buy_slippage_rate=0.0,
+        sell_slippage_rate=0.0,
         stamp_tax_rate=0.0,
         transfer_fee_rate=0.0,
     )
@@ -212,7 +213,6 @@ def test_account_applies_distinct_buy_and_sell_slippage_rates() -> None:
             transaction_cost=TransactionCostConfig(
                 rate=0.0,
                 min_fee=0.0,
-                slippage_rate=0.0,
                 buy_slippage_rate=0.01,
                 sell_slippage_rate=0.02,
                 stamp_tax_rate=0.0,

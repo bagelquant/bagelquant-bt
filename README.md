@@ -62,7 +62,7 @@ The separate `run_account_backtest` engine sizes target weights into integer
 positions and simulates cash, T+1 availability, lot rules, sell-first funding,
 orders, fills, unadjusted open/close marks, corporate-action receivables,
 external-flow units, pending withdrawals, and performance attribution. It
-returns `AccountBacktestResult` and does not change the legacy fractional-weight
+returns `AccountBacktestResult` and does not change the fractional-weight
 engine used by research diagnostics. See
 [Whole-share account backtests](docs/en/reference/account-backtest.md).
 

@@ -24,8 +24,8 @@ values:  price, value, or weight
 `AlphaPolicy` maps observation snapshots, `ExecutionPolicy` maps execution
 sessions, and `WeightPolicy.build(ScheduledPrediction)` returns a `WeightBuild`
 containing a plain weights `Panel` plus skipped rows. `MarketRule` remains an
-independent execution constraint. `OrderSizingPolicy`/`OrderPlan` are reserved;
-lot sizing and live order submission are not implemented.
+independent execution constraint. Lot sizing and live order submission are
+outside the package boundary.
 
 ## Timing Convention
 

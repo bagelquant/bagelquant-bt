@@ -11,7 +11,6 @@ from bagelquant_bt.visualization import (
     plot_cumulative_returns,
     plot_ic,
     plot_ic_decay,
-    plot_ic_decay_heatmap,
     plot_ic_distribution,
     plot_lag_cumulative_return,
     plot_lag_sharpe,
@@ -86,7 +85,6 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
     lag_cumulative = plot_lag_cumulative_return(factor_result)
     ic_distribution = plot_ic_distribution(factor_result)
     ic_decay = plot_ic_decay(factor_result)
-    ic_decay_alias = plot_ic_decay_heatmap(factor_result)
     ic = plot_ic(factor_result)
     figures = [
         plot_coverage(backtest),
@@ -97,7 +95,6 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
         *lag_cumulative,
         plot_lag_sharpe(factor_result),
         ic_decay,
-        ic_decay_alias,
         ic,
     ]
 
@@ -112,7 +109,6 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
         "avg" in trace.name and "std" in trace.name for trace in ic_distribution.data
     )
     assert all(trace.type == "scatter" for trace in ic_decay.data)
-    assert all(trace.type != "heatmap" for trace in ic_decay_alias.data)
     assert ic_decay.layout.shapes == ()
     weight_coverage = plot_coverage(backtest)
     factor_coverage = plot_coverage(factor_result)

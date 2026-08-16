@@ -35,9 +35,8 @@ initial-capital inputs.
 
 `AlphaPolicy` and `ExecutionPolicy` are separate contracts. A weight policy
 receives `PredictionPanel` and returns
-`WeightBuild(weights: Panel, skipped: DataFrame)`. `OrderSizingPolicy` and
-`OrderPlan` reserve the later target-weight-to-order boundary; quantity sizing
-is not implemented in 0.3.
+`WeightBuild(weights: Panel, skipped: DataFrame)`. Quantity sizing and live
+order submission are outside the package boundary.
 
 ## Configuration
 
@@ -49,7 +48,8 @@ config = BacktestConfig(
     transaction_cost=TransactionCostConfig(
         rate=0.00015,
         min_fee=5.0,
-        slippage_rate=0.0005,
+        buy_slippage_rate=0.0005,
+        sell_slippage_rate=0.0005,
         stamp_tax_rate=0.0005,
     ),
     annualization=252,

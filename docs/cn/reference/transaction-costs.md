@@ -6,7 +6,7 @@
 TransactionCostConfig(
     rate=0.00015,
     min_fee=5.0,
-    slippage_rate=0.0005,
+    buy_slippage_rate=0.0005,
     stamp_tax_rate=0.0005,
 )
 ```

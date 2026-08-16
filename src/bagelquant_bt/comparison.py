@@ -25,11 +25,6 @@ class TotalReturnTargetPath:
     annualization: int
 
 
-# Historical public name retained because callers already import it.  The
-# value is no longer an unadjusted-price account and its docstring is explicit.
-ContinuousTargetPath = TotalReturnTargetPath
-
-
 @dataclass(frozen=True, slots=True)
 class ActualPerformancePath:
     """Fill-authored actual exposure valued by a total-return price index."""
@@ -54,23 +49,16 @@ def run_continuous_target_path(
     *,
     initial_capital: float,
     transaction_cost: TransactionCostConfig,
-    corporate_actions: pl.DataFrame | None = None,
     execution_availability: pl.DataFrame | None = None,
     annualization: int = 252,
 ) -> TotalReturnTargetPath:
     """Run execution-date targets on a total-return price index.
 
-    ``total_return_prices`` is an index, not an executable market price.  Its
-    meaningful value is the ratio between dates.  Corporate actions must not
-    be applied here because they are already represented by changes in the
-    index.  The optional argument is accepted only to fail loudly for legacy
-    callers that would otherwise double count an event.
+    ``total_return_prices`` is an index, not an executable market price. Its
+    meaningful value is the ratio between dates. Corporate actions must not
+    enter this boundary because they are already represented by the index.
     """
 
-    if corporate_actions is not None and not corporate_actions.is_empty():
-        raise InputValidationError(
-            "corporate actions must not enter a total-return performance path"
-        )
     paths = run_total_return_weight_paths(
         {"target": target_weights},
         total_return_prices,
