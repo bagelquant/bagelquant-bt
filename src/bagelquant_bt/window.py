@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import numpy as np
 import polars as pl
 
+from ._quantiles import sort_quantile_frame
 from .benchmarks import benchmark_performance, top_n_excess_returns
 from .inputs import TIME
 from .performance import rolling_performance
@@ -24,6 +25,7 @@ def compute_window_tables(
     series: Mapping[str, pl.DataFrame],
     annualization: int,
     ic_annualization: int,
+    periods: pl.DataFrame | None = None,
     benchmark_returns: pl.DataFrame | None = None,
 ) -> tuple[dict[str, bool | float | int | None], dict[str, pl.DataFrame]]:
     """Build one result section from already-windowed primitive series."""
@@ -37,6 +39,7 @@ def compute_window_tables(
             annualization,
             ic_annualization,
             benchmark_returns,
+            periods,
         )
         tables["bankruptcies"] = _bankruptcies(
             returns=returns,
@@ -48,7 +51,7 @@ def compute_window_tables(
         )
         return metrics, tables
     if section == "ic":
-        return {}, _ic_tables(series, selected, ic_annualization)
+        return {}, _ic_tables(series, selected, ic_annualization, periods)
     if section == "spread":
         tables = _spread_tables(series, selected, annualization)
         tables["bankruptcies"] = _bankruptcies(
@@ -85,7 +88,7 @@ def compute_window_tables(
     if section == "statistical_tests":
         lag_returns = series.get("lag_returns", pl.DataFrame())
         return {}, {
-            "statistical_tests": _statistical_tests(series),
+            "statistical_tests": _statistical_tests(series, periods),
             "bankruptcies": _bankruptcies(
                 lag_returns=lag_returns.filter(
                     (pl.col("portfolio") == "spread") & (pl.col("lag") == 0)
@@ -104,11 +107,12 @@ def _summary(
     annualization: int,
     ic_annualization: int,
     benchmark_returns: pl.DataFrame | None,
+    periods: pl.DataFrame | None,
 ) -> tuple[dict[str, bool | float | int | None], dict[str, pl.DataFrame]]:
     top_n = _paired_return_metrics(returns, annualization)
     spread = _lag_period_returns(series, portfolio="spread", lag=0)
     spread_metrics = _paired_return_metrics(spread, annualization)
-    ic = _ic_frame(series)
+    ic = _ic_frame(series, periods)
     row: dict[str, bool | float | int | None] = {}
     for method, column in (("pearson", "pearson_ic"), ("spearman", "spearman_ic")):
         values = ic.get_column(column).drop_nulls() if column in ic.columns else []
@@ -166,8 +170,9 @@ def _ic_tables(
     series: Mapping[str, pl.DataFrame],
     selected: set[str],
     annualization: int,
+    periods: pl.DataFrame | None,
 ) -> dict[str, pl.DataFrame]:
-    ic = _ic_frame(series)
+    ic = _ic_frame(series, periods)
     tables: dict[str, pl.DataFrame] = {}
     if {"ic_time_series", "ic_histogram"} & selected:
         tables["ic"] = ic
@@ -292,9 +297,12 @@ def _quantile_tables(
                     "bankruptcy_time": bankruptcy_time,
                 }
             )
-        tables["quantile_performance"] = pl.DataFrame(rows)
+        tables["quantile_performance"] = sort_quantile_frame(pl.DataFrame(rows))
     if "time_series" in selected:
-        tables["quantile_returns"] = returns.sort(["quantile", TIME]).with_columns(
+        tables["quantile_returns"] = sort_quantile_frame(
+            returns,
+            after=(TIME,),
+        ).with_columns(
             ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
                 "cumulative_return"
             )
@@ -302,14 +310,18 @@ def _quantile_tables(
     return tables
 
 
-def _statistical_tests(series: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
+def _statistical_tests(
+    series: Mapping[str, pl.DataFrame],
+    periods: pl.DataFrame | None,
+) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
-    ic = _ic_frame(series)
+    ic = _ic_frame(series, periods)
     for name, column in (("pearson_ic", "pearson_ic"), ("spearman_ic", "spearman_ic")):
         values = ic.get_column(column).drop_nulls() if column in ic.columns else []
         rows.append(_test_row(name, one_sample_t_test(values)))
     quantile_rank_ic = quantile_rank_information_coefficients(
-        series.get("quantile_returns", pl.DataFrame())
+        series.get("quantile_returns", pl.DataFrame()),
+        periods=periods,
     )
     values = (
         quantile_rank_ic.get_column("quantile_rank_ic").drop_nulls()
@@ -327,7 +339,9 @@ def _statistical_tests(series: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
         else []
     )
     rows.append(_test_row("spread_net_return", one_sample_t_test(values)))
-    factor_returns = series.get("factor_returns", pl.DataFrame())
+    factor_returns = _filter_to_period_starts(
+        series.get("factor_returns", pl.DataFrame()), periods
+    )
     values = (
         factor_returns.get_column("lambda_return").drop_nulls()
         if "lambda_return" in factor_returns.columns
@@ -561,11 +575,23 @@ def _ic_summary(values: object, annualization: int) -> dict[str, float | None]:
     }
 
 
-def _ic_frame(series: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
+def _ic_frame(
+    series: Mapping[str, pl.DataFrame],
+    periods: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     frame = series.get("ic", pl.DataFrame())
     if "spearman_ic" not in frame.columns and "ic" in frame.columns:
         frame = frame.with_columns(pl.col("ic").alias("spearman_ic"))
-    return frame
+    return _filter_to_period_starts(frame, periods)
+
+
+def _filter_to_period_starts(
+    frame: pl.DataFrame,
+    periods: pl.DataFrame | None,
+) -> pl.DataFrame:
+    if periods is None or frame.is_empty() or TIME not in frame.columns:
+        return frame
+    return frame.join(periods.select(TIME), on=TIME, how="inner").sort(TIME)
 
 
 def _add_grouped_cumulative(

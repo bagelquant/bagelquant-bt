@@ -22,7 +22,7 @@ from .returns import _prepare_price_data
 from .window import compute_window_tables
 
 PORTFOLIO_PATH_VERSION = 3
-RESULT_SECTION_VERSION = 8
+RESULT_SECTION_VERSION = 9
 RESULT_SECTIONS = (
     "summary",
     "ic",
@@ -311,6 +311,10 @@ def compute_result_section(
         "is_bankrupt",
         "bankruptcy_event",
     )
+    factor_periods = _complete_factor_periods(
+        path.series.get("factor", pl.DataFrame()),
+        window,
+    )
     window_series = {
         name: (
             frame.filter(pl.col(TIME).is_between(window.start, window.end))
@@ -326,6 +330,7 @@ def compute_result_section(
         turnover=turnover,
         costs=costs,
         series=window_series,
+        periods=factor_periods,
         annualization=annualization,
         ic_annualization=ic_annualization or annualization,
         benchmark_returns=benchmark_returns,
@@ -335,6 +340,26 @@ def compute_result_section(
         window=window,
         metrics=metrics,
         tables=tables,
+    )
+
+
+def _complete_factor_periods(
+    factor: pl.DataFrame,
+    window: ResultWindow,
+) -> pl.DataFrame | None:
+    """Return complete execution-to-execution periods inside one result window."""
+
+    if factor.is_empty() or TIME not in factor.columns:
+        return None
+    return (
+        factor.select(TIME)
+        .unique()
+        .sort(TIME)
+        .with_columns(pl.col(TIME).shift(-1).alias("next_time"))
+        .drop_nulls("next_time")
+        .filter(
+            (pl.col(TIME) >= window.start) & (pl.col("next_time") <= window.end)
+        )
     )
 
 

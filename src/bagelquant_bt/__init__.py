@@ -48,7 +48,6 @@ from .path import (
 from .pipeline import (
     compose_prediction,
     compose_processed_prediction,
-    normalize_prediction_panel,
     run_prediction_backtest,
 )
 from .policy import (
@@ -164,7 +163,6 @@ __all__ = [
     "materialize_factor_diagnostics",
     "materialize_portfolio_path",
     "materialize_prediction_diagnostics",
-    "normalize_prediction_panel",
     "one_sample_t_test",
     "portfolio_path_from_backtest",
     "prediction_evaluation_report_figures",

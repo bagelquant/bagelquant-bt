@@ -10,6 +10,7 @@ from typing import Protocol
 import plotly.graph_objects as go
 import polars as pl
 
+from ._quantiles import sort_quantile_frame
 from .results import BacktestResult, FactorEvaluationResult
 from .visualization import (
     plot_benchmark_coverage,
@@ -409,14 +410,13 @@ def _factor_quantile_section(
     result: FactorEvaluationResult,
     figures: list[go.Figure],
 ) -> str:
-    quantile_summary = (
+    quantile_summary = sort_quantile_frame(
         result.quantile_returns.group_by("quantile")
         .agg(
             pl.col("return").mean().alias("mean_return"),
             pl.col("return").std().alias("std_return"),
             pl.col("cumulative_return").last().alias("final_cumulative_return"),
         )
-        .sort("quantile")
     )
     body = "".join(
         [

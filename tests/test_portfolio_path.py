@@ -23,7 +23,7 @@ from bagelquant_bt.window import compute_window_tables
 
 def test_result_section_version_is_public() -> None:
     assert PORTFOLIO_PATH_VERSION == 3
-    assert RESULT_SECTION_VERSION == 8
+    assert RESULT_SECTION_VERSION == 9
 
 
 def _prices() -> pl.DataFrame:
@@ -473,3 +473,82 @@ def test_window_sections_preserve_bankruptcy_markers_and_outputs() -> None:
         "cross_section_regression",
     ]
     assert statistics_tables["bankruptcies"].height == 1
+
+
+def test_result_statistics_share_complete_execution_period_sample() -> None:
+    path = materialize_portfolio_path(
+        _weights(),
+        _prices(),
+        identity=_identity(),
+        config=BacktestConfig(initial_capital=100_000, annualization=4),
+    )
+    schedule = [date(2024, 1, 1), date(2024, 1, 3), date(2024, 1, 5)]
+    quantile_rows = []
+    for day in [date(2024, 1, value) for value in range(1, 5)]:
+        quantile_rows.extend(
+            [
+                {"time": day, "quantile": "q1", "return": 0.01},
+                {"time": day, "quantile": "q2", "return": -0.01},
+            ]
+        )
+    path = replace(
+        path,
+        series={
+            "factor": pl.DataFrame({"time": schedule}),
+            "ic": pl.DataFrame(
+                {
+                    "time": schedule,
+                    "pearson_ic": [0.1, 0.2, 0.9],
+                    "spearman_ic": [0.2, 0.3, 0.9],
+                }
+            ),
+            "quantile_returns": pl.DataFrame(quantile_rows),
+        },
+    )
+
+    section = compute_result_section(
+        path,
+        ResultSectionSpec("statistical_tests"),
+        ResultWindow(schedule[0], schedule[-1]),
+        annualization=4,
+    )
+    samples = {
+        row["test"]: row["sample_size"]
+        for row in section.tables["statistical_tests"].iter_rows(named=True)
+    }
+
+    assert samples["pearson_ic"] == 2
+    assert samples["spearman_ic"] == 2
+    assert samples["quantile_rank_ic"] == 2
+
+
+def test_quantile_window_tables_use_numeric_label_order() -> None:
+    labels = ["q1", "q10", *[f"q{number}" for number in range(2, 10)]]
+    returns = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 2)] * 10,
+            "quantile": labels,
+            "return": [number / 100 for number in range(10)],
+        }
+    )
+
+    _, tables = compute_window_tables(
+        "quantiles",
+        ("annualized_return", "time_series"),
+        returns=pl.DataFrame(),
+        turnover=pl.DataFrame(),
+        costs=pl.DataFrame(),
+        series={"quantile_returns": returns},
+        annualization=12,
+        ic_annualization=12,
+    )
+    expected = [f"q{number}" for number in range(1, 11)]
+
+    assert tables["quantile_performance"].get_column("quantile").to_list() == expected
+    assert (
+        tables["quantile_returns"]
+        .get_column("quantile")
+        .unique(maintain_order=True)
+        .to_list()
+        == expected
+    )

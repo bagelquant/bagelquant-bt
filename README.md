@@ -6,8 +6,8 @@ application, performance metrics, and Plotly visualization.
 The public investment flow is:
 
 ```text
-AlphaValue Panel -> PredictionComposer -> PredictionPanel -> AlphaPolicy
--> ScheduledPrediction -> ExecutionPolicy -> WeightPolicy -> Weights Panel
+AlphaValue Panel -> AlphaPolicy -> PredictionComposer -> PredictionPanel
+-> ExecutionPolicy -> WeightPolicy -> Weights Panel
 ```
 
 Public backtests require a core `PredictionPanel`. Ordinary panels, raw DataFrames,
@@ -48,9 +48,9 @@ result = run_prediction_backtest(
 ```
 
 `run_prediction_evaluation` computes execution-to-execution IC, quantiles,
-spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`. Every
-new composed Prediction uses a finite-only cross-sectional population Z-score
-(`ddof=0`) and fails dates with fewer than two valid values or zero variance.
+spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`.
+Prediction composition returns the composer's raw `PredictionPanel`; callers
+may explicitly apply Core Transformers before the Weight Policy boundary.
 
 `PredictionRegularizedOptimizerPolicy` converts a Prediction plus explicit
 reference weights into target weights under long-only, fully-invested, and

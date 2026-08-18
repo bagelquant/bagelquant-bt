@@ -14,10 +14,10 @@ compose_prediction(
 )
 ```
 
-`alpha_values` 用稳定 alias 映射到普通 core `Panel`；结果是终端
-`PredictionPanel`。standardization 必须为 `zscore` 或 `percentile_rank`。
-IC weighted、OLS 与 GLS 必须提供价格，以构造无前视的 execution-to-next-
-execution 标签。
+`alpha_values` 用稳定 alias 映射到普通 core `Panel`；`AlphaPolicy` 先执行其显式
+standardization，结果是 Composer 的原始强类型 `PredictionPanel`。BT 不执行固定的
+post-composer normalization。IC weighted、OLS 与 GLS 必须提供价格，以构造无前视的
+execution-to-next-execution 标签。
 
 ## `run_prediction_backtest`
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import polars as pl
 import pytest
 
@@ -143,6 +145,24 @@ def test_summary_report_renders_factor_tables_and_plots(
     assert html.index("<h3>Spread Performance</h3>") < html.index(
         "Spread Cumulative Returns"
     )
+
+    labels = ["q1", "q10", *[f"q{number}" for number in range(2, 10)]]
+    numeric_quantiles = replace(
+        result,
+        quantile_returns=pl.DataFrame(
+            {
+                "time": [result.quantile_returns["time"][0]] * 10,
+                "quantile": labels,
+                "return": [0.01] * 10,
+                "cumulative_return": [0.01] * 10,
+            }
+        ),
+    )
+    numeric_html = summary_report(numeric_quantiles, annualization=4)
+    quantile_positions = [
+        numeric_html.index(f"<td>q{number}</td>") for number in range(1, 11)
+    ]
+    assert quantile_positions == sorted(quantile_positions)
 
     figures = factor_evaluation_report_figures(result, annualization=4)
     monkeypatch.setattr(

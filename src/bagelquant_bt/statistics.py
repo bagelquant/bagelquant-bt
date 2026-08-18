@@ -10,6 +10,7 @@ import polars as pl
 from bagelquant_core import quantile_rank_information_coefficient
 from scipy import stats
 
+from ._quantiles import ordered_quantile_labels, quantile_number
 from .inputs import ASSET_ID, TIME
 
 
@@ -59,8 +60,15 @@ def one_sample_t_test(values: object, *, null_mean: float = 0.0) -> OneSampleTes
 
 def quantile_rank_information_coefficients(
     quantile_returns: pl.DataFrame,
+    *,
+    periods: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Compute per-period rank IC from complete q1-to-qN gross returns."""
+    """Compute per-period rank IC from complete q1-to-qN gross returns.
+
+    When ``periods`` is supplied, daily gross returns are compounded within
+    each ``[time, next_time)`` execution interval before the cross-sectional
+    Rank IC is calculated.  The result is labelled by the interval start.
+    """
 
     schema = {
         TIME: pl.Date,
@@ -75,17 +83,20 @@ def quantile_rank_information_coefficients(
         raise ValueError(
             f"quantile returns are missing required columns: {sorted(missing)}"
         )
-    labels = quantile_returns.get_column("quantile").drop_nulls().unique().to_list()
-    numbers: list[int] = []
-    for label in labels:
-        text = str(label)
-        if not text.startswith("q") or not text[1:].isdigit() or int(text[1:]) < 1:
-            raise ValueError(f"invalid quantile label: {text}")
-        numbers.append(int(text[1:]))
+    labels = ordered_quantile_labels(
+        quantile_returns.get_column("quantile").drop_nulls().unique().to_list()
+    )
+    numbers = [quantile_number(label) for label in labels]
     quantiles = max(numbers, default=0)
     if quantiles < 2 or set(numbers) != set(range(1, quantiles + 1)):
         raise ValueError("quantile returns require contiguous q1-to-qN labels")
     expected_labels = [f"q{number}" for number in range(1, quantiles + 1)]
+    if periods is not None:
+        quantile_returns = _compound_quantile_period_returns(
+            quantile_returns,
+            periods,
+            expected_labels=expected_labels,
+        )
     rows: list[dict[str, object]] = []
     for period in quantile_returns.get_column(TIME).unique().sort().to_list():
         sample = quantile_returns.filter(pl.col(TIME) == period)
@@ -112,6 +123,53 @@ def quantile_rank_information_coefficients(
             }
         )
     return pl.DataFrame(rows, schema=schema).sort(TIME)
+
+
+def _compound_quantile_period_returns(
+    quantile_returns: pl.DataFrame,
+    periods: pl.DataFrame,
+    *,
+    expected_labels: list[str],
+) -> pl.DataFrame:
+    required = {TIME, "next_time"}
+    missing = required - set(periods.columns)
+    if missing:
+        raise ValueError(f"periods are missing required columns: {sorted(missing)}")
+    ordered_periods = periods.select(TIME, "next_time").sort(TIME)
+    if ordered_periods.get_column(TIME).n_unique() != ordered_periods.height:
+        raise ValueError("period starts must be unique")
+    if ordered_periods.filter(pl.col("next_time") <= pl.col(TIME)).height:
+        raise ValueError("each period next_time must follow time")
+    if (
+        quantile_returns.select(TIME, "quantile").n_unique()
+        != quantile_returns.height
+    ):
+        raise ValueError("duplicate daily quantile returns")
+
+    rows: list[dict[str, object]] = []
+    for period in ordered_periods.iter_rows(named=True):
+        start = period[TIME]
+        end = period["next_time"]
+        interval = quantile_returns.filter(
+            (pl.col(TIME) >= start) & (pl.col(TIME) < end)
+        )
+        for label in expected_labels:
+            values = interval.filter(pl.col("quantile") == label).get_column("return")
+            finite = [
+                float(value)
+                for value in values
+                if value is not None and math.isfinite(float(value))
+            ]
+            compounded = (
+                float(np.prod(1.0 + np.asarray(finite, dtype=float)) - 1.0)
+                if finite and len(finite) == len(values)
+                else None
+            )
+            rows.append({TIME: start, "quantile": label, "return": compounded})
+    return pl.DataFrame(
+        rows,
+        schema={TIME: pl.Date, "quantile": pl.String, "return": pl.Float64},
+    )
 
 
 def cross_sectional_factor_returns(

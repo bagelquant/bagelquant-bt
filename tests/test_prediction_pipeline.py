@@ -100,6 +100,38 @@ def test_processed_prediction_matches_one_step_composition_without_reapplying_po
     assert cached.metadata == direct.metadata
 
 
+@pytest.mark.parametrize(
+    ("assets", "values"),
+    [
+        (["a"], [7.5]),
+        (["a", "b"], [3.0, 3.0]),
+        (["a", "b"], [2.0, -4.0]),
+    ],
+)
+def test_composition_preserves_raw_prediction_values(
+    assets: list[str], values: list[float]
+) -> None:
+    day = date(2024, 1, 2)
+    calendar = pl.DataFrame({"time": [day]})
+    alpha = Panel.from_domain(
+        pl.DataFrame(
+            {"time": [day] * len(assets), "asset_id": assets, "value": values}
+        ),
+        Domain(calendar=[day], universe=assets),
+        name="alpha",
+    )
+
+    prediction = compose_prediction(
+        {"alpha": alpha},
+        IdentityPredictionComposer(),
+        calendar,
+        resolve_alpha_policy("daily", standardization="none"),
+    )
+
+    assert prediction.collect(dense=False).get_column("value").to_list() == values
+    assert "normalization" not in prediction.metadata
+
+
 def test_alpha_policy_rejects_untyped_frames() -> None:
     calendar, _, _ = _inputs()
     with pytest.raises(TypeError, match="ordinary Panel"):

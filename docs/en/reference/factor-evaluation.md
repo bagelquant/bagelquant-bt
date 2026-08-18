@@ -45,6 +45,11 @@ IC through the next execution date, and marks portfolios to market daily
 between executions. The final signal without a complete following execution
 period is excluded.
 
+For a monthly `month_end` policy, the value selected at a calendar month end is
+therefore evaluated from its mapped next-open execution price through the next
+scheduled execution price. In-progress months never enter IC or a rolling
+supervised-composer window.
+
 ## Quantile Returns
 
 Each day, assets are sorted by factor score from highest to lowest and split
@@ -59,14 +64,19 @@ The spread is:
 q1_return - qN_return
 ```
 
-`quantile_rank_information_coefficients(quantile_returns)` infers N from the
-stored q1-to-qN labels, so historical q5 results remain readable. For each
-complete period it assigns q1-to-qN scores N-to-1 and computes Spearman
-correlation with the gross equal-weight group returns. A strictly decreasing
-return path is `+1`, a strictly increasing path is `-1`, and missing groups,
-groups without a finite return, or equal group returns produce null. Result
-statistical tests apply the same two-sided one-sample Student t-test used for
-ordinary IC.
+`quantile_rank_information_coefficients(quantile_returns, periods=...)` infers
+N from the stored q1-to-qN labels, so historical q5 results remain readable.
+When execution periods are supplied, it compounds each group's daily gross
+returns inside `[time, next_time)` and emits exactly one observation at the
+period start. It then assigns q1-to-qN scores N-to-1 and computes Spearman
+correlation with the group returns. A strictly decreasing return path is `+1`,
+a strictly increasing path is `-1`, and missing groups, groups without a finite
+return, or equal group returns produce null. Result statistical tests use the
+same complete periods and two-sided one-sample Student t-test as ordinary IC.
+
+Quantile labels are always ordered by their numeric suffix in result tables,
+figures, legends, and HTML reports: `q1, q2, ..., q10`, while historical q5
+artifacts retain `q1, ..., q5`.
 
 ## TOP N Backtest
 

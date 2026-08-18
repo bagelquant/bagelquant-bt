@@ -79,3 +79,68 @@ def test_quantile_rank_ic_supports_complete_current_and_historical_groups() -> N
     assert legacy.item(0, "quantile_rank_ic") is None
     assert legacy.item(1, "quantile_rank_ic") == pytest.approx(1.0)
     assert legacy.get_column("quantiles").to_list() == [5, 5]
+
+
+def test_quantile_rank_ic_compounds_daily_returns_by_execution_period() -> None:
+    days = [
+        date(2024, 1, 31),
+        date(2024, 2, 1),
+        date(2024, 2, 2),
+        date(2024, 2, 3),
+    ]
+    rows = []
+    for day in days[:2]:
+        rows.extend(
+            {
+                "time": day,
+                "quantile": f"q{number}",
+                "return": (6 - number) / 100,
+            }
+            for number in range(1, 6)
+        )
+    for day in days[2:]:
+        rows.extend(
+            {
+                "time": day,
+                "quantile": f"q{number}",
+                "return": number / 100,
+            }
+            for number in range(1, 6)
+        )
+    periods = pl.DataFrame(
+        {
+            "time": [days[0], days[2]],
+            "next_time": [days[2], date(2024, 2, 4)],
+        }
+    )
+
+    result = quantile_rank_information_coefficients(
+        pl.DataFrame(rows),
+        periods=periods,
+    )
+
+    assert result.get_column("time").to_list() == [days[0], days[2]]
+    assert result.get_column("quantile_rank_ic").to_list() == pytest.approx(
+        [1.0, -1.0]
+    )
+
+
+def test_periodized_quantile_rank_ic_nulls_incomplete_and_constant_groups() -> None:
+    start = date(2024, 1, 31)
+    next_time = date(2024, 2, 2)
+    periods = pl.DataFrame({"time": [start], "next_time": [next_time]})
+    incomplete = pl.DataFrame(
+        {
+            "time": [start] * 5,
+            "quantile": [f"q{number}" for number in range(1, 6)],
+            "return": [0.05, 0.04, 0.03, 0.02, None],
+        }
+    )
+    constant = incomplete.with_columns(pl.lit(0.01).alias("return"))
+
+    assert quantile_rank_information_coefficients(
+        incomplete, periods=periods
+    ).item(0, "quantile_rank_ic") is None
+    assert quantile_rank_information_coefficients(
+        constant, periods=periods
+    ).item(0, "quantile_rank_ic") is None

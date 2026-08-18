@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import plotly.graph_objects as go
 import polars as pl
 
@@ -14,6 +16,7 @@ from bagelquant_bt.visualization import (
     plot_ic_distribution,
     plot_lag_cumulative_return,
     plot_lag_sharpe,
+    plot_quantile_cumulative_returns,
     plot_rolling_sharpe,
     plot_rolling_volatility,
 )
@@ -122,3 +125,20 @@ def test_new_visualization_helpers_return_plotly_figures() -> None:
     ]
     assert weight_coverage.data[0].fill == "tozeroy"
     assert factor_coverage.data[0].fill == "tozeroy"
+
+    labels = ["q1", "q10", *[f"q{number}" for number in range(2, 10)]]
+    numeric_quantiles = replace(
+        factor_result,
+        quantile_returns=pl.DataFrame(
+            {
+                "time": [factor_result.quantile_returns["time"][0]] * 10,
+                "quantile": labels,
+                "return": [0.01] * 10,
+                "cumulative_return": [0.01] * 10,
+            }
+        ),
+    )
+    quantile_figure = plot_quantile_cumulative_returns(numeric_quantiles)
+    assert [trace.name for trace in quantile_figure.data] == [
+        f"q{number}" for number in range(1, 11)
+    ]

@@ -7,6 +7,7 @@ import math
 import plotly.graph_objects as go
 import polars as pl
 
+from ._quantiles import ordered_quantile_labels
 from .performance import rolling_performance
 from .results import BacktestResult, FactorEvaluationResult
 from .returns import drawdown
@@ -236,7 +237,9 @@ def plot_rolling_ic(result: FactorEvaluationResult, *, window: int = 20) -> go.F
 
 def plot_quantile_cumulative_returns(result: FactorEvaluationResult) -> go.Figure:
     fig = go.Figure()
-    for quantile in result.quantile_returns["quantile"].unique().sort():
+    for quantile in ordered_quantile_labels(
+        result.quantile_returns["quantile"].unique().to_list()
+    ):
         data = result.quantile_returns.filter(
             result.quantile_returns["quantile"] == quantile
         )

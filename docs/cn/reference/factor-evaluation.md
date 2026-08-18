@@ -34,6 +34,10 @@ lineage 和强类型 signal 的 `ScheduledPrediction`。`month_end` 优先选择
 
 `ExecutionPolicy("next_open")` 独立把再平衡日映射到下一开市交易日。`run_prediction_evaluation` 接收已经解析的统一 selection，IC 使用本次 execution date 到下一次 execution date 的收益，组合则在两次执行之间逐日估值；最后一条没有完整后续执行期的信号不进入 IC。
 
+因此月频 `month_end` Policy 使用自然月末选出的值，对应其映射的 next-open execution price
+至下一次 scheduled execution price 的完整收益；尚未结束的当前月份不会进入 IC 或监督式
+Composer 的滚动窗口。
+
 ## 分位数组合收益
 
 每天按因子分数从高到低排序资产，并切分为若干分位数组：`q1` 为最高分数组，`qN` 为最低分数组。每个分位数组合收益是组内资产前向收益的等权平均。
@@ -44,11 +48,15 @@ spread 为：
 q1 收益 - qN 收益
 ```
 
-`quantile_rank_information_coefficients(quantile_returns)` 从制品中的 q1 到 qN 标签推断
-N，因此历史 q5 结果仍可读取。每个完整期间将 q1 到 qN 赋分 N 到 1，再与 gross 等权
-组收益计算 Spearman 相关；组收益严格递减为 `+1`，严格递增为 `-1`。缺组、任一组没有
-有限收益或组收益完全相同时返回 null。结果统计检验对该序列执行与普通 IC 相同的双侧
-单样本 Student t-test。
+`quantile_rank_information_coefficients(quantile_returns, periods=...)` 从制品中的 q1 到
+qN 标签推断 N，因此历史 q5 结果仍可读取。提供 execution periods 后，函数先把每组在
+`[time, next_time)` 内的逐日 gross return 复合为一个区间收益，并在区间起点生成唯一观测；
+再将 q1 到 qN 赋分 N 到 1，与组收益计算 Spearman 相关。组收益严格递减为 `+1`，严格
+递增为 `-1`。缺组、任一组没有有限收益或组收益完全相同时返回 null。结果统计检验使用
+与普通 IC 相同的完整区间和双侧单样本 Student t-test。
+
+结果表、图表、图例和 HTML 报告统一按标签数字部分排序为 `q1, q2, ..., q10`；历史 q5
+制品仍保持 `q1, ..., q5`。
 
 ## TOP N 回测
 

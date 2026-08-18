@@ -11,6 +11,7 @@ import numpy as np
 import polars as pl
 from bagelquant_core import Domain, PredictionPanel
 
+from ._quantiles import sort_quantile_frame
 from .benchmarks import (
     DEFAULT_BENCHMARK,
     benchmark_performance,
@@ -810,7 +811,8 @@ def factor_quantile_returns(
         bucket_returns,
         on=[TIME, "quantile"],
         how="left",
-    ).sort([TIME, "quantile"])
+    )
+    returns = sort_quantile_frame(returns, before=(TIME,))
     return returns.with_columns(
         (
             (1.0 + pl.col("return").fill_null(0.0)).cum_prod().over("quantile") - 1.0
@@ -930,7 +932,7 @@ def _quantile_returns_from_compact_results(
         ),
         how="cross",
     )
-    return (
+    returns = (
         grid.join(
             pl.concat(return_frames),
             on=[TIME, "quantile"],
@@ -941,11 +943,10 @@ def _quantile_returns_from_compact_results(
             pl.col("is_bankrupt").fill_null(False),
             pl.col("bankruptcy_event").fill_null(False),
         )
-        .sort([TIME, "quantile"])
-        .with_columns(
-            ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
-                "cumulative_return"
-            )
+    )
+    return sort_quantile_frame(returns, before=(TIME,)).with_columns(
+        ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
+            "cumulative_return"
         )
     )
 
@@ -982,7 +983,7 @@ def _batched_quantile_gross_returns(
     # Public quantile returns retain their historical forward-return label:
     # the row at t contains the realized total return from t to t+1.  The
     # performance ledger itself records that return when t+1 is observed.
-    return (
+    returns = (
         paths.sort("portfolio", TIME)
         .with_columns(
             pl.col("gross_return").shift(-1).over("portfolio")
@@ -993,8 +994,8 @@ def _batched_quantile_gross_returns(
             pl.col("portfolio").alias("quantile"),
             "gross_return",
         )
-        .sort(TIME, "quantile")
     )
+    return sort_quantile_frame(returns, before=(TIME,))
 
 
 def _quantile_execution_corrections(
