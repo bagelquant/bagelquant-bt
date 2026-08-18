@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 
 import polars as pl
 import pytest
 
-from bagelquant_bt import cross_sectional_factor_returns, one_sample_t_test
+from bagelquant_bt import (
+    cross_sectional_factor_returns,
+    one_sample_t_test,
+    quantile_rank_information_coefficients,
+)
 
 
 def test_cross_sectional_factor_returns_match_hand_checked_ols_slopes() -> None:
@@ -45,3 +50,32 @@ def test_one_sample_t_test_reports_exact_student_t_and_edge_states() -> None:
     constant = one_sample_t_test([1.0, 1.0])
     assert constant.p_value is None
     assert constant.reason == "sample variance is zero"
+
+
+def test_quantile_rank_ic_supports_complete_current_and_historical_groups() -> None:
+    current = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 31)] * 10 + [date(2024, 2, 29)] * 10,
+            "quantile": [f"q{number}" for number in range(1, 11)] * 2,
+            "return": list(range(10, 0, -1)) + list(range(1, 11)),
+        }
+    )
+    historical = pl.DataFrame(
+        {
+            "time": [date(2023, 11, 30)] * 4 + [date(2023, 12, 29)] * 5,
+            "quantile": ["q1", "q2", "q3", "q4"]
+            + [f"q{number}" for number in range(1, 6)],
+            "return": [5.0, 4.0, 3.0, 2.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+        }
+    )
+
+    result = quantile_rank_information_coefficients(current)
+    legacy = quantile_rank_information_coefficients(historical)
+
+    assert result.get_column("quantile_rank_ic").to_list() == pytest.approx(
+        [1.0, -1.0]
+    )
+    assert result.get_column("quantiles").to_list() == [10, 10]
+    assert legacy.item(0, "quantile_rank_ic") is None
+    assert legacy.item(1, "quantile_rank_ic") == pytest.approx(1.0)
+    assert legacy.get_column("quantiles").to_list() == [5, 5]

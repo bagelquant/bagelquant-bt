@@ -18,6 +18,8 @@ from bagelquant_bt import compose_prediction, run_prediction_backtest, run_predi
   and returns `BacktestResult`.
 - `run_prediction_evaluation(scheduled_signal, prices, ...)` computes IC,
   quantiles, lag diagnostics, and signal-driven portfolio results.
+- `quantile_rank_information_coefficients(quantile_returns)` derives the
+  per-period monotonic rank IC from stored q1-to-qN gross returns.
 - `summary_report(...)` builds a static HTML report for a backtest or signal
   evaluation result.
 

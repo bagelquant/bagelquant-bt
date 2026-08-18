@@ -59,6 +59,15 @@ The spread is:
 q1_return - qN_return
 ```
 
+`quantile_rank_information_coefficients(quantile_returns)` infers N from the
+stored q1-to-qN labels, so historical q5 results remain readable. For each
+complete period it assigns q1-to-qN scores N-to-1 and computes Spearman
+correlation with the gross equal-weight group returns. A strictly decreasing
+return path is `+1`, a strictly increasing path is `-1`, and missing groups,
+groups without a finite return, or equal group returns produce null. Result
+statistical tests apply the same two-sided one-sample Student t-test used for
+ordinary IC.
+
 ## TOP N Backtest
 
 The TOP N backtest converts signal values into long-only equal weights:

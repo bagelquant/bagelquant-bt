@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
+from bagelquant_core import quantile_rank_information_coefficient
 from scipy import stats
 
 from .inputs import ASSET_ID, TIME
@@ -56,6 +57,63 @@ def one_sample_t_test(values: object, *, null_mean: float = 0.0) -> OneSampleTes
     )
 
 
+def quantile_rank_information_coefficients(
+    quantile_returns: pl.DataFrame,
+) -> pl.DataFrame:
+    """Compute per-period rank IC from complete q1-to-qN gross returns."""
+
+    schema = {
+        TIME: pl.Date,
+        "quantile_rank_ic": pl.Float64,
+        "quantiles": pl.Int64,
+    }
+    if quantile_returns.is_empty():
+        return pl.DataFrame(schema=schema)
+    required = {TIME, "quantile", "return"}
+    missing = required - set(quantile_returns.columns)
+    if missing:
+        raise ValueError(
+            f"quantile returns are missing required columns: {sorted(missing)}"
+        )
+    labels = quantile_returns.get_column("quantile").drop_nulls().unique().to_list()
+    numbers: list[int] = []
+    for label in labels:
+        text = str(label)
+        if not text.startswith("q") or not text[1:].isdigit() or int(text[1:]) < 1:
+            raise ValueError(f"invalid quantile label: {text}")
+        numbers.append(int(text[1:]))
+    quantiles = max(numbers, default=0)
+    if quantiles < 2 or set(numbers) != set(range(1, quantiles + 1)):
+        raise ValueError("quantile returns require contiguous q1-to-qN labels")
+    expected_labels = [f"q{number}" for number in range(1, quantiles + 1)]
+    rows: list[dict[str, object]] = []
+    for period in quantile_returns.get_column(TIME).unique().sort().to_list():
+        sample = quantile_returns.filter(pl.col(TIME) == period)
+        if sample.get_column("quantile").n_unique() != sample.height:
+            raise ValueError(f"duplicate quantile returns for {period}")
+        by_label = {
+            str(row["quantile"]): row["return"]
+            for row in sample.select("quantile", "return").iter_rows(named=True)
+        }
+        result = (
+            quantile_rank_information_coefficient(
+                range(quantiles, 0, -1),
+                [by_label.get(label) for label in expected_labels],
+                quantiles=quantiles,
+            )
+            if set(by_label) == set(expected_labels)
+            else None
+        )
+        rows.append(
+            {
+                TIME: period,
+                "quantile_rank_ic": result,
+                "quantiles": quantiles,
+            }
+        )
+    return pl.DataFrame(rows, schema=schema).sort(TIME)
+
+
 def cross_sectional_factor_returns(
     factor: pl.DataFrame,
     forward_returns: pl.DataFrame,
@@ -98,4 +156,9 @@ def cross_sectional_factor_returns(
     )
 
 
-__all__ = ["OneSampleTest", "cross_sectional_factor_returns", "one_sample_t_test"]
+__all__ = [
+    "OneSampleTest",
+    "cross_sectional_factor_returns",
+    "one_sample_t_test",
+    "quantile_rank_information_coefficients",
+]

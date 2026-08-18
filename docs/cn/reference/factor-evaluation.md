@@ -44,6 +44,12 @@ spread 为：
 q1 收益 - qN 收益
 ```
 
+`quantile_rank_information_coefficients(quantile_returns)` 从制品中的 q1 到 qN 标签推断
+N，因此历史 q5 结果仍可读取。每个完整期间将 q1 到 qN 赋分 N 到 1，再与 gross 等权
+组收益计算 Spearman 相关；组收益严格递减为 `+1`，严格递增为 `-1`。缺组、任一组没有
+有限收益或组收益完全相同时返回 null。结果统计检验对该序列执行与普通 IC 相同的双侧
+单样本 Student t-test。
+
 ## TOP N 回测
 
 TOP N 回测会把因子分数转换成长-only 等权组合：

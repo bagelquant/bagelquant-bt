@@ -23,7 +23,7 @@ from bagelquant_bt.window import compute_window_tables
 
 def test_result_section_version_is_public() -> None:
     assert PORTFOLIO_PATH_VERSION == 3
-    assert RESULT_SECTION_VERSION == 7
+    assert RESULT_SECTION_VERSION == 8
 
 
 def _prices() -> pl.DataFrame:
@@ -379,7 +379,7 @@ def test_window_sections_preserve_bankruptcy_markers_and_outputs() -> None:
     )
     quantile_returns = pl.DataFrame(
         {
-            "quantile": ["Q1"] * 3 + ["Q2"] * 3,
+            "quantile": ["q1"] * 3 + ["q2"] * 3,
             "time": times * 2,
             "return": [-1.0, 0.0, 0.0, 0.01, 0.0, 0.0],
             "is_bankrupt": [True, True, True, False, False, False],
@@ -450,7 +450,7 @@ def test_window_sections_preserve_bankruptcy_markers_and_outputs() -> None:
         annualization=3,
         ic_annualization=3,
     )
-    q1 = quantile_tables["quantile_performance"].filter(pl.col("quantile") == "Q1")
+    q1 = quantile_tables["quantile_performance"].filter(pl.col("quantile") == "q1")
     assert q1.item(0, "is_bankrupt") is True
     assert q1.item(0, "bankruptcy_time") == times[0]
     assert quantile_tables["bankruptcies"].height == 1
@@ -465,5 +465,11 @@ def test_window_sections_preserve_bankruptcy_markers_and_outputs() -> None:
         annualization=3,
         ic_annualization=3,
     )
-    assert statistics_tables["statistical_tests"].height == 4
+    assert statistics_tables["statistical_tests"].get_column("test").to_list() == [
+        "pearson_ic",
+        "spearman_ic",
+        "quantile_rank_ic",
+        "spread_net_return",
+        "cross_section_regression",
+    ]
     assert statistics_tables["bankruptcies"].height == 1

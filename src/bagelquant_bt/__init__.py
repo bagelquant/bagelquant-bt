@@ -87,7 +87,12 @@ from .results import (
     TransactionCostBreakdown,
 )
 from .returns import prepare_price_data
-from .statistics import OneSampleTest, cross_sectional_factor_returns, one_sample_t_test
+from .statistics import (
+    OneSampleTest,
+    cross_sectional_factor_returns,
+    one_sample_t_test,
+    quantile_rank_information_coefficients,
+)
 from .validation import (
     MonthlyIcObservation,
     TopNSelectionResult,
@@ -166,6 +171,7 @@ __all__ = [
     "prediction_forward_returns",
     "prepare_factor_market_data",
     "prepare_price_data",
+    "quantile_rank_information_coefficients",
     "resolve_alpha_policy",
     "resolve_execution_policy",
     "resume_portfolio_path",

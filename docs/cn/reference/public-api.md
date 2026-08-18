@@ -16,6 +16,8 @@ from bagelquant_bt import compose_prediction, run_prediction_backtest, run_predi
   `ExecutionPolicy`、`WeightPolicy` 和内部 weights 引擎。
 - `run_prediction_evaluation(scheduled_signal, prices, ...)`：计算 IC、分位数、
   lag、IC decay 和 Signal 驱动的组合结果。
+- `quantile_rank_information_coefficients(quantile_returns)`：从 q1 到 qN 的 gross
+  组收益生成逐期单调性 rank IC。
 
 候选预测验证由 `score_ic_validation`、`select_top_n_stable`、
 `top_n_monthly_performance` 和 `score_top_n_performance` 提供。IC 未定义或 prediction

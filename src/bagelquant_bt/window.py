@@ -11,7 +11,7 @@ import polars as pl
 from .benchmarks import benchmark_performance, top_n_excess_returns
 from .inputs import TIME
 from .performance import rolling_performance
-from .statistics import one_sample_t_test
+from .statistics import one_sample_t_test, quantile_rank_information_coefficients
 
 
 def compute_window_tables(
@@ -308,6 +308,15 @@ def _statistical_tests(series: Mapping[str, pl.DataFrame]) -> pl.DataFrame:
     for name, column in (("pearson_ic", "pearson_ic"), ("spearman_ic", "spearman_ic")):
         values = ic.get_column(column).drop_nulls() if column in ic.columns else []
         rows.append(_test_row(name, one_sample_t_test(values)))
+    quantile_rank_ic = quantile_rank_information_coefficients(
+        series.get("quantile_returns", pl.DataFrame())
+    )
+    values = (
+        quantile_rank_ic.get_column("quantile_rank_ic").drop_nulls()
+        if "quantile_rank_ic" in quantile_rank_ic.columns
+        else []
+    )
+    rows.append(_test_row("quantile_rank_ic", one_sample_t_test(values)))
     spread = _lag_period_returns(series, portfolio="spread", lag=0)
     policy_returns = _complete_policy_returns(
         spread, series.get("factor", pl.DataFrame())
