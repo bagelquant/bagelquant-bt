@@ -15,6 +15,7 @@ from .account import AccountBacktestResult
 from .config import TransactionCostConfig
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME
+from .performance import _annualized_return
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,10 +736,10 @@ def _path_summary(
     nav = paths.get_column(return_column.replace("return", "nav")).to_numpy()
     periods = len(values)
     total_return = float(nav[-1] - 1.0) if periods else math.nan
-    annualized_return = (
-        float(nav[-1] ** (annualization / periods) - 1.0)
-        if periods
-        else math.nan
+    annualized_return = _annualized_return(
+        float(nav[-1]) if periods else math.nan,
+        periods=periods,
+        annualization=annualization,
     )
     volatility = (
         float(np.std(values, ddof=1) * math.sqrt(annualization))

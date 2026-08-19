@@ -9,6 +9,7 @@ import polars as pl
 
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_universe
+from .performance import _annualized_return
 
 DEFAULT_BENCHMARK = "universe_equal_weight"
 
@@ -192,10 +193,10 @@ def benchmark_performance(
             {
                 "benchmark": name,
                 "total_return": total,
-                "annualized_return": (
-                    (1.0 + total) ** (annualization / periods) - 1.0
-                    if periods
-                    else math.nan
+                "annualized_return": _annualized_return(
+                    1.0 + total,
+                    periods=periods,
+                    annualization=annualization,
                 ),
                 "annualized_volatility": std * math.sqrt(annualization),
                 "sharpe": (

@@ -11,7 +11,7 @@ import polars as pl
 from ._quantiles import sort_quantile_frame
 from .benchmarks import benchmark_performance, top_n_excess_returns
 from .inputs import TIME
-from .performance import rolling_performance
+from .performance import _annualized_return, rolling_performance
 from .statistics import one_sample_t_test, quantile_rank_information_coefficients
 
 
@@ -464,7 +464,14 @@ def _single_return_metrics(
             "calmar": None,
         }
     total = float(np.prod(1.0 + finite) - 1.0)
-    annualized_return = float((1.0 + total) ** (annualization / finite.size) - 1.0)
+    raw_annualized_return = _annualized_return(
+        1.0 + total,
+        periods=int(finite.size),
+        annualization=annualization,
+    )
+    annualized_return = (
+        raw_annualized_return if math.isfinite(raw_annualized_return) else None
+    )
     std = float(finite.std(ddof=1)) if finite.size > 1 else math.nan
     annualized_volatility = (
         float(std * math.sqrt(annualization)) if math.isfinite(std) else None
@@ -479,7 +486,7 @@ def _single_return_metrics(
     max_drawdown = float(np.min(wealth / peaks - 1.0))
     calmar = (
         float(annualized_return / abs(max_drawdown))
-        if max_drawdown < 0 and math.isfinite(annualized_return)
+        if max_drawdown < 0 and annualized_return is not None
         else None
     )
     return {

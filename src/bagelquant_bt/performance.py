@@ -163,6 +163,19 @@ def rolling_performance(
     return pl.concat(frames).sort(["window", "time"])
 
 
+def _annualized_return(
+    growth: float,
+    *,
+    periods: int,
+    annualization: int,
+) -> float:
+    """Annualize terminal wealth when the result exists in the real domain."""
+
+    if periods <= 0 or growth < 0.0:
+        return math.nan
+    return float(growth ** (annualization / periods) - 1.0)
+
+
 def _return_metrics(
     frame: pl.DataFrame,
     column: str,
@@ -174,10 +187,10 @@ def _return_metrics(
     periods = len(values)
     final_value = initial_capital * float(np.prod(1.0 + values))
     total_return = final_value / initial_capital - 1.0
-    annualized_return = (
-        (1.0 + total_return) ** (annualization / periods) - 1.0
-        if periods > 0
-        else math.nan
+    annualized_return = _annualized_return(
+        1.0 + total_return,
+        periods=periods,
+        annualization=annualization,
     )
     std = float(np.std(values, ddof=1)) if periods > 1 else math.nan
     mean = float(np.mean(values)) if periods else math.nan
