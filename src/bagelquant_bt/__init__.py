@@ -14,6 +14,7 @@ from .comparison import (
     run_actual_performance_path,
     run_continuous_target_path,
     run_total_return_weight_paths,
+    summarize_portfolio_path_returns,
 )
 from .config import BacktestConfig, TransactionCostConfig
 from .exceptions import (
@@ -182,6 +183,7 @@ __all__ = [
     "score_ic_validation",
     "score_top_n_performance",
     "select_top_n_stable",
+    "summarize_portfolio_path_returns",
     "summary_report",
     "top_n_monthly_performance",
 ]

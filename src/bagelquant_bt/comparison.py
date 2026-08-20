@@ -44,6 +44,14 @@ class PortfolioPathComparison:
     reconciliation: pl.DataFrame
 
 
+_PORTFOLIO_RETURN_COLUMNS = (
+    "target_gross_return",
+    "target_net_return",
+    "actual_gross_return",
+    "actual_net_return",
+)
+
+
 def run_continuous_target_path(
     target_weights: pl.DataFrame,
     total_return_prices: pl.DataFrame,
@@ -359,19 +367,7 @@ def compare_portfolio_paths(
             pl.exclude(TIME).fill_null(0.0),
         )
     )
-    _validate_finite(aligned)
-    return_columns = (
-        "target_gross_return",
-        "target_net_return",
-        "actual_gross_return",
-        "actual_net_return",
-    )
-    nav_paths = aligned.select(TIME, *return_columns).with_columns(
-        *[
-            (pl.col(column) + 1.0).cum_prod().alias(column.replace("return", "nav"))
-            for column in return_columns
-        ]
-    )
+    nav_paths = _portfolio_nav_paths(aligned)
     attribution = aligned.select(
         TIME,
         (pl.col("target_net_return") - pl.col("target_gross_return")).alias(
@@ -384,12 +380,9 @@ def compare_portfolio_paths(
             "actual_cost_drag"
         ),
     )
-    summary = pl.concat(
-        [
-            _path_summary(nav_paths, column, resolved_annualization)
-            for column in return_columns
-        ],
-        how="vertical",
+    summary = _summarize_portfolio_nav_paths(
+        nav_paths,
+        annualization=resolved_annualization,
     )
     reconciliation = _execution_reconciliation(
         nav_paths,
@@ -398,6 +391,69 @@ def compare_portfolio_paths(
         initial_capital=initial_capital,
     )
     return PortfolioPathComparison(nav_paths, attribution, summary, reconciliation)
+
+
+def summarize_portfolio_path_returns(
+    returns: pl.DataFrame,
+    *,
+    annualization: int,
+) -> pl.DataFrame:
+    """Summarize four Portfolio paths over the supplied return window.
+
+    The input window is treated as a fresh performance interval for cumulative
+    and annualized metrics.  Callers may therefore slice an immutable, continuous
+    Portfolio path without rebuilding its Artifact.
+    """
+
+    if annualization <= 0:
+        raise InputValidationError("annualization must be positive")
+    nav_paths = _portfolio_nav_paths(returns)
+    return _summarize_portfolio_nav_paths(
+        nav_paths,
+        annualization=annualization,
+    )
+
+
+def _portfolio_nav_paths(returns: pl.DataFrame) -> pl.DataFrame:
+    if not isinstance(returns, pl.DataFrame):
+        raise InputValidationError("portfolio path returns must be a Polars DataFrame")
+    required = {TIME, *_PORTFOLIO_RETURN_COLUMNS}
+    missing = sorted(required - set(returns.columns))
+    if missing:
+        raise InputValidationError(
+            f"portfolio path returns are missing columns: {', '.join(missing)}"
+        )
+    frame = returns.select(
+        pl.col(TIME).cast(pl.Date, strict=False),
+        *(pl.col(column).cast(pl.Float64) for column in _PORTFOLIO_RETURN_COLUMNS),
+    ).sort(TIME)
+    if frame.get_column(TIME).null_count():
+        raise InputValidationError("portfolio path times must be valid dates")
+    if frame.get_column(TIME).n_unique() != frame.height:
+        raise InputValidationError("portfolio path times must be unique")
+    _validate_finite(frame)
+    return frame.with_columns(
+        *[
+            (pl.col(column) + 1.0)
+            .cum_prod()
+            .alias(column.replace("return", "nav"))
+            for column in _PORTFOLIO_RETURN_COLUMNS
+        ]
+    )
+
+
+def _summarize_portfolio_nav_paths(
+    nav_paths: pl.DataFrame,
+    *,
+    annualization: int,
+) -> pl.DataFrame:
+    return pl.concat(
+        [
+            _path_summary(nav_paths, column, annualization)
+            for column in _PORTFOLIO_RETURN_COLUMNS
+        ],
+        how="vertical",
+    )
 
 
 def _performance_state(capital: float) -> dict[str, Any]:

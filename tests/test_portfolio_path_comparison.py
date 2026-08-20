@@ -13,6 +13,7 @@ from bagelquant_bt import (
     run_actual_performance_path,
     run_continuous_target_path,
     run_total_return_weight_paths,
+    summarize_portfolio_path_returns,
 )
 
 
@@ -87,6 +88,38 @@ def test_zero_cost_divisible_paths_are_identical() -> None:
     assert nav.get_column("actual_gross_nav").to_list() == pytest.approx(
         nav.get_column("actual_net_nav").to_list()
     )
+    assert comparison.summary.equals(
+        summarize_portfolio_path_returns(nav, annualization=252)
+    )
+
+
+def test_portfolio_path_summary_recomputes_the_selected_return_window() -> None:
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    returns = pl.DataFrame(
+        {
+            "time": days,
+            "target_gross_return": [0.10, -0.10, 0.20],
+            "target_net_return": [0.05, -0.05, 0.10],
+            "actual_gross_return": [0.08, -0.08, 0.16],
+            "actual_net_return": [0.04, -0.04, 0.08],
+        }
+    )
+
+    full = summarize_portfolio_path_returns(returns, annualization=2)
+    selected = summarize_portfolio_path_returns(
+        returns.filter(pl.col("time").is_between(days[1], days[2])),
+        annualization=2,
+    )
+    full_target = full.filter(pl.col("path") == "target_gross").row(0, named=True)
+    selected_target = selected.filter(pl.col("path") == "target_gross").row(
+        0, named=True
+    )
+
+    assert full_target["cumulative_return"] == pytest.approx(0.188)
+    assert selected_target["cumulative_return"] == pytest.approx(0.08)
+    assert selected_target["annualized_return"] == pytest.approx(0.08)
+    assert selected_target["annualized_volatility"] == pytest.approx(0.3)
+    assert selected_target["sharpe"] == pytest.approx(1 / 3)
 
 
 def test_actual_net_uses_only_explicit_fill_costs() -> None:
