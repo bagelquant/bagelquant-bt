@@ -6,7 +6,11 @@ from .account import (
     AccountStateCheckpoint,
     run_account_backtest,
 )
-from .benchmarks import benchmark_performance, build_universe_benchmark_returns
+from .benchmarks import (
+    benchmark_performance,
+    build_universe_benchmark_returns,
+    compare_portfolio_to_benchmarks,
+)
 from .comparison import (
     ActualPerformancePath,
     PortfolioPathComparison,
@@ -154,6 +158,7 @@ __all__ = [
     "benchmark_performance",
     "build_universe_benchmark_returns",
     "compare_portfolio_paths",
+    "compare_portfolio_to_benchmarks",
     "compose_prediction",
     "compose_processed_prediction",
     "compute_result_section",

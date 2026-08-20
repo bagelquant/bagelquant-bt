@@ -1,4 +1,4 @@
-"""Benchmark construction and TOP N excess-return analytics."""
+"""Benchmark construction and portfolio excess-return analytics."""
 
 from __future__ import annotations
 
@@ -12,6 +12,166 @@ from .inputs import ASSET_ID, TIME, validate_universe
 from .performance import _annualized_return
 
 DEFAULT_BENCHMARK = "universe_equal_weight"
+
+
+def compare_portfolio_to_benchmarks(
+    portfolio_returns: pl.DataFrame,
+    benchmark_returns: pl.DataFrame,
+    *,
+    annualization: int = 252,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Compare one daily portfolio-return path with named benchmarks.
+
+    Inputs are aligned independently for each benchmark on exact dates.  The
+    returned path contains relative wealth, while the summary contains the
+    standard active-return statistics for the same aligned observations.
+    """
+
+    if not isinstance(portfolio_returns, pl.DataFrame):
+        raise InputValidationError("portfolio_returns must be a polars DataFrame")
+    missing = sorted({TIME, "return"} - set(portfolio_returns.columns))
+    if missing:
+        raise InputValidationError(
+            f"portfolio_returns is missing required columns: {missing}"
+        )
+    if annualization <= 0:
+        raise InputValidationError("annualization must be positive")
+    portfolio = (
+        portfolio_returns.select(TIME, "return")
+        .with_columns(
+            pl.col(TIME).cast(pl.Date, strict=False),
+            pl.col("return").cast(pl.Float64, strict=False),
+        )
+        .drop_nulls([TIME, "return"])
+        .filter(pl.col("return").is_finite())
+        .rename({"return": "portfolio_return"})
+        .sort(TIME)
+    )
+    if portfolio.select(pl.col(TIME).is_duplicated().any()).item():
+        raise InputValidationError("portfolio_returns must be unique by time")
+    if portfolio.filter(pl.col("portfolio_return") < -1.0).height:
+        raise InputValidationError(
+            "portfolio returns must be greater than or equal to -1"
+        )
+    benchmarks = validate_benchmark_returns(benchmark_returns)
+    if benchmarks.filter(pl.col("return") <= -1.0).height:
+        raise InputValidationError("benchmark returns must be greater than -1")
+
+    joined = (
+        benchmarks.rename({"return": "benchmark_return"})
+        .join(portfolio, on=TIME, how="inner")
+        .sort(["benchmark", TIME])
+    )
+    if joined.is_empty():
+        return _empty_portfolio_benchmark_paths(), _empty_portfolio_benchmark_summary()
+
+    path_frames: list[pl.DataFrame] = []
+    summary_rows: list[dict[str, object]] = []
+    for frame in joined.partition_by("benchmark", maintain_order=True):
+        name = str(frame.get_column("benchmark")[0])
+        portfolio_values = np.asarray(frame.get_column("portfolio_return"), dtype=float)
+        benchmark_values = np.asarray(frame.get_column("benchmark_return"), dtype=float)
+        active = portfolio_values - benchmark_values
+        portfolio_wealth = np.cumprod(1.0 + portfolio_values)
+        benchmark_wealth = np.cumprod(1.0 + benchmark_values)
+        relative_wealth = portfolio_wealth / benchmark_wealth
+        relative_drawdown = (
+            relative_wealth / np.maximum.accumulate(relative_wealth) - 1.0
+        )
+        periods = len(active)
+        active_mean = float(np.mean(active))
+        active_std = float(np.std(active, ddof=1)) if periods > 1 else math.nan
+        final_relative_wealth = float(relative_wealth[-1])
+        annualized_excess = (
+            final_relative_wealth ** (annualization / periods) - 1.0
+            if final_relative_wealth > 0.0
+            else -1.0
+        )
+        path_frames.append(
+            frame.with_columns(
+                pl.Series("daily_excess_return", active),
+                pl.Series("portfolio_wealth", portfolio_wealth),
+                pl.Series("benchmark_wealth", benchmark_wealth),
+                pl.Series("relative_wealth", relative_wealth),
+                pl.Series("relative_wealth_excess_return", relative_wealth - 1.0),
+                pl.Series("relative_drawdown", relative_drawdown),
+            ).select(
+                TIME,
+                "benchmark",
+                "portfolio_return",
+                "benchmark_return",
+                "daily_excess_return",
+                "portfolio_wealth",
+                "benchmark_wealth",
+                "relative_wealth",
+                "relative_wealth_excess_return",
+                "relative_drawdown",
+            )
+        )
+        summary_rows.append(
+            {
+                "benchmark": name,
+                "start_date": frame.get_column(TIME)[0],
+                "end_date": frame.get_column(TIME)[-1],
+                "periods": periods,
+                "portfolio_total_return": float(portfolio_wealth[-1] - 1.0),
+                "benchmark_total_return": float(benchmark_wealth[-1] - 1.0),
+                "annualized_excess_return": annualized_excess,
+                "tracking_error": (
+                    active_std * math.sqrt(annualization)
+                    if not math.isnan(active_std)
+                    else None
+                ),
+                "information_ratio": (
+                    active_mean / active_std * math.sqrt(annualization)
+                    if not math.isnan(active_std) and active_std > 0.0
+                    else None
+                ),
+                "max_relative_drawdown": float(np.min(relative_drawdown)),
+                "daily_win_rate": float(np.mean(active > 0.0)),
+            }
+        )
+    return (
+        pl.concat(path_frames).sort(["benchmark", TIME]),
+        pl.DataFrame(summary_rows, schema=_portfolio_benchmark_summary_schema()),
+    )
+
+
+def _empty_portfolio_benchmark_paths() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            TIME: pl.Date,
+            "benchmark": pl.String,
+            "portfolio_return": pl.Float64,
+            "benchmark_return": pl.Float64,
+            "daily_excess_return": pl.Float64,
+            "portfolio_wealth": pl.Float64,
+            "benchmark_wealth": pl.Float64,
+            "relative_wealth": pl.Float64,
+            "relative_wealth_excess_return": pl.Float64,
+            "relative_drawdown": pl.Float64,
+        }
+    )
+
+
+def _portfolio_benchmark_summary_schema() -> dict[str, pl.DataType]:
+    return {
+        "benchmark": pl.String,
+        "start_date": pl.Date,
+        "end_date": pl.Date,
+        "periods": pl.Int64,
+        "portfolio_total_return": pl.Float64,
+        "benchmark_total_return": pl.Float64,
+        "annualized_excess_return": pl.Float64,
+        "tracking_error": pl.Float64,
+        "information_ratio": pl.Float64,
+        "max_relative_drawdown": pl.Float64,
+        "daily_win_rate": pl.Float64,
+    }
+
+
+def _empty_portfolio_benchmark_summary() -> pl.DataFrame:
+    return pl.DataFrame(schema=_portfolio_benchmark_summary_schema())
 
 
 def build_universe_benchmark_returns(
