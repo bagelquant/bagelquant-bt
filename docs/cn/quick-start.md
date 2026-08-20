@@ -37,7 +37,7 @@ result = run_prediction_backtest(
 )
 ```
 
-使用 `ICWeightedPredictionComposer`、`OLSPredictionComposer` 或
-`GLSPredictionComposer` 时，还需向 `compose_prediction` 提供 `prices`。rolling window
-按 AlphaPolicy 的交易期计数，不按日频行计数。普通 Panel、裸 DataFrame
+使用 `ICWeightedPredictionComposer`、`ICWeightedDecayPredictionComposer`、
+`OLSPredictionComposer` 或 `GLSPredictionComposer` 时，还需向 `compose_prediction`
+提供 `prices`。rolling window 与 half-life 按 AlphaPolicy 的交易期计数，不按日频行计数。普通 Panel、裸 DataFrame
 与直接 weights 均不能传给 `run_prediction_backtest`。

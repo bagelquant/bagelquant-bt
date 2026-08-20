@@ -37,7 +37,8 @@ result = run_prediction_backtest(
 )
 ```
 
-For `ICWeightedPredictionComposer`, `OLSPredictionComposer`, or `GLSPredictionComposer`,
-also pass `prices` to `compose_prediction`. Their rolling window counts signal
+For `ICWeightedPredictionComposer`, `ICWeightedDecayPredictionComposer`,
+`OLSPredictionComposer`, or `GLSPredictionComposer`, also pass `prices` to
+`compose_prediction`. Their rolling window and half-life count signal
 periods, not daily rows. Ordinary panels, raw DataFrames, and direct weights
 cannot be passed to `run_prediction_backtest`.

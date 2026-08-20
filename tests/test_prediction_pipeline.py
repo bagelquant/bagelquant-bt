@@ -6,9 +6,11 @@ import polars as pl
 import pytest
 from bagelquant_core import (
     Domain,
+    ICWeightedDecayPredictionComposer,
     ICWeightedPredictionComposer,
     IdentityPredictionComposer,
     Panel,
+    PredictionComposer,
     PredictionPanel,
 )
 
@@ -149,7 +151,17 @@ def test_alpha_policy_rejects_untyped_frames() -> None:
         )
 
 
-def test_monthly_supervised_composition_uses_completed_execution_periods() -> None:
+@pytest.mark.parametrize(
+    "composer",
+    [
+        ICWeightedPredictionComposer(1),
+        ICWeightedDecayPredictionComposer(window=1, half_life=6),
+    ],
+    ids=("equal-period", "decayed"),
+)
+def test_monthly_supervised_composition_uses_completed_execution_periods(
+    composer: PredictionComposer,
+) -> None:
     sessions = [
         date(2024, 1, 31),
         date(2024, 2, 1),
@@ -200,7 +212,7 @@ def test_monthly_supervised_composition_uses_completed_execution_periods() -> No
 
     signal = compose_prediction(
         {"positive": positive, "negative": negative},
-        ICWeightedPredictionComposer(1),
+        composer,
         calendar,
         policy,
         prices=prices,
