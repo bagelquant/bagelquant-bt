@@ -51,7 +51,9 @@ from .path import (
     resume_portfolio_path,
 )
 from .pipeline import (
+    FamaMacBethOLSComposition,
     compose_prediction,
+    compose_processed_fama_macbeth_ols,
     compose_processed_prediction,
     run_prediction_backtest,
 )
@@ -75,6 +77,7 @@ from .portfolio import (
     EqualWeightPolicy,
     FloatMarketCapWeightPolicy,
     PredictionRegularizedOptimizerPolicy,
+    PredictionRegularizedTargetVolatilityPolicy,
     TargetVolatilityPolicy,
     WeightBuild,
 )
@@ -127,6 +130,7 @@ __all__ = [
     "EvaluationFrequency",
     "ExecutionPolicy",
     "FactorEvaluationResult",
+    "FamaMacBethOLSComposition",
     "FloatMarketCapWeightPolicy",
     "HolidayAdjustment",
     "InputValidationError",
@@ -140,6 +144,7 @@ __all__ = [
     "PortfolioStateCheckpoint",
     "PredictionEvaluationResult",
     "PredictionRegularizedOptimizerPolicy",
+    "PredictionRegularizedTargetVolatilityPolicy",
     "PreparedFactorMarketData",
     "ReportFigure",
     "ResultSection",
@@ -160,6 +165,7 @@ __all__ = [
     "compare_portfolio_paths",
     "compare_portfolio_to_benchmarks",
     "compose_prediction",
+    "compose_processed_fama_macbeth_ols",
     "compose_processed_prediction",
     "compute_result_section",
     "cross_sectional_factor_returns",

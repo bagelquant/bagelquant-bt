@@ -303,6 +303,200 @@ class PredictionRegularizedOptimizerPolicy:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PredictionRegularizedTargetVolatilityPolicy:
+    """Scale a separate fully invested optimizer sleeve to a volatility target."""
+
+    concentration_penalty: float
+    turnover_penalty: float
+    max_weight: float
+    target_annual_volatility: float = 0.15
+    lookback_sessions: int = 60
+    annualization: int = 240
+    max_gross_exposure: float = 1.0
+
+    def __post_init__(self) -> None:
+        self._base_optimizer()
+        if (
+            not math.isfinite(self.target_annual_volatility)
+            or self.target_annual_volatility <= 0
+        ):
+            raise ValueError("target_annual_volatility must be positive")
+        if (
+            not isinstance(self.lookback_sessions, int)
+            or isinstance(self.lookback_sessions, bool)
+            or self.lookback_sessions <= 1
+        ):
+            raise ValueError("lookback_sessions must be an integer greater than one")
+        if (
+            not isinstance(self.annualization, int)
+            or isinstance(self.annualization, bool)
+            or self.annualization <= 0
+        ):
+            raise ValueError("annualization must be a positive integer")
+        if (
+            not math.isfinite(self.max_gross_exposure)
+            or not 0 < self.max_gross_exposure <= 1.0
+        ):
+            raise ValueError("max_gross_exposure must be in (0, 1]")
+
+    def build(
+        self,
+        prediction: PredictionPanel,
+        *,
+        reference_weights: Panel | pl.DataFrame | None = None,
+        risky_sleeve_returns: pl.DataFrame | None = None,
+        **_: object,
+    ) -> WeightBuild:
+        """Build cash-aware targets from strictly prior risky-sleeve returns."""
+
+        base = self.build_risky_sleeve(
+            prediction,
+            reference_weights=reference_weights,
+        )
+        return self.scale_risky_sleeve(
+            prediction,
+            base,
+            risky_sleeve_returns=risky_sleeve_returns,
+        )
+
+    def build_risky_sleeve(
+        self,
+        prediction: PredictionPanel,
+        *,
+        reference_weights: Panel | pl.DataFrame | None = None,
+    ) -> WeightBuild:
+        """Build the independent fully invested sleeve with the base optimizer."""
+
+        normalized_reference = _normalize_risky_sleeve_reference(reference_weights)
+        return self._base_optimizer().build(
+            prediction,
+            reference_weights=normalized_reference,
+        )
+
+    def scale_risky_sleeve(
+        self,
+        prediction: PredictionPanel,
+        risky_sleeve: WeightBuild,
+        *,
+        risky_sleeve_returns: pl.DataFrame | None = None,
+    ) -> WeightBuild:
+        """Scale an already solved risky sleeve using strictly prior returns."""
+
+        returns = _validate_risky_sleeve_returns(risky_sleeve_returns)
+        base_weights = _weight_frame(risky_sleeve.weights)
+        policy_hash = _target_volatility_optimizer_policy_hash(self)
+        scaled_frames: list[pl.DataFrame] = []
+        skipped_rows: list[dict[str, object]] = []
+        diagnostic_rows: list[dict[str, object]] = []
+        base_diagnostics = {
+            row[TIME]: row for row in risky_sleeve.diagnostics.iter_rows(named=True)
+        }
+        for evaluation_date in base_weights.get_column(TIME).unique().sort():
+            history = returns.filter(pl.col(TIME) < evaluation_date).tail(
+                self.lookback_sessions
+            )
+            diagnostic = dict(base_diagnostics[evaluation_date])
+            diagnostic["policy_hash"] = policy_hash
+            diagnostic.update(
+                {
+                    "target_annual_volatility": self.target_annual_volatility,
+                    "volatility_observation_count": history.height,
+                    "volatility_window_start": (
+                        history.get_column(TIME).min() if history.height else None
+                    ),
+                    "volatility_window_end": (
+                        history.get_column(TIME).max() if history.height else None
+                    ),
+                }
+            )
+            if history.height < self.lookback_sessions:
+                skipped_rows.append(
+                    {
+                        TIME: evaluation_date,
+                        "reason": "insufficient_volatility_history",
+                    }
+                )
+                diagnostic.update(
+                    {
+                        "realized_annual_volatility": None,
+                        "gross_exposure": None,
+                        "cash_weight": None,
+                    }
+                )
+                diagnostic_rows.append(diagnostic)
+                continue
+            realized = float(history.get_column("gross_return").std(ddof=1))
+            realized *= math.sqrt(self.annualization)
+            gross_exposure = (
+                self.max_gross_exposure
+                if realized == 0.0
+                else min(
+                    self.max_gross_exposure,
+                    self.target_annual_volatility / realized,
+                )
+            )
+            scaled_frames.append(
+                base_weights.filter(pl.col(TIME) == evaluation_date).with_columns(
+                    (pl.col("weight") * gross_exposure).alias("weight")
+                )
+            )
+            diagnostic.update(
+                {
+                    "realized_annual_volatility": realized,
+                    "gross_exposure": gross_exposure,
+                    "cash_weight": 1.0 - gross_exposure,
+                }
+            )
+            diagnostic_rows.append(diagnostic)
+        frame = (
+            pl.concat(scaled_frames).sort(TIME, ASSET_ID)
+            if scaled_frames
+            else pl.DataFrame(
+                schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
+            )
+        )
+        skipped = (
+            pl.DataFrame(
+                skipped_rows,
+                schema={TIME: pl.Date, "reason": pl.String},
+            ).sort(TIME)
+            if skipped_rows
+            else _empty_skipped()
+        )
+        return WeightBuild(
+            _weight_panel(frame, prediction),
+            skipped,
+            pl.DataFrame(
+                diagnostic_rows,
+                schema={
+                    TIME: pl.Date,
+                    "policy_hash": pl.String,
+                    "solver": pl.String,
+                    "solver_status": pl.String,
+                    "iterations": pl.Int64,
+                    "objective": pl.Float64,
+                    "constraint_violation": pl.Float64,
+                    "raw_solver_constraint_violation": pl.Float64,
+                    "target_annual_volatility": pl.Float64,
+                    "volatility_observation_count": pl.Int64,
+                    "volatility_window_start": pl.Date,
+                    "volatility_window_end": pl.Date,
+                    "realized_annual_volatility": pl.Float64,
+                    "gross_exposure": pl.Float64,
+                    "cash_weight": pl.Float64,
+                },
+            ).sort(TIME),
+        )
+
+    def _base_optimizer(self) -> PredictionRegularizedOptimizerPolicy:
+        return PredictionRegularizedOptimizerPolicy(
+            concentration_penalty=self.concentration_penalty,
+            turnover_penalty=self.turnover_penalty,
+            max_weight=self.max_weight,
+        )
+
+
 def _top_n(prediction: PredictionPanel, top_n: int) -> pl.DataFrame:
     if top_n <= 0:
         raise ValueError("top_n must be positive")
@@ -387,6 +581,53 @@ def _reference_weight_frame(
     return result.sort([TIME, ASSET_ID])
 
 
+def _normalize_risky_sleeve_reference(
+    reference_weights: Panel | pl.DataFrame | None,
+) -> pl.DataFrame:
+    reference = _reference_weight_frame(reference_weights)
+    if reference.is_empty():
+        return reference
+    return (
+        reference.with_columns(pl.col("weight").sum().over(TIME).alias("_total"))
+        .with_columns(
+            pl.when(pl.col("_total") > 0)
+            .then(pl.col("weight") / pl.col("_total"))
+            .otherwise(pl.col("weight"))
+            .alias("weight")
+        )
+        .drop("_total")
+    )
+
+
+def _validate_risky_sleeve_returns(frame: pl.DataFrame | None) -> pl.DataFrame:
+    if frame is None or not isinstance(frame, pl.DataFrame):
+        raise InputValidationError(
+            "prediction_regularized_target_volatility requires risky_sleeve_returns"
+        )
+    required = {TIME, "gross_return"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise InputValidationError(
+            f"risky_sleeve_returns is missing required columns: {missing}"
+        )
+    result = frame.select(TIME, "gross_return").with_columns(
+        pl.col(TIME).cast(pl.Date, strict=False),
+        pl.col("gross_return").cast(pl.Float64, strict=False),
+    )
+    if result.get_column(TIME).n_unique() != result.height:
+        raise InputValidationError("risky_sleeve_returns must be unique by time")
+    if result.filter(
+        pl.col(TIME).is_null()
+        | pl.col("gross_return").is_null()
+        | ~pl.col("gross_return").is_finite()
+        | (pl.col("gross_return") <= -1.0)
+    ).height:
+        raise InputValidationError(
+            "risky_sleeve_returns must contain finite returns greater than -1"
+        )
+    return result.sort(TIME)
+
+
 def _reference_vector(
     reference_weights: pl.DataFrame,
     *,
@@ -412,6 +653,26 @@ def _optimizer_policy_hash(
             "turnover_penalty": policy.turnover_penalty,
             "max_weight": policy.max_weight,
             "constraint_tolerance": policy.constraint_tolerance,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _target_volatility_optimizer_policy_hash(
+    policy: PredictionRegularizedTargetVolatilityPolicy,
+) -> str:
+    payload = json.dumps(
+        {
+            "method": "prediction_regularized_target_volatility",
+            "concentration_penalty": policy.concentration_penalty,
+            "turnover_penalty": policy.turnover_penalty,
+            "max_weight": policy.max_weight,
+            "target_annual_volatility": policy.target_annual_volatility,
+            "lookback_sessions": policy.lookback_sessions,
+            "annualization": policy.annualization,
+            "max_gross_exposure": policy.max_gross_exposure,
         },
         sort_keys=True,
         separators=(",", ":"),

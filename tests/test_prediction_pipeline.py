@@ -9,6 +9,7 @@ from bagelquant_core import (
     ICWeightedDecayPredictionComposer,
     ICWeightedPredictionComposer,
     IdentityPredictionComposer,
+    OLSPredictionComposer,
     Panel,
     PredictionComposer,
     PredictionPanel,
@@ -18,6 +19,7 @@ from bagelquant_bt import (
     BacktestConfig,
     EqualWeightPolicy,
     compose_prediction,
+    compose_processed_fama_macbeth_ols,
     compose_processed_prediction,
     resolve_alpha_policy,
     run_prediction_backtest,
@@ -225,3 +227,78 @@ def test_monthly_supervised_composition_uses_completed_execution_periods(
         date(2024, 3, 29),
         date(2024, 4, 30),
     ]
+
+
+def test_processed_fama_macbeth_composition_returns_shared_diagnostics() -> None:
+    sessions = [
+        date(2024, 1, 31),
+        date(2024, 2, 1),
+        date(2024, 2, 29),
+        date(2024, 3, 1),
+        date(2024, 3, 29),
+        date(2024, 4, 1),
+    ]
+    assets = ["a", "b", "c", "d"]
+    domain = Domain(calendar=sessions, universe=assets)
+
+    def factor(name: str, values: list[float]) -> Panel:
+        return Panel.from_domain(
+            pl.DataFrame(
+                {
+                    "time": [day for day in sessions for _ in assets],
+                    "asset_id": assets * len(sessions),
+                    "value": values * len(sessions),
+                }
+            ),
+            domain,
+            name=name,
+        )
+
+    alpha_values = {
+        "quality": factor("quality", [-1.0, 0.0, 1.0, 2.0]),
+        "value": factor("value", [0.0, 1.0, 0.0, 1.0]),
+    }
+    calendar = pl.DataFrame({"time": sessions})
+    prices = pl.DataFrame(
+        {
+            "time": [day for day in sessions for _ in assets],
+            "asset_id": assets * len(sessions),
+            "price": [
+                100.0 * (1.0 + rate) ** period
+                for period, _day in enumerate(sessions)
+                for rate in (0.0, 0.01, 0.02, 0.03)
+            ],
+        }
+    )
+    processed = resolve_alpha_policy("month_end").apply(
+        alpha_values,
+        calendar,
+        start=date(2024, 1, 31),
+        end=date(2024, 3, 29),
+    )
+    composer = OLSPredictionComposer(window=1)
+
+    result = compose_processed_fama_macbeth_ols(
+        processed,
+        composer,
+        calendar,
+        prices=prices,
+    )
+    reference = compose_processed_prediction(
+        processed,
+        composer,
+        calendar,
+        prices=prices,
+    )
+
+    assert result.prediction.collect(dense=False).equals(
+        reference.collect(dense=False)
+    )
+    assert set(result.diagnostics.factor_returns.get_column("factor")) == {
+        "intercept",
+        "quality",
+        "value",
+    }
+    assert result.diagnostics.period_diagnostics.filter(
+        pl.col("status") == "complete"
+    ).height >= 1

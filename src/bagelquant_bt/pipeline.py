@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date
 
 import polars as pl
 from bagelquant_core import (
+    FamaMacBethOLSResult,
+    OLSPredictionComposer,
     Panel,
     PredictionComposer,
     PredictionPanel,
     PredictionTrainingContext,
+    fama_macbeth_ols_prediction,
 )
 
 from .config import BacktestConfig
@@ -24,6 +28,14 @@ from .policy import (
     resolve_execution_policy,
 )
 from .results import BacktestResult
+
+
+@dataclass(frozen=True, slots=True)
+class FamaMacBethOLSComposition:
+    """Typed prediction plus the diagnostics from the same OLS calculation."""
+
+    prediction: PredictionPanel
+    diagnostics: FamaMacBethOLSResult
 
 
 def compose_prediction(
@@ -111,6 +123,63 @@ def compose_processed_prediction(
     if not isinstance(result, PredictionPanel):
         raise AssertionError("prediction composer did not produce a PredictionPanel")
     return result
+
+
+def compose_processed_fama_macbeth_ols(
+    processed: AlphaPolicyResult,
+    composer: OLSPredictionComposer,
+    calendar: pl.DataFrame,
+    *,
+    execution_policy: ExecutionPolicy | str = "next_open",
+    prices: pl.DataFrame,
+) -> FamaMacBethOLSComposition:
+    """Compose OLS once and preserve its auditable Fama--MacBeth diagnostics."""
+
+    if not isinstance(processed, AlphaPolicyResult):
+        raise TypeError("processed must be an AlphaPolicyResult")
+    if not isinstance(composer, OLSPredictionComposer):
+        raise TypeError("composer must be an OLSPredictionComposer")
+    if not processed.alpha_values:
+        raise ValueError("processed AlphaPolicy result contains no AlphaValues")
+    panels = tuple(processed.alpha_values.values())
+    if any(not isinstance(panel, Panel) for panel in panels):
+        raise TypeError("processed alpha_values must contain Panel values")
+    policy_ids = {str(panel.metadata.get("alpha_policy", "")) for panel in panels}
+    standardizations = {
+        str(panel.metadata.get("standardization", "")) for panel in panels
+    }
+    if len(policy_ids) != 1 or "" in policy_ids:
+        raise ValueError("processed AlphaValues must share one Alpha Policy")
+    if len(standardizations) != 1 or "" in standardizations:
+        raise ValueError("processed AlphaValues must share one standardization")
+    training = _training_context(
+        processed.alpha_values,
+        processed.schedule,
+        calendar,
+        execution_policy,
+        prices,
+    )
+    diagnostics = fama_macbeth_ols_prediction(
+        {
+            name: panel.collect(dense=False)
+            for name, panel in processed.alpha_values.items()
+        },
+        training.targets.collect(dense=False),
+        training.availability.collect(dense=False),
+        window=composer.window,
+    )
+    prediction = PredictionPanel.from_domain(
+        diagnostics.prediction,
+        panels[0].domain,
+        name="prediction",
+        metadata={
+            "prediction_composer": composer.kind,
+            "window": composer.window,
+            "alpha_policy": next(iter(policy_ids)),
+            "standardization": next(iter(standardizations)),
+        },
+    )
+    return FamaMacBethOLSComposition(prediction, diagnostics)
 
 
 def run_prediction_backtest(
@@ -228,7 +297,9 @@ def _training_context(
 
 
 __all__ = [
+    "FamaMacBethOLSComposition",
     "compose_prediction",
+    "compose_processed_fama_macbeth_ols",
     "compose_processed_prediction",
     "run_prediction_backtest",
 ]
