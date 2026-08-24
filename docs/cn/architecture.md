@@ -34,6 +34,7 @@ schedule -> execution -> portfolio weights
 - `pipeline`：Signal 组合和严格公开回测编排。
 - `signal`：AlphaPolicy 与 ExecutionPolicy。
 - `portfolio`：`ScheduledPrediction` 到 weights 的政策。
+- `allocation`：通用、确定性的连续目标权重到整数手数仓位分配。
 - `engine`：包内 weights 模拟。
 - `factor`：IC、分位数和 top-N Signal 评估。
 - `performance`：汇总指标。

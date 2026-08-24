@@ -39,7 +39,10 @@ initial-capital inputs.
 
 `AlphaPolicy` and `ExecutionPolicy` are separate contracts. A weight policy
 receives `PredictionPanel` and returns
-`WeightBuild(weights: Panel, skipped: DataFrame)`. Quantity sizing and live
+`WeightBuild(weights: Panel, skipped: DataFrame)`. The standalone
+`allocate_integer_positions` helper converts one continuous target snapshot to
+whole-lot positions with explicit prices, budgets, lot sizes, and frozen
+minimums; market-specific rules and live
 order submission are outside the package boundary.
 
 ## Configuration

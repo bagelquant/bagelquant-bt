@@ -6,6 +6,7 @@ from .account import (
     AccountStateCheckpoint,
     run_account_backtest,
 )
+from .allocation import IntegerTargetAllocation, allocate_integer_positions
 from .benchmarks import (
     benchmark_performance,
     build_universe_benchmark_returns,
@@ -134,6 +135,7 @@ __all__ = [
     "FloatMarketCapWeightPolicy",
     "HolidayAdjustment",
     "InputValidationError",
+    "IntegerTargetAllocation",
     "MissingSnapshotAction",
     "MonthlyIcObservation",
     "OneSampleTest",
@@ -159,6 +161,7 @@ __all__ = [
     "ValidationObjective",
     "ValidationScore",
     "WeightBuild",
+    "allocate_integer_positions",
     "alpha_policies",
     "benchmark_performance",
     "build_universe_benchmark_returns",

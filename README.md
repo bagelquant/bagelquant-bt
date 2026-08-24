@@ -58,6 +58,14 @@ maximum-weight constraints. CVXPY is available through the `optimizer` extra;
 OSQP is attempted first and CLARABEL second, with strict failure if neither
 solver succeeds.
 
+`allocate_integer_positions` is the public deterministic bridge from one
+continuous target snapshot to whole-lot positions. It first maximizes deployed
+stock notional under the stock budget, then minimizes absolute notional
+deviation among maximum-deployment solutions with stable `asset_id`
+tie-breaking. Callers provide prices, lot sizes, minimum frozen quantities, and
+whether each asset may exceed its continuous target by one lot; infeasible
+inputs fail explicitly.
+
 The separate `run_account_backtest` engine sizes target weights into integer
 positions and simulates cash, T+1 availability, lot rules, sell-first funding,
 orders, fills, unadjusted open/close marks, corporate-action receivables,

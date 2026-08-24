@@ -38,6 +38,7 @@ visualization helpers
 - `pipeline`: signal composition and strict public backtest orchestration.
 - `signal`: signal-date selection and execution scheduling.
 - `portfolio`: `ScheduledPrediction` to weights policies.
+- `allocation`: generic deterministic target weights to integer-lot positions.
 - `engine`: package-private weight simulation.
 - `factor`: information coefficient, quantile, and top-N signal evaluation.
 - `performance`: summary metrics.
