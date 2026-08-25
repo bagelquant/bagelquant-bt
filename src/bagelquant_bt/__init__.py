@@ -86,6 +86,7 @@ from .reporting import (
     ReportFigure,
     prediction_evaluation_report_figures,
     summary_report,
+    summary_report_with_factor_figures,
 )
 from .results import (
     BacktestResult,
@@ -199,5 +200,6 @@ __all__ = [
     "select_top_n_stable",
     "summarize_portfolio_path_returns",
     "summary_report",
+    "summary_report_with_factor_figures",
     "top_n_monthly_performance",
 ]

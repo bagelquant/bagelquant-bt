@@ -9,12 +9,12 @@ import bagelquant_bt.reporting as reporting_module
 from bagelquant_bt import (
     BacktestConfig,
     summary_report,
+    summary_report_with_factor_figures,
 )
 from bagelquant_bt.engine import run_weight_backtest
 from bagelquant_bt.factor import run_factor_evaluation
 from bagelquant_bt.reporting import (
     _dataframe_to_html,
-    _summary_report_with_factor_figures,
     factor_evaluation_report_figures,
 )
 from bagelquant_bt.visualization import _label_with_mean
@@ -172,7 +172,7 @@ def test_summary_report_renders_factor_tables_and_plots(
             "precomputed figures must not be rebuilt"
         ),
     )
-    reused_html = _summary_report_with_factor_figures(result, figures)
+    reused_html = summary_report_with_factor_figures(result, figures)
     assert "Signal Coverage" in reused_html
     assert "Spread Net Lag Cumulative Returns" in reused_html
     assert [item.section for item in figures] == [

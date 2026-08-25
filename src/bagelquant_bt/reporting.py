@@ -230,7 +230,7 @@ def summary_report(
     )
 
 
-def _summary_report_with_factor_figures(
+def summary_report_with_factor_figures(
     result: FactorEvaluationResult,
     figures: tuple[ReportFigure, ...],
     *,
