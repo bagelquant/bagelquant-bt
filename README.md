@@ -6,8 +6,8 @@ application, performance metrics, and Plotly visualization.
 The public investment flow is:
 
 ```text
-AlphaValue Panel -> AlphaPolicy -> PredictionComposer -> PredictionPanel
--> ExecutionPolicy -> WeightPolicy -> Weights Panel
+AlphaValue Panel -> AlphaPolicy -> StandardizePolicy -> PredictionComposer
+-> PredictionPanel -> ExecutionPolicy -> WeightPolicy -> Weights Panel
 ```
 
 Public backtests require a core `PredictionPanel`. Ordinary panels, raw DataFrames,
@@ -37,6 +37,7 @@ signal = compose_prediction(
     IdentityPredictionComposer(),
     calendar,
     policy,
+    standardize_policy="z_score",
 )
 result = run_prediction_backtest(
     signal,
@@ -49,8 +50,11 @@ result = run_prediction_backtest(
 
 `run_prediction_evaluation` computes execution-to-execution IC, quantiles,
 spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`.
-Prediction composition returns the composer's raw `PredictionPanel`; callers
-may explicitly apply Core Transformers before the Weight Policy boundary.
+`AlphaPolicy` owns only evaluation-date alignment. `StandardizePolicy` is the
+independent cross-sectional preprocessing contract (`none`, `z_score`, or
+`percentile_rank`). Prediction composition returns the composer's raw
+`PredictionPanel`; callers may explicitly apply Core Transformers before the
+Weight Policy boundary.
 
 `PredictionRegularizedOptimizerPolicy` converts a Prediction plus explicit
 reference weights into target weights under long-only, fully-invested, and

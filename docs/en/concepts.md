@@ -21,8 +21,9 @@ keys:    time, asset_id
 values:  price, value, or weight
 ```
 
-`AlphaPolicy` maps observation snapshots, `ExecutionPolicy` maps execution
-sessions, and `WeightPolicy.build(ScheduledPrediction)` returns a `WeightBuild`
+`AlphaPolicy` maps observation snapshots, `StandardizePolicy` applies one
+cross-sectional transformation, `ExecutionPolicy` maps execution sessions,
+and `WeightPolicy.build(ScheduledPrediction)` returns a `WeightBuild`
 containing a plain weights `Panel` plus skipped rows. `MarketRule` remains an
 independent execution constraint. Lot sizing and live order submission are
 outside the package boundary.

@@ -26,7 +26,7 @@ signal = compose_prediction(
     IdentityPredictionComposer(),
     calendar,
     policy,
-    standardization="zscore",
+    standardize_policy="z_score",
 )
 result = run_prediction_backtest(
     signal,
@@ -41,3 +41,6 @@ result = run_prediction_backtest(
 `OLSPredictionComposer` 或 `GLSPredictionComposer` 时，还需向 `compose_prediction`
 提供 `prices`。rolling window 与 half-life 按 AlphaPolicy 的交易期计数，不按日频行计数。普通 Panel、裸 DataFrame
 与直接 weights 均不能传给 `run_prediction_backtest`。
+
+`AlphaPolicy` 只负责选择评估观测；横截面标准化由独立的 `StandardizePolicy` 负责。
+规范 registry ID 为 `"none"`、`"z_score"` 和 `"percentile_rank"`。

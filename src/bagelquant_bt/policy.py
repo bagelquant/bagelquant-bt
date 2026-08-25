@@ -49,11 +49,12 @@ class MissingSnapshotAction(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class AlphaPolicyResult:
-    """Evaluation schedule, processed Panels, and exact source-date lineage."""
+    """Evaluation schedule, aligned Panels, and exact source-date lineage."""
 
     schedule: pl.DataFrame
     alpha_values: Mapping[str, Panel]
     alignments: pl.DataFrame
+    standardize_policy_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,13 +214,12 @@ class ExecutionPolicy:
 
 @dataclass(frozen=True, slots=True)
 class AlphaPolicy:
-    """Align Alpha snapshots to evaluation dates, then standardize each Alpha."""
+    """Align Alpha snapshots to evaluation dates."""
 
     id: str
     frequency: Literal["daily", "monthly"]
     anchor: EvaluationAnchor
     missing_snapshot: MissingSnapshotAction
-    standardization: AlphaStandardization = AlphaStandardization.NONE
     calendar_day: int | None = None
     weekday: int | None = None
     observation_offset_sessions: int = 0
@@ -228,9 +228,6 @@ class AlphaPolicy:
     def __post_init__(self) -> None:
         if not self.id.strip():
             raise ValueError("alpha policy requires an id")
-        object.__setattr__(
-            self, "standardization", AlphaStandardization(self.standardization)
-        )
         if self.observation_offset_sessions < 0:
             raise ValueError("observation offset cannot be negative")
         if self.anchor == EvaluationAnchor.ON_OR_AFTER_CALENDAR_DAY:
@@ -316,7 +313,7 @@ class AlphaPolicy:
         processed: dict[str, Panel] = {}
         alignments: list[pl.DataFrame] = []
         for name, value in alpha_values.items():
-            panel, alignment = self._process_panel(value, schedule)
+            panel, alignment = self._align_panel(value, schedule)
             processed[name] = panel
             if not alignment.is_empty():
                 alignments.append(
@@ -339,25 +336,13 @@ class AlphaPolicy:
             alignments=lineage,
         )
 
-    def _process_panel(
+    def _align_panel(
         self, alpha: Panel, schedule: pl.DataFrame
     ) -> tuple[Panel, pl.DataFrame]:
         aligned, lineage = _align_alpha(alpha, schedule, self)
         value = pl.col("value").fill_nan(None)
         finite = pl.when(value.is_finite()).then(value).otherwise(None)
-        if self.standardization == AlphaStandardization.NONE:
-            expression = finite
-        elif self.standardization == AlphaStandardization.Z_SCORE:
-            deviation = finite.std(ddof=1).over(TIME)
-            expression = pl.when(deviation.is_not_null() & (deviation > 0)).then(
-                (finite - finite.mean().over(TIME)) / deviation
-            )
-        else:
-            count = finite.count().over(TIME)
-            expression = pl.when(count > 0).then(
-                finite.rank("average").over(TIME) / count
-            )
-        frame = aligned.with_columns(expression.alias("value")).drop_nulls("value")
+        frame = aligned.with_columns(finite.alias("value")).drop_nulls("value")
         domain = Domain(
             calendar=schedule.get_column("rebalance_date"),
             universe=alpha.domain.asset_ids,
@@ -370,10 +355,68 @@ class AlphaPolicy:
                 metadata={
                     **alpha.metadata,
                     "alpha_policy": self.id,
-                    "standardization": self.standardization.value,
                 },
             ),
             lineage,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StandardizePolicy:
+    """Apply one cross-sectional standardization after Alpha scheduling."""
+
+    id: str
+    method: AlphaStandardization
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("standardize policy requires an id")
+        object.__setattr__(self, "method", AlphaStandardization(self.method))
+
+    def apply(self, aligned: AlphaPolicyResult) -> AlphaPolicyResult:
+        """Standardize every aligned AlphaValue with the same method."""
+
+        if not isinstance(aligned, AlphaPolicyResult):
+            raise TypeError("StandardizePolicy requires an AlphaPolicyResult")
+        if aligned.standardize_policy_id is not None:
+            if aligned.standardize_policy_id == self.id:
+                return aligned
+            raise ValueError("AlphaPolicyResult is already standardized")
+        processed: dict[str, Panel] = {}
+        for name, alpha in aligned.alpha_values.items():
+            frame = alpha.collect(dense=False)
+            value = pl.col("value").fill_nan(None)
+            finite = pl.when(value.is_finite()).then(value).otherwise(None)
+            if self.method == AlphaStandardization.NONE:
+                expression = finite
+            elif self.method == AlphaStandardization.Z_SCORE:
+                deviation = finite.std(ddof=1).over(TIME)
+                expression = pl.when(
+                    deviation.is_not_null() & (deviation > 0)
+                ).then((finite - finite.mean().over(TIME)) / deviation)
+            else:
+                count = finite.count().over(TIME)
+                expression = pl.when(count > 0).then(
+                    finite.rank("average").over(TIME) / count
+                )
+            standardized = frame.with_columns(expression.alias("value")).drop_nulls(
+                "value"
+            )
+            processed[name] = Panel.from_domain(
+                standardized,
+                alpha.domain,
+                name=alpha.name,
+                metadata={
+                    **alpha.metadata,
+                    "standardize_policy": self.id,
+                    "standardization": self.method.value,
+                },
+            )
+        return AlphaPolicyResult(
+            schedule=aligned.schedule,
+            alpha_values=processed,
+            alignments=aligned.alignments,
+            standardize_policy_id=self.id,
         )
 
 
@@ -420,6 +463,14 @@ _CANONICAL_ALPHA_POLICIES = {
     ),
 }
 
+_CANONICAL_STANDARDIZE_POLICIES = {
+    "none": StandardizePolicy("none", AlphaStandardization.NONE),
+    "z_score": StandardizePolicy("z_score", AlphaStandardization.Z_SCORE),
+    "percentile_rank": StandardizePolicy(
+        "percentile_rank", AlphaStandardization.PERCENTILE_RANK
+    ),
+}
+
 
 def execution_policies() -> tuple[ExecutionPolicy, ...]:
     return tuple(_CANONICAL_EXECUTION_POLICIES.values())
@@ -436,28 +487,23 @@ def alpha_policies() -> tuple[AlphaPolicy, ...]:
     return tuple(_CANONICAL_ALPHA_POLICIES.values())
 
 
-def resolve_alpha_policy(
-    policy_id: str,
-    *,
-    standardization: AlphaStandardization | str | None = None,
-) -> AlphaPolicy:
+def resolve_alpha_policy(policy_id: str) -> AlphaPolicy:
     try:
         policy = _CANONICAL_ALPHA_POLICIES[policy_id]
     except KeyError as error:
         raise KeyError(f"unknown alpha policy: {policy_id}") from error
-    if standardization is None:
-        return policy
-    return AlphaPolicy(
-        id=policy.id,
-        frequency=policy.frequency,
-        anchor=policy.anchor,
-        missing_snapshot=policy.missing_snapshot,
-        standardization=AlphaStandardization(standardization),
-        calendar_day=policy.calendar_day,
-        weekday=policy.weekday,
-        observation_offset_sessions=policy.observation_offset_sessions,
-        holiday_adjustment=policy.holiday_adjustment,
-    )
+    return policy
+
+
+def standardize_policies() -> tuple[StandardizePolicy, ...]:
+    return tuple(_CANONICAL_STANDARDIZE_POLICIES.values())
+
+
+def resolve_standardize_policy(policy_id: str) -> StandardizePolicy:
+    try:
+        return _CANONICAL_STANDARDIZE_POLICIES[policy_id]
+    except KeyError as error:
+        raise KeyError(f"unknown standardize policy: {policy_id}") from error
 
 
 def _align_alpha(
@@ -610,8 +656,11 @@ __all__ = [
     "MissingSnapshotAction",
     "ScheduledPrediction",
     "ScheduledWeights",
+    "StandardizePolicy",
     "alpha_policies",
     "execution_policies",
     "resolve_alpha_policy",
     "resolve_execution_policy",
+    "resolve_standardize_policy",
+    "standardize_policies",
 ]

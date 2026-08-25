@@ -53,13 +53,14 @@ def _inputs() -> tuple[pl.DataFrame, Panel, pl.DataFrame]:
 
 def test_compose_and_backtest_enforce_typed_prediction_boundary() -> None:
     calendar, alpha, prices = _inputs()
-    policy = resolve_alpha_policy("daily", standardization="z_score")
+    policy = resolve_alpha_policy("daily")
 
     prediction = compose_prediction(
         {"alpha": alpha},
         IdentityPredictionComposer(),
         calendar,
         policy,
+        standardize_policy="z_score",
     )
     result = run_prediction_backtest(
         prediction,
@@ -85,7 +86,7 @@ def test_compose_and_backtest_enforce_typed_prediction_boundary() -> None:
 def test_processed_prediction_matches_one_step_composition_without_reapplying_policy(
 ) -> None:
     calendar, alpha, _ = _inputs()
-    policy = resolve_alpha_policy("daily", standardization="z_score")
+    policy = resolve_alpha_policy("daily")
     processed = policy.apply({"alpha": alpha}, calendar)
 
     direct = compose_prediction(
@@ -93,11 +94,13 @@ def test_processed_prediction_matches_one_step_composition_without_reapplying_po
         IdentityPredictionComposer(),
         calendar,
         policy,
+        standardize_policy="z_score",
     )
     cached = compose_processed_prediction(
         processed,
         IdentityPredictionComposer(),
         calendar,
+        standardize_policy="z_score",
     )
 
     assert cached.collect(dense=False).equals(direct.collect(dense=False))
@@ -129,7 +132,7 @@ def test_composition_preserves_raw_prediction_values(
         {"alpha": alpha},
         IdentityPredictionComposer(),
         calendar,
-        resolve_alpha_policy("daily", standardization="none"),
+        resolve_alpha_policy("daily"),
     )
 
     assert prediction.collect(dense=False).get_column("value").to_list() == values

@@ -9,14 +9,15 @@ compose_prediction(
     calendar,
     alpha_policy,
     *,
+    standardize_policy="none",
     execution_policy="next_open",
     prices=None,
 )
 ```
 
 `alpha_values` maps stable aliases to ordinary core `Panel` values. `AlphaPolicy`
-first aligns evaluation-date snapshots and then applies its configured
-standardization. The result is the Composer's raw typed `PredictionPanel`; BT
+aligns evaluation-date snapshots; the independent `StandardizePolicy` then
+applies `none`, `z_score`, or `percentile_rank`. The result is the Composer's raw typed `PredictionPanel`; BT
 does not apply a fixed post-composer normalization. IC-weighted, OLS, and GLS
 composers require prices so the package can construct
 execution-to-next-execution labels without look-ahead.

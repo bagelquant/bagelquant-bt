@@ -26,7 +26,7 @@ signal = compose_prediction(
     IdentityPredictionComposer(),
     calendar,
     policy,
-    standardization="zscore",
+    standardize_policy="z_score",
 )
 result = run_prediction_backtest(
     signal,
@@ -42,3 +42,7 @@ For `ICWeightedPredictionComposer`, `ICWeightedDecayPredictionComposer`,
 `compose_prediction`. Their rolling window and half-life count signal
 periods, not daily rows. Ordinary panels, raw DataFrames, and direct weights
 cannot be passed to `run_prediction_backtest`.
+
+`AlphaPolicy` selects evaluation observations only. Cross-sectional
+standardization is an independent `StandardizePolicy`; `"none"`, `"z_score"`,
+and `"percentile_rank"` are the canonical registry IDs.

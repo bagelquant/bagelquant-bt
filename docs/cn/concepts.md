@@ -20,7 +20,8 @@ keys:    time, asset_id
 values:  price, value, 或 weight
 ```
 
-`AlphaPolicy` 选择 observation snapshot，`ExecutionPolicy` 映射执行 session，
+`AlphaPolicy` 选择 observation snapshot，`StandardizePolicy` 执行独立的横截面变换，
+`ExecutionPolicy` 映射执行 session，
 `WeightPolicy.build(ScheduledPrediction)` 返回包含普通 weights `Panel` 与 skipped rows 的
 `WeightBuild`。`MarketRule` 保持独立。手数计算与实盘报单不属于本包边界。
 

@@ -4,7 +4,7 @@ from datetime import date
 
 import polars as pl
 import pytest
-from bagelquant_core import Domain, Panel, PredictionPanel
+from bagelquant_core import Domain, IdentityPredictionComposer, Panel, PredictionPanel
 from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
@@ -15,6 +15,7 @@ from bagelquant_bt import (
     TargetVolatilityPolicy,
     resolve_alpha_policy,
     resolve_execution_policy,
+    resolve_standardize_policy,
     run_prediction_evaluation,
 )
 from bagelquant_bt.engine import run_weight_backtest
@@ -122,6 +123,40 @@ def test_execution_policy_marks_rebalance_without_future_session() -> None:
     )
 
 
+def test_daily_policy_uses_exact_open_dates_and_next_session_execution() -> None:
+    sessions = [date(2024, 1, 5), date(2024, 1, 9), date(2024, 1, 10)]
+    calendar = pl.DataFrame({"time": sessions, "is_open": [1, 1, 1]})
+    alpha = Panel.from_domain(
+        pl.DataFrame(
+            {
+                "time": [date(2024, 1, 5), date(2024, 1, 10)],
+                "asset_id": ["a", "a"],
+                "value": [1.0, 2.0],
+            }
+        ),
+        Domain(calendar=sessions, universe=["a"]),
+        name="alpha",
+    )
+    processed = resolve_alpha_policy("daily").apply({"alpha": alpha}, calendar)
+    prediction = IdentityPredictionComposer().compose(
+        processed.alpha_values["alpha"], name="prediction"
+    ).compute()
+
+    scheduled = resolve_execution_policy("next_open").schedule_prediction(
+        prediction, calendar
+    )
+
+    assert processed.alpha_values["alpha"].collect(dense=False).get_column(
+        "time"
+    ).to_list() == [date(2024, 1, 5), date(2024, 1, 10)]
+    assert scheduled.prediction.collect(dense=False).get_column("time").to_list() == [
+        date(2024, 1, 9)
+    ]
+    assert scheduled.schedule.row(-1, named=True)["skip_reason"] == (
+        "missing_execution_session"
+    )
+
+
 def test_alpha_policy_preserves_all_monthly_schedule_variants() -> None:
     calendar = pl.DataFrame(
         {
@@ -157,9 +192,9 @@ def test_alpha_policy_aligns_evaluation_date_before_standardization() -> None:
         name="alpha",
     )
 
-    applied = resolve_alpha_policy(
-        "month_end", standardization="z_score"
-    ).apply({"alpha": alpha}, calendar)
+    applied = resolve_standardize_policy("z_score").apply(
+        resolve_alpha_policy("month_end").apply({"alpha": alpha}, calendar)
+    )
     result = applied.alpha_values["alpha"].collect(dense=False)
 
     assert result.get_column("time").to_list() == [

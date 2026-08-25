@@ -9,13 +9,14 @@ compose_prediction(
     calendar,
     alpha_policy,
     *,
+    standardize_policy="none",
     execution_policy="next_open",
     prices=None,
 )
 ```
 
-`alpha_values` 用稳定 alias 映射到普通 core `Panel`；`AlphaPolicy` 先执行其显式
-standardization，结果是 Composer 的原始强类型 `PredictionPanel`。BT 不执行固定的
+`alpha_values` 用稳定 alias 映射到普通 core `Panel`；`AlphaPolicy` 只对齐评估日期，
+独立的 `StandardizePolicy` 再执行 `none`、`z_score` 或 `percentile_rank`。结果是 Composer 的原始强类型 `PredictionPanel`。BT 不执行固定的
 post-composer normalization。IC weighted、OLS 与 GLS 必须提供价格，以构造无前视的
 execution-to-next-execution 标签。
 

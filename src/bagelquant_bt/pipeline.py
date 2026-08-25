@@ -25,7 +25,9 @@ from .policy import (
     AlphaPolicy,
     AlphaPolicyResult,
     ExecutionPolicy,
+    StandardizePolicy,
     resolve_execution_policy,
+    resolve_standardize_policy,
 )
 from .results import BacktestResult
 
@@ -44,6 +46,7 @@ def compose_prediction(
     calendar: pl.DataFrame,
     alpha_policy: AlphaPolicy,
     *,
+    standardize_policy: StandardizePolicy | str = "none",
     execution_policy: ExecutionPolicy | str = "next_open",
     prices: pl.DataFrame | None = None,
     start: date | None = None,
@@ -53,16 +56,17 @@ def compose_prediction(
 
     if not isinstance(alpha_policy, AlphaPolicy):
         raise TypeError("alpha_policy must be an AlphaPolicy")
-    processed = alpha_policy.apply(
+    aligned = alpha_policy.apply(
         alpha_values,
         calendar,
         start=start,
         end=end,
     )
     return compose_processed_prediction(
-        processed,
+        aligned,
         composer,
         calendar,
+        standardize_policy=standardize_policy,
         execution_policy=execution_policy,
         prices=prices,
     )
@@ -73,6 +77,7 @@ def compose_processed_prediction(
     composer: PredictionComposer,
     calendar: pl.DataFrame,
     *,
+    standardize_policy: StandardizePolicy | str = "none",
     execution_policy: ExecutionPolicy | str = "next_open",
     prices: pl.DataFrame | None = None,
 ) -> PredictionPanel:
@@ -80,6 +85,14 @@ def compose_processed_prediction(
 
     if not isinstance(processed, AlphaPolicyResult):
         raise TypeError("processed must be an AlphaPolicyResult")
+    standardize = (
+        resolve_standardize_policy(standardize_policy)
+        if isinstance(standardize_policy, str)
+        else standardize_policy
+    )
+    if not isinstance(standardize, StandardizePolicy):
+        raise TypeError("standardize_policy must be a StandardizePolicy")
+    processed = standardize.apply(processed)
     if not processed.alpha_values:
         raise ValueError("processed AlphaPolicy result contains no AlphaValues")
     if not isinstance(composer, PredictionComposer):
@@ -130,6 +143,7 @@ def compose_processed_fama_macbeth_ols(
     composer: OLSPredictionComposer,
     calendar: pl.DataFrame,
     *,
+    standardize_policy: StandardizePolicy | str = "none",
     execution_policy: ExecutionPolicy | str = "next_open",
     prices: pl.DataFrame,
 ) -> FamaMacBethOLSComposition:
@@ -137,6 +151,14 @@ def compose_processed_fama_macbeth_ols(
 
     if not isinstance(processed, AlphaPolicyResult):
         raise TypeError("processed must be an AlphaPolicyResult")
+    standardize = (
+        resolve_standardize_policy(standardize_policy)
+        if isinstance(standardize_policy, str)
+        else standardize_policy
+    )
+    if not isinstance(standardize, StandardizePolicy):
+        raise TypeError("standardize_policy must be a StandardizePolicy")
+    processed = standardize.apply(processed)
     if not isinstance(composer, OLSPredictionComposer):
         raise TypeError("composer must be an OLSPredictionComposer")
     if not processed.alpha_values:
