@@ -403,6 +403,7 @@ def _prepare_sparse_market_context(
     execution_availability: pl.DataFrame | None,
     *,
     execution_keys: pl.DataFrame | None = None,
+    include_return_matrix: bool = True,
 ) -> _SparseMarketContext:
     """Encode stable market axes and rule events once for batch evaluation."""
 
@@ -440,9 +441,11 @@ def _prepare_sparse_market_context(
         .to_frame()
         .with_row_index("_asset_index")
     )
-    return_matrix = np.zeros(
-        (return_sessions.height, return_assets.height),
-        dtype=np.float64,
+    return_shape = (return_sessions.height, return_assets.height)
+    return_matrix = (
+        np.zeros(return_shape, dtype=np.float64)
+        if include_return_matrix
+        else np.empty((0, 0), dtype=np.float64)
     )
     return_session_indices = np.searchsorted(
         return_sessions.get_column(TIME).cast(pl.Int32).to_numpy(),
@@ -454,11 +457,12 @@ def _prepare_sparse_market_context(
         .to_physical()
         .to_numpy()
     )
-    return_present = np.zeros(return_matrix.shape, dtype=np.bool_)
-    return_matrix[
-        return_session_indices,
-        return_asset_indices,
-    ] = forward_returns.get_column("forward_return").to_numpy()
+    return_present = np.zeros(return_shape, dtype=np.bool_)
+    if include_return_matrix:
+        return_matrix[
+            return_session_indices,
+            return_asset_indices,
+        ] = forward_returns.get_column("forward_return").to_numpy()
     return_present[return_session_indices, return_asset_indices] = True
     execution_event_keys = _execution_rule_event_keys(
         execution_availability,
@@ -624,6 +628,51 @@ def _run_sparse_compact_backtests(
         context,
         config=config,
         slippage_rates=resolved_slippage_rates,
+    )
+
+
+def _sparse_executed_turnover(
+    weights: pl.DataFrame,
+    prices: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    execution_availability: pl.DataFrame | None,
+    retry_blocked: bool,
+) -> pl.DataFrame:
+    """Calculate executed turnover without constructing an account path."""
+
+    if weights.is_empty():
+        return pl.DataFrame(schema={TIME: pl.Date, "turnover": pl.Float64})
+    context = _prepare_sparse_market_context(
+        prices,
+        forward_returns,
+        execution_availability,
+        include_return_matrix=False,
+    )
+    targets = _batch_portfolio_targets({"research": weights}, context)["research"]
+    state = _resolve_sparse_portfolio_state_from_targets(
+        targets.target_events,
+        targets.seed_targets,
+        execution_availability,
+        execution_event_keys=context.execution_event_keys,
+        retry_blocked=retry_blocked,
+        first_time=weights.get_column(TIME).min(),
+        unexecuted_weight_keys=targets.unexecuted_weight_keys,
+    )
+    deltas = _sparse_weight_deltas(
+        state.executable_events,
+        initial_weights=None,
+    )
+    first_time = weights.get_column(TIME).min()
+    timeline = (
+        context.return_sessions.select(TIME)
+        .filter(pl.col(TIME) >= first_time)
+        .sort(TIME)
+    )
+    return (
+        timeline.join(_turnover_from_weight_deltas(deltas), on=TIME, how="left")
+        .with_columns(pl.col("turnover").fill_null(0.0))
+        .sort(TIME)
     )
 
 

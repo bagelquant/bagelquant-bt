@@ -19,11 +19,14 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
 - `run_prediction_evaluation(scheduled_signal, prices, ...)` computes IC,
   quantiles, lag diagnostics, and signal-driven portfolio results.
 - `run_prediction_horizon_diagnostics(scheduled_signal, prices, ...)` computes
-  fixed-session forward returns, IC, centered-rank Book, gross-one Tail,
+  one fixed-session label window at a time and retains aggregate IC,
+  centered-rank Book, gross-one Tail,
   quantile structure, signal persistence, HAC inference, BH q-values, and
   staggered cohorts without constructing portfolio performance.
 - `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`
-  simulates daily Book/Tail gross/net diagnostic paths, Book requested/executed
+  calculates capital-free daily Book/Tail gross/net diagnostic paths, where Net
+  subtracts requested-turnover proportional costs but excludes capital, minimum
+  fees, execution blocks, and insolvency; it also reports Book requested/executed
   turnover with an initial-rebalance marker, common-sample Book lead-lag returns
   for integer lags `-30..30`, and Book/Tail lag paths at
   `0/1/2/5/10/20/60`.

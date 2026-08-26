@@ -57,10 +57,12 @@ fixed cumulative `1/5/10/20/40/60/120D` windows and `1D`, `2–5D`, `6–20D`,
 returns, gross-one Tail returns, full quantile curves, IC, signal persistence,
 and Bartlett Newey–West inference without constructing a portfolio NAV.
 `run_daily_rank_path_diagnostics` complements those forward-window statistics
-with a daily-rebalanced diagnostic path. It simulates Book and Tail gross/net
-returns under the ordinary cost, slippage, price-gap, and execution-availability
-rules, reports requested/executed Book turnover with the true initial rebalance
-marked, evaluates the Book over a common-sample integer lead-lag grid from
+with a daily-rebalanced, capital-free research path. Gross is the requested
+Book/Tail factor return; Net subtracts proportional commission, sell tax,
+transfer fees, and slippage from requested weight changes. Initial capital,
+cash, minimum fees, execution blocks, and insolvency state never enter these
+returns. Execution availability affects only the separately reported executed
+turnover. The result marks the true initial rebalance, evaluates the Book over a common-sample integer lead-lag grid from
 `-30` through `+30` sessions, and publishes common-sample Book/Tail paths for
 lags `0/1/2/5/10/20/60`.
 `AlphaPolicy` owns only evaluation-date alignment. `StandardizePolicy` is the

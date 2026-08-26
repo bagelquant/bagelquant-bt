@@ -38,17 +38,30 @@ evaluation API. They are distinct from fixed-horizon prediction diagnostics.
 ## Daily diagnostic rank paths
 
 `run_daily_rank_path_diagnostics` turns each PIT daily signal into the same
-centered-rank Book and gross-one Tail targets, then runs them through the public
-portfolio engine. Its output contains daily Book/Tail gross and net returns,
+centered-rank Book and gross-one Tail targets, then calculates capital-free
+factor returns directly. Gross is `sum(weight * next_return)`. Net subtracts
+proportional commission, sell stamp tax, transfer fees, and current/fallback
+slippage from requested weight changes. It deliberately excludes initial
+capital, cash, minimum fees, blocked execution, and bankruptcy state. Price
+gaps retain the freeze-and-catch-up valuation rule without selecting or
+renormalizing the cross-section. Its output contains daily Book/Tail gross and net returns,
 Book requested and executed turnover, and Book gross/net returns for every
 integer lead or lag from `-30` through `+30`. Initial construction counts toward
 turnover and cost and is explicitly marked by `is_initial_rebalance`, allowing
 read-time summaries to exclude that one event without dropping the first row of
 an arbitrary date slice. `alpha_return_lag_returns` additionally contains Book
 and Tail gross/net paths at lags `0/1/2/5/10/20/60`; all fourteen paths use one
-common complete date sample. Negative lags intentionally trade before the signal and are
+common complete date sample. Executed turnover applies execution constraints as
+an independent implementability diagnostic and never changes Gross or Net.
+Negative lags intentionally use the signal before it was available and are
 therefore labeled non-PIT/look-ahead diagnostics; every lag uses the common
 complete overlap of shifted execution dates.
+
+`run_prediction_horizon_diagnostics` generates one cumulative or bucket label
+frame at a time and immediately retains only its aggregate IC, Book, Tail,
+quantile, regression, coverage, and inference outputs. Row-level labels remain
+available from `session_window_forward_returns`, but the aggregate result does
+not retain forward-label or Book/Tail-weight frames for all windows.
 
 The daily Summary autocorrelation grid uses average-tie cross-sectional rank
 correlation for all lags `1..120`. Per-lag implied half-life is

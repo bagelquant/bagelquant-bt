@@ -21,9 +21,8 @@ from scipy import stats
 
 from .config import BacktestConfig
 from .engine import (
-    _prepare_sparse_market_context,
-    _run_sparse_compact_backtests,
-    _SparseMarketContext,
+    _attach_slippage_rates,
+    _sparse_executed_turnover,
 )
 from .inputs import (
     ASSET_ID,
@@ -96,15 +95,18 @@ class HACMeanTest:
 
 @dataclass(frozen=True, slots=True)
 class PredictionHorizonDiagnostics:
-    """Prediction-only diagnostics for a fixed collection of windows."""
+    """Aggregate prediction diagnostics for a fixed collection of windows.
 
-    forward_returns: pl.DataFrame
+    Row-level forward labels remain available from
+    :func:`session_window_forward_returns`.  The complete diagnostic result
+    deliberately retains only the aggregate outputs consumed by research so a
+    caller never has to keep every asset/window label resident at once.
+    """
+
     coverage: pl.DataFrame
     ic: pl.DataFrame
     ic_summary: pl.DataFrame
-    book_weights: pl.DataFrame
     book_returns: pl.DataFrame
-    tail_weights: pl.DataFrame
     tail_returns: pl.DataFrame
     quantile_forward_returns: pl.DataFrame
     quantile_structure: pl.DataFrame
@@ -112,6 +114,7 @@ class PredictionHorizonDiagnostics:
     signal_persistence: pl.DataFrame
     signal_persistence_summary: pl.DataFrame
     statistical_inference: pl.DataFrame
+    max_window_forward_rows: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,9 +122,11 @@ class DailyRankPathDiagnostics:
     """Daily diagnostic rank paths and causal summary inputs.
 
     These paths are research diagnostics, not a production Weight Policy or
-    simulated account.  Gross and net returns nevertheless use the same
-    execution constraints, price-gap semantics, transaction-cost settings,
-    and slippage schedule as the ordinary BT engine.
+    simulated account.  Gross returns use requested rank weights.  Net returns
+    subtract proportional transaction costs and slippage from requested
+    turnover without capital, cash, minimum fees, or insolvency state.
+    Execution constraints affect only the separately reported executed
+    turnover diagnostic.
     """
 
     book_daily_returns: pl.DataFrame
@@ -185,10 +190,27 @@ def session_window_forward_returns(
     market = validate_prices(prices)
     resolved_windows = _validate_windows(windows)
     sessions = _session_dates(calendar, market)
+    return _session_window_forward_returns_from_frames(
+        factor,
+        market,
+        windows=resolved_windows,
+        sessions=sessions,
+    )
+
+
+def _session_window_forward_returns_from_frames(
+    factor: pl.DataFrame,
+    market: pl.DataFrame,
+    *,
+    windows: Sequence[SessionWindow],
+    sessions: Sequence[date],
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build labels from validated shared inputs for one or more windows."""
+
     window_schedule = _window_schedule(
         factor.select("evaluation_date", "execution_date").unique(),
         sessions,
-        resolved_windows,
+        windows,
     )
     expected = (
         factor.group_by("evaluation_date", "execution_date")
@@ -485,6 +507,21 @@ def window_quantile_forward_returns(
     membership = _quantile_membership(
         _validate_scheduled_factor_frame(factor), quantiles=quantiles
     )
+    return _window_quantile_forward_returns_with_membership(
+        membership,
+        forward_returns,
+        quantiles=quantiles,
+    )
+
+
+def _window_quantile_forward_returns_with_membership(
+    membership: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    quantiles: int,
+) -> pl.DataFrame:
+    """Aggregate one label window with a caller-reused quantile membership."""
+
     paired = forward_returns.join(
         membership.select(
             "evaluation_date", ASSET_ID, "quantile", "_count", "_unique"
@@ -944,40 +981,76 @@ def run_prediction_horizon_diagnostics(
     quantiles: int = 10,
     annualization_sessions: int = 240,
 ) -> PredictionHorizonDiagnostics:
-    """Run the complete fixed-window prediction-only diagnostic protocol."""
+    """Run fixed-window diagnostics while retaining one label window at a time."""
 
     if annualization_sessions <= 0:
         raise ValueError("annualization_sessions must be positive")
     factor = _scheduled_factor(signals)
+    market = validate_prices(prices)
+    resolved_windows = _validate_windows(windows)
     resolved_calendar = (
-        calendar if calendar is not None else prices.select(TIME).unique()
+        calendar if calendar is not None else market.select(TIME).unique()
     )
-    forward, coverage = session_window_forward_returns(
-        signals, prices, windows=windows, calendar=resolved_calendar
-    )
+    sessions = _session_dates(resolved_calendar, market)
     book_weights = centered_rank_book_weights(factor)
     tail_weights = gross_one_tail_weights(factor, quantiles=quantiles)
-    ic = window_information_coefficients(factor, forward)
-    book_returns = window_book_returns(book_weights, forward)
-    tail_returns = window_tail_returns(tail_weights, forward)
-    quantile_returns = window_quantile_forward_returns(
-        factor, forward, quantiles=quantiles
+    quantile_membership = _quantile_membership(factor, quantiles=quantiles)
+    coverage_frames: list[pl.DataFrame] = []
+    ic_frames: list[pl.DataFrame] = []
+    book_return_frames: list[pl.DataFrame] = []
+    tail_return_frames: list[pl.DataFrame] = []
+    quantile_return_frames: list[pl.DataFrame] = []
+    factor_return_frames: list[pl.DataFrame] = []
+    max_window_forward_rows = 0
+    for window in resolved_windows:
+        forward, window_coverage = _session_window_forward_returns_from_frames(
+            factor,
+            market,
+            windows=(window,),
+            sessions=sessions,
+        )
+        max_window_forward_rows = max(max_window_forward_rows, forward.height)
+        coverage_frames.append(window_coverage)
+        ic_frames.append(window_information_coefficients(factor, forward))
+        book_return_frames.append(window_book_returns(book_weights, forward))
+        tail_return_frames.append(window_tail_returns(tail_weights, forward))
+        quantile_return_frames.append(
+            _window_quantile_forward_returns_with_membership(
+                quantile_membership,
+                forward,
+                quantiles=quantiles,
+            )
+        )
+        factor_return_frames.append(window_factor_returns(factor, forward))
+    coverage = pl.concat(coverage_frames, how="diagonal_relaxed").sort(
+        ["evaluation_date", "window_id"]
     )
+    ic = pl.concat(ic_frames, how="diagonal_relaxed").sort(
+        ["evaluation_date", "window_id"]
+    )
+    book_returns = pl.concat(book_return_frames, how="diagonal_relaxed").sort(
+        ["evaluation_date", "window_id"]
+    )
+    tail_returns = pl.concat(tail_return_frames, how="diagonal_relaxed").sort(
+        ["evaluation_date", "window_id"]
+    )
+    quantile_returns = pl.concat(
+        quantile_return_frames, how="diagonal_relaxed"
+    ).sort(["evaluation_date", "window_id", "quantile"])
+    factor_returns = pl.concat(
+        factor_return_frames, how="diagonal_relaxed"
+    ).sort(["evaluation_date", "window_id"])
     structure = quantile_curve_structure(quantile_returns, quantiles=quantiles)
-    factor_returns = window_factor_returns(factor, forward)
     persistence, persistence_summary = signal_rank_persistence(
         factor, calendar=resolved_calendar
     )
     return PredictionHorizonDiagnostics(
-        forward_returns=forward,
         coverage=coverage,
         ic=ic,
         ic_summary=summarize_window_ic(
             ic, annualization_sessions=annualization_sessions
         ),
-        book_weights=book_weights,
         book_returns=book_returns,
-        tail_weights=tail_weights,
         tail_returns=tail_returns,
         quantile_forward_returns=quantile_returns,
         quantile_structure=structure,
@@ -991,6 +1064,7 @@ def run_prediction_horizon_diagnostics(
             quantile_structure=structure,
             factor_returns=factor_returns,
         ),
+        max_window_forward_rows=max_window_forward_rows,
     )
 
 
@@ -1094,7 +1168,8 @@ def run_daily_rank_path_diagnostics(
     Lead-lag values are signed trading offsets: negative values trade before
     the signal's mapped execution session and are intentionally non-PIT;
     positive values delay execution.  Every lead-lag path is restricted to
-    exactly the same set of executable return sessions before simulation.
+    exactly the same return sessions.  These paths are proportional-cost
+    factor returns and never construct a capital account.
     """
 
     resolved_lags = _validate_lead_lags(lead_lags)
@@ -1124,45 +1199,37 @@ def run_daily_rank_path_diagnostics(
     resolved_slippage = (
         None if slippage_rates is None else validate_slippage_rates(slippage_rates)
     )
-    market_context = _prepare_sparse_market_context(
-        market,
-        prepared.forward_returns,
-        resolved_availability,
-    )
     base_weights = {
         label: frame
         for label, frame in (("book", book_weights), ("tail", tail_weights))
         if not frame.is_empty()
     }
-    base_results = (
-        _run_sparse_compact_backtests(
-            base_weights,
-            market,
-            prepared.forward_returns,
-            config=config,
-            execution_availability=resolved_availability,
-            execution_availability_validated=True,
-            market_context=market_context,
-            slippage_rates=resolved_slippage,
-            slippage_rates_validated=True,
-        )
-        if base_weights
-        else {}
+    book_daily_returns = _research_path_returns(
+        book_weights,
+        prepared.forward_returns,
+        config=config,
+        slippage_rates=resolved_slippage,
     )
-    if progress is not None:
-        progress("book_tail_paths", 1, 1)
-    book_result = base_results.get("book")
-    tail_result = base_results.get("tail")
-    book_daily_returns = _daily_returns_frame(book_result)
-    tail_daily_returns = _daily_returns_frame(tail_result)
-    book_turnover = _daily_turnover_frame(book_weights, book_result)
-    lead_lag_returns = _stream_lead_lag_returns(
+    tail_daily_returns = _research_path_returns(
+        tail_weights,
+        prepared.forward_returns,
+        config=config,
+        slippage_rates=resolved_slippage,
+    )
+    executed_turnover = _sparse_executed_turnover(
         book_weights,
         market,
         prepared.forward_returns,
-        config=config,
-        market_context=market_context,
         execution_availability=resolved_availability,
+        retry_blocked=config.retry_blocked_orders,
+    )
+    if progress is not None:
+        progress("book_tail_paths", 1, 1)
+    book_turnover = _daily_turnover_frame(book_weights, executed_turnover)
+    lead_lag_returns = _stream_lead_lag_returns(
+        book_weights,
+        prepared.forward_returns,
+        config=config,
         slippage_rates=resolved_slippage,
         sessions=market_sessions,
         lead_lags=resolved_lags,
@@ -1176,11 +1243,8 @@ def run_daily_rank_path_diagnostics(
     )
     alpha_return_lag_returns = _stream_named_lead_lag_returns(
         base_weights,
-        market,
         prepared.forward_returns,
         config=config,
-        market_context=market_context,
-        execution_availability=resolved_availability,
         slippage_rates=resolved_slippage,
         sessions=market_sessions,
         lead_lags=resolved_alpha_return_lags,
@@ -1199,13 +1263,20 @@ def run_daily_rank_path_diagnostics(
     )
     resolved_ic = horizon_ic
     if resolved_ic is None:
-        forward, _ = session_window_forward_returns(
-            signals,
-            market,
-            windows=DAILY_SESSION_WINDOWS,
-            calendar=resolved_calendar,
-        )
-        resolved_ic = window_information_coefficients(factor, forward)
+        sessions = _session_dates(resolved_calendar, market)
+        ic_frames = []
+        for window in DAILY_SESSION_WINDOWS:
+            forward, _ = _session_window_forward_returns_from_frames(
+                factor,
+                market,
+                windows=(window,),
+                sessions=sessions,
+            )
+            ic_frames.append(window_information_coefficients(factor, forward))
+        resolved_ic = pl.concat(
+            ic_frames,
+            how="diagonal_relaxed",
+        ).sort(["evaluation_date", "window_id"])
     return DailyRankPathDiagnostics(
         book_daily_returns=book_daily_returns,
         tail_daily_returns=tail_daily_returns,
@@ -1351,28 +1422,103 @@ def _shifted_lead_lag_weights(
     )
 
 
-def _daily_returns_frame(result: object) -> pl.DataFrame:
-    if result is None:
+def _research_path_returns(
+    weights: pl.DataFrame,
+    forward_returns: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+    slippage_rates: pl.DataFrame | None,
+) -> pl.DataFrame:
+    """Calculate a capital-free factor path with proportional trading costs."""
+
+    if weights.is_empty():
         return pl.DataFrame(schema=_daily_return_schema())
-    return result.returns.select(
-        TIME,
-        pl.col("gross_return").cast(pl.Float64),
-        pl.col("net_return").cast(pl.Float64),
-    ).sort(TIME)
+    timeline = weights.select(TIME).unique().sort(TIME)
+    gross = (
+        weights.join(forward_returns, on=[TIME, ASSET_ID], how="left")
+        .with_columns(
+            (
+                pl.col("weight")
+                * pl.col("forward_return").fill_null(0.0)
+            ).alias("_weighted_return")
+        )
+        .group_by(TIME)
+        .agg(pl.col("_weighted_return").sum().alias("gross_return"))
+    )
+    deltas = _requested_snapshot_weight_deltas(weights)
+    costs = _proportional_research_costs(
+        deltas,
+        config=config,
+        slippage_rates=slippage_rates,
+    )
+    return (
+        timeline.join(gross, on=TIME, how="left")
+        .join(costs, on=TIME, how="left")
+        .with_columns(
+            pl.col("gross_return").fill_null(0.0),
+            pl.col("cost_return").fill_null(0.0),
+        )
+        .with_columns(
+            (pl.col("gross_return") - pl.col("cost_return")).alias(
+                "net_return"
+            )
+        )
+        .select(TIME, "gross_return", "net_return")
+        .sort(TIME)
+    )
+
+
+def _proportional_research_costs(
+    deltas: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+    slippage_rates: pl.DataFrame | None,
+) -> pl.DataFrame:
+    """Return cost per unit gross exposure without minimum-fee/account state."""
+
+    if deltas.is_empty():
+        return pl.DataFrame(schema={TIME: pl.Date, "cost_return": pl.Float64})
+    cost = config.transaction_cost
+    trades = _attach_slippage_rates(deltas, slippage_rates).with_columns(
+        pl.col("_slippage_rate")
+        .fill_null(
+            pl.when(pl.col("signed_weight_delta") > 0.0)
+            .then(pl.lit(cost.buy_slippage_rate))
+            .otherwise(pl.lit(cost.sell_slippage_rate))
+        )
+        .alias("_effective_slippage")
+    )
+    return (
+        trades.with_columns(
+            (
+                pl.col("weight_delta")
+                * (
+                    pl.lit(cost.rate + cost.transfer_fee_rate)
+                    + pl.col("_effective_slippage")
+                )
+                + (-pl.col("signed_weight_delta"))
+                .clip(lower_bound=0.0)
+                * pl.lit(cost.stamp_tax_rate)
+            ).alias("_cost_return")
+        )
+        .group_by(TIME)
+        .agg(pl.col("_cost_return").sum().alias("cost_return"))
+        .sort(TIME)
+    )
 
 
 def _daily_turnover_frame(
     requested_weights: pl.DataFrame,
-    result: object,
+    executed_turnover: pl.DataFrame,
 ) -> pl.DataFrame:
-    if result is None:
+    if requested_weights.is_empty():
         return pl.DataFrame(schema=_daily_turnover_schema())
     requested = _requested_snapshot_turnover(requested_weights)
     initial_rebalance = (
         requested.get_column(TIME).min() if not requested.is_empty() else None
     )
     return (
-        result.turnover.rename({"turnover": "executed_turnover"})
+        executed_turnover.rename({"turnover": "executed_turnover"})
         .join(requested, on=TIME, how="left")
         .with_columns(
             pl.col("requested_turnover").fill_null(0.0),
@@ -1394,6 +1540,26 @@ def _requested_snapshot_turnover(weights: pl.DataFrame) -> pl.DataFrame:
     if weights.is_empty():
         return pl.DataFrame(
             schema={TIME: pl.Date, "requested_turnover": pl.Float64}
+        )
+    return (
+        _requested_snapshot_weight_deltas(weights)
+        .group_by(TIME)
+        .agg(pl.col("weight_delta").sum().alias("requested_turnover"))
+        .sort(TIME)
+    )
+
+
+def _requested_snapshot_weight_deltas(weights: pl.DataFrame) -> pl.DataFrame:
+    """Return signed changes between complete consecutive target snapshots."""
+
+    if weights.is_empty():
+        return pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                ASSET_ID: pl.String,
+                "signed_weight_delta": pl.Float64,
+                "weight_delta": pl.Float64,
+            }
         )
     dates = (
         weights.select(TIME)
@@ -1421,24 +1587,22 @@ def _requested_snapshot_turnover(weights: pl.DataFrame) -> pl.DataFrame:
             (
                 pl.col("weight").fill_null(0.0)
                 - pl.col("_previous_weight").fill_null(0.0)
-            )
-            .abs()
-            .alias("_turnover")
+            ).alias("signed_weight_delta")
         )
-        .group_by(TIME)
-        .agg(pl.col("_turnover").sum().alias("requested_turnover"))
-        .sort(TIME)
+        .with_columns(
+            pl.col("signed_weight_delta").abs().alias("weight_delta")
+        )
+        .filter(pl.col("weight_delta") != 0.0)
+        .select(TIME, ASSET_ID, "signed_weight_delta", "weight_delta")
+        .sort([TIME, ASSET_ID])
     )
 
 
 def _stream_lead_lag_returns(
     book_weights: pl.DataFrame,
-    prices: pl.DataFrame,
     forward_returns: pl.DataFrame,
     *,
     config: BacktestConfig,
-    market_context: _SparseMarketContext,
-    execution_availability: pl.DataFrame | None,
     slippage_rates: pl.DataFrame | None,
     sessions: Sequence[date],
     lead_lags: Sequence[int],
@@ -1459,19 +1623,14 @@ def _stream_lead_lag_returns(
         )
         if weights.is_empty():
             return pl.DataFrame(schema=_lead_lag_return_schema())
-        result = _run_sparse_compact_backtests(
-            {"lead_lag": weights},
-            prices,
+        result = _research_path_returns(
+            weights,
             forward_returns,
             config=config,
-            execution_availability=execution_availability,
-            execution_availability_validated=True,
-            market_context=market_context,
             slippage_rates=slippage_rates,
-            slippage_rates_validated=True,
-        )["lead_lag"]
+        )
         frames.append(
-            result.returns.join(common, on=TIME, how="inner").select(
+            result.join(common, on=TIME, how="inner").select(
                 TIME,
                 pl.lit(int(lag), dtype=pl.Int64).alias("lag"),
                 pl.col("gross_return").cast(pl.Float64),
@@ -1485,12 +1644,9 @@ def _stream_lead_lag_returns(
 
 def _stream_named_lead_lag_returns(
     weights_by_path: Mapping[str, pl.DataFrame],
-    prices: pl.DataFrame,
     forward_returns: pl.DataFrame,
     *,
     config: BacktestConfig,
-    market_context: _SparseMarketContext,
-    execution_availability: pl.DataFrame | None,
     slippage_rates: pl.DataFrame | None,
     sessions: Sequence[date],
     lead_lags: Sequence[int],
@@ -1518,21 +1674,15 @@ def _stream_named_lead_lag_returns(
         }
         if any(frame.is_empty() for frame in shifted.values()):
             return pl.DataFrame(schema=_named_lead_lag_return_schema())
-        results = _run_sparse_compact_backtests(
-            shifted,
-            prices,
-            forward_returns,
-            config=config,
-            execution_availability=execution_availability,
-            execution_availability_validated=True,
-            market_context=market_context,
-            slippage_rates=slippage_rates,
-            slippage_rates_validated=True,
-        )
         for name in names:
+            result = _research_path_returns(
+                shifted[name],
+                forward_returns,
+                config=config,
+                slippage_rates=slippage_rates,
+            )
             frames.append(
-                results[name]
-                .returns.join(common, on=TIME, how="inner")
+                result.join(common, on=TIME, how="inner")
                 .select(
                     TIME,
                     pl.lit(name).alias("path_kind"),

@@ -394,6 +394,10 @@ def test_complete_protocol_keeps_horizons_and_persistence_explicit() -> None:
     assert result.ic_summary.get_column("window_id").n_unique() == 12
     assert result.book_returns.get_column("window_id").n_unique() == 12
     assert result.tail_returns.get_column("window_id").n_unique() == 12
+    assert result.max_window_forward_rows > 0
+    assert not hasattr(result, "forward_returns")
+    assert not hasattr(result, "book_weights")
+    assert not hasattr(result, "tail_weights")
     assert result.quantile_forward_returns.get_column("quantile").n_unique() == 10
     assert result.signal_persistence_summary.get_column(
         "signal_half_life_band"
@@ -432,19 +436,21 @@ def test_daily_rank_paths_apply_costs_and_distinguish_requested_execution() -> N
             "reason": ["blocked_initial_long"],
         }
     )
+    proportional_cost = TransactionCostConfig(
+        rate=0.001,
+        min_fee=0.0,
+        buy_slippage_rate=0.0004,
+        sell_slippage_rate=0.0005,
+        stamp_tax_rate=0.002,
+        transfer_fee_rate=0.0003,
+    )
     result = run_daily_rank_path_diagnostics(
         signals,
         prices,
         config=BacktestConfig(
             initial_capital=1_000_000.0,
             annualization=240,
-            transaction_cost=TransactionCostConfig(
-                rate=0.001,
-                min_fee=0.0,
-                buy_slippage_rate=0.0,
-                sell_slippage_rate=0.0,
-                stamp_tax_rate=0.0,
-            ),
+            transaction_cost=proportional_cost,
         ),
         execution_availability=availability,
         calendar=pl.DataFrame({"time": sessions}),
@@ -460,11 +466,46 @@ def test_daily_rank_paths_apply_costs_and_distinguish_requested_execution() -> N
     assert result.book_turnover.get_column("is_initial_rebalance").sum() == 1
     first_return = result.book_daily_returns.row(0, named=True)
     assert first_return["net_return"] < first_return["gross_return"]
+    assert first_return["gross_return"] - first_return["net_return"] == pytest.approx(
+        0.001 + 0.0003 + 0.5 * 0.0004 + 0.5 * 0.0005 + 0.5 * 0.002
+    )
     assert set(result.tail_daily_returns.columns) == {
         "time",
         "gross_return",
         "net_return",
     }
+
+    unblocked = run_daily_rank_path_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(
+            initial_capital=1.0,
+            annualization=240,
+            transaction_cost=TransactionCostConfig(
+                rate=proportional_cost.rate,
+                min_fee=1_000_000_000.0,
+                buy_slippage_rate=proportional_cost.buy_slippage_rate,
+                sell_slippage_rate=proportional_cost.sell_slippage_rate,
+                stamp_tax_rate=proportional_cost.stamp_tax_rate,
+                transfer_fee_rate=proportional_cost.transfer_fee_rate,
+            ),
+        ),
+        calendar=pl.DataFrame({"time": sessions}),
+        lead_lags=(-1, 0, 1),
+        autocorrelation_lags=(1, 2),
+        rolling_observations=2,
+    )
+    assert result.book_daily_returns.equals(unblocked.book_daily_returns)
+    assert result.tail_daily_returns.equals(unblocked.tail_daily_returns)
+    assert result.book_lead_lag_returns.equals(unblocked.book_lead_lag_returns)
+    assert result.book_turnover.get_column("executed_turnover").to_list() != (
+        unblocked.book_turnover.get_column("executed_turnover").to_list()
+    )
+    assert -1.0 not in result.book_daily_returns.get_column("net_return").to_list()
+    assert (
+        result.book_daily_returns.get_column("gross_return").tail(2).abs().sum()
+        > 0.0
+    )
 
 
 def test_daily_lead_lag_has_every_integer_offset_on_one_common_sample() -> None:

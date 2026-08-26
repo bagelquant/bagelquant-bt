@@ -71,6 +71,11 @@ The main optimizations are:
   field is first accessed; related results share a thread-safe sorted-key cache;
 - on-demand signal diagnostics execute only requested quantile, spread, or lag
   families and combine requested families into one scan.
+- fixed-horizon prediction diagnostics generate and aggregate one session
+  window at a time instead of retaining a twelve-window asset-label union;
+- daily research lag paths reuse prepared ranks and one-day market returns and
+  calculate proportional-cost factor returns directly, avoiding account-state,
+  capital, and fee matrices for each lag.
 
 All optimizations preserve the public result schemas and execution semantics.
 Continuous numerical values are regression-tested at `rtol=1e-12` and
