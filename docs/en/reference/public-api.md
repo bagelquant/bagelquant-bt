@@ -7,7 +7,7 @@ weights are not public backtest inputs.
 ## Entry points
 
 ```python
-from bagelquant_bt import compose_prediction, run_prediction_backtest, run_prediction_evaluation
+from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, run_prediction_backtest, run_prediction_evaluation, run_prediction_horizon_diagnostics
 ```
 
 - `compose_prediction(...) -> PredictionPanel` applies a `PredictionComposer` at the
@@ -18,6 +18,22 @@ from bagelquant_bt import compose_prediction, run_prediction_backtest, run_predi
   and returns `BacktestResult`.
 - `run_prediction_evaluation(scheduled_signal, prices, ...)` computes IC,
   quantiles, lag diagnostics, and signal-driven portfolio results.
+- `run_prediction_horizon_diagnostics(scheduled_signal, prices, ...)` computes
+  fixed-session forward returns, IC, centered-rank Book, gross-one Tail,
+  quantile structure, signal persistence, HAC inference, BH q-values, and
+  staggered cohorts without constructing portfolio performance.
+- `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`
+  simulates daily Book/Tail gross/net diagnostic paths, Book requested/executed
+  turnover with an initial-rebalance marker, common-sample Book lead-lag returns
+  for integer lags `-30..30`, and Book/Tail lag paths at
+  `0/1/2/5/10/20/60`.
+- `rolling_window_information_coefficients` and `implied_signal_half_life`
+  expose the causal 240-valid-observation rolling IC and per-lag half-life
+  primitives used by daily result charts.
+- `session_window_forward_returns`, `centered_rank_book_weights`,
+  `gross_one_tail_weights`, `hac_mean_test`, and
+  `non_overlapping_cohort_statistics` expose the corresponding deterministic
+  primitives.
 - `quantile_rank_information_coefficients(quantile_returns, *, periods=None)`
   derives the monotonic rank IC from stored q1-to-qN gross returns. Optional
   `time`/`next_time` periods compound daily returns into one observation per

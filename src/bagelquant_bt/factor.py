@@ -118,6 +118,7 @@ def run_prediction_evaluation(
     benchmark_coverage: pl.DataFrame | None = None,
     slippage_rates: pl.DataFrame | None = None,
     total_return_prices: pl.DataFrame | None = None,
+    include_synthetic_diagnostics: bool = True,
 ) -> FactorEvaluationResult:
     """Evaluate executable signals against returns through the next signal."""
 
@@ -157,6 +158,7 @@ def run_prediction_evaluation(
         benchmark_coverage=benchmark_coverage,
         slippage_rates=slippage_rates,
         total_return_prices=total_return_prices,
+        include_synthetic_diagnostics=include_synthetic_diagnostics,
     )
 
 
@@ -352,6 +354,7 @@ def evaluate_factor_frame(
     benchmark_coverage: pl.DataFrame | None = None,
     slippage_rates: pl.DataFrame | None = None,
     total_return_prices: pl.DataFrame | None = None,
+    include_synthetic_diagnostics: bool = True,
 ) -> FactorEvaluationResult:
     """Evaluate an already materialized factor score frame."""
 
@@ -402,10 +405,6 @@ def evaluate_factor_frame(
         if ic_std != 0 and not math.isnan(ic_std)
         else math.nan
     )
-    quantile_weights = quantile_equal_weights(
-        factor,
-        quantiles=config.quantiles,
-    )
     top_n_weights = _policy_weights(
         factor,
         config,
@@ -413,56 +412,75 @@ def evaluate_factor_frame(
         aligned_prices,
         portfolio_inputs,
     )
-    spread_weights = spread_quantile_weights(
-        factor,
-        quantiles=config.quantiles,
+    spread_weights = pl.DataFrame(
+        schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
     )
-    lag_analysis, lag_returns, primary_compact_results = _lag_outputs(
-        factor,
-        aligned_prices,
-        config=config,
-        lags=FACTOR_LAGS,
-        forward_returns=forward_returns,
-        price_gaps=price_data.price_gaps,
-        execution_availability=resolved_execution_availability,
-        execution_availability_validated=True,
-        market_context=market_context,
-        additional_weight_frames={
-            "top_n": top_n_weights,
-            **({"spread": spread_weights} if spread_weights.height else {}),
-            **{
-                f"quantile:{label}": weights
-                for label, weights in quantile_weights.items()
+    quantile_returns = pl.DataFrame(
+        schema={
+            TIME: pl.Date,
+            "quantile": pl.String,
+            "return": pl.Float64,
+            "cumulative_return": pl.Float64,
+        }
+    )
+    spread_returns = pl.DataFrame(
+        schema={TIME: pl.Date, "spread_return": pl.Float64}
+    )
+    lag_analysis = pl.DataFrame()
+    lag_returns = pl.DataFrame()
+    ic_decay = pl.DataFrame()
+    primary_compact_results: Mapping[str, _CompactBacktestResult] = {}
+    if include_synthetic_diagnostics:
+        quantile_weights = quantile_equal_weights(
+            factor,
+            quantiles=config.quantiles,
+        )
+        spread_weights = spread_quantile_weights(
+            factor,
+            quantiles=config.quantiles,
+        )
+        lag_analysis, lag_returns, primary_compact_results = _lag_outputs(
+            factor,
+            aligned_prices,
+            config=config,
+            lags=FACTOR_LAGS,
+            forward_returns=forward_returns,
+            price_gaps=price_data.price_gaps,
+            execution_availability=resolved_execution_availability,
+            execution_availability_validated=True,
+            market_context=market_context,
+            additional_weight_frames={
+                "top_n": top_n_weights,
+                **({"spread": spread_weights} if spread_weights.height else {}),
+                **{
+                    f"quantile:{label}": weights
+                    for label, weights in quantile_weights.items()
+                },
             },
-        },
-        slippage_rates=slippage_rates,
-    )
-    quantile_returns = _batched_quantile_gross_returns(
-        quantile_weights,
-        (
-            aligned_prices
-            if total_return_prices is None
-            else total_return_prices
-        ),
-        forward_returns,
-        execution_availability=resolved_execution_availability,
-        retry_blocked=config.retry_blocked_orders,
-    ).rename({"gross_return": "return"}).with_columns(
-        (
-            (1.0 + pl.col("return").fill_null(0.0))
-            .cum_prod()
-            .over("quantile")
-            - 1.0
-        ).alias("cumulative_return")
-    )
-    spread_returns = _spread_returns(quantile_returns, config.quantiles)
-    ic_decay = factor_ic_decay(
-        factor,
-        metric_returns,
-        trading_sessions=_trading_sessions(aligned_prices),
-        return_provider=lag_return_provider,
-        lags=FACTOR_LAGS,
-    )
+            slippage_rates=slippage_rates,
+        )
+        quantile_returns = _batched_quantile_gross_returns(
+            quantile_weights,
+            aligned_prices if total_return_prices is None else total_return_prices,
+            forward_returns,
+            execution_availability=resolved_execution_availability,
+            retry_blocked=config.retry_blocked_orders,
+        ).rename({"gross_return": "return"}).with_columns(
+            (
+                (1.0 + pl.col("return").fill_null(0.0))
+                .cum_prod()
+                .over("quantile")
+                - 1.0
+            ).alias("cumulative_return")
+        )
+        spread_returns = _spread_returns(quantile_returns, config.quantiles)
+        ic_decay = factor_ic_decay(
+            factor,
+            metric_returns,
+            trading_sessions=_trading_sessions(aligned_prices),
+            return_provider=lag_return_provider,
+            lags=FACTOR_LAGS,
+        )
     primary_backtests = _backtest_weight_frames_with_forward_returns(
         {
             "top_n": top_n_weights,

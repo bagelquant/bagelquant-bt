@@ -10,3 +10,4 @@ def test_benchmark_peak_rss_is_available() -> None:
     namespace = runpy.run_path(str(script))
 
     assert namespace["_peak_rss_mb"]() > 0.0
+    assert "daily-rank-path" in namespace["CASES"]

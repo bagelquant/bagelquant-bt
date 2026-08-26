@@ -50,6 +50,19 @@ result = run_prediction_backtest(
 
 `run_prediction_evaluation` computes execution-to-execution IC, quantiles,
 spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`.
+For prediction-only research, `run_prediction_horizon_diagnostics` decouples
+evaluation cadence from economic horizon. Daily predictions are evaluated on
+fixed cumulative `1/5/10/20/40/60/120D` windows and `1D`, `2–5D`, `6–20D`,
+`21–60D`, and `61–120D` buckets. It publishes centered-rank gross-one Book
+returns, gross-one Tail returns, full quantile curves, IC, signal persistence,
+and Bartlett Newey–West inference without constructing a portfolio NAV.
+`run_daily_rank_path_diagnostics` complements those forward-window statistics
+with a daily-rebalanced diagnostic path. It simulates Book and Tail gross/net
+returns under the ordinary cost, slippage, price-gap, and execution-availability
+rules, reports requested/executed Book turnover with the true initial rebalance
+marked, evaluates the Book over a common-sample integer lead-lag grid from
+`-30` through `+30` sessions, and publishes common-sample Book/Tail paths for
+lags `0/1/2/5/10/20/60`.
 `AlphaPolicy` owns only evaluation-date alignment. `StandardizePolicy` is the
 independent cross-sectional preprocessing contract (`none`, `z_score`, or
 `percentile_rank`). Prediction composition returns the composer's raw

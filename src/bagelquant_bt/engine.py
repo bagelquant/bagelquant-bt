@@ -244,6 +244,7 @@ def _backtest_weight_frames_with_forward_returns(
     execution_availability: pl.DataFrame | None,
     execution_availability_validated: bool,
     slippage_rates: pl.DataFrame | None = None,
+    slippage_rates_validated: bool = False,
     market_context: _SparseMarketContext | None = None,
     precomputed_compact_results: Mapping[str, _CompactBacktestResult] | None = None,
 ) -> dict[str, BacktestResult]:
@@ -287,6 +288,7 @@ def _backtest_weight_frames_with_forward_returns(
             execution_keys=execution_keys,
             market_context=market_context,
             slippage_rates=slippage_rates,
+            slippage_rates_validated=slippage_rates_validated,
         )
     )
     results: dict[str, BacktestResult] = {}
@@ -549,6 +551,7 @@ def _run_sparse_compact_backtest(
     execution_availability_validated: bool,
     execution_keys: pl.DataFrame | None,
     slippage_rates: pl.DataFrame | None = None,
+    slippage_rates_validated: bool = False,
 ) -> _CompactBacktestResult:
     """Compute aggregate paths from sparse holding-state changes."""
 
@@ -561,6 +564,7 @@ def _run_sparse_compact_backtest(
         execution_availability_validated=execution_availability_validated,
         execution_keys=execution_keys,
         slippage_rates=slippage_rates,
+        slippage_rates_validated=slippage_rates_validated,
     )["portfolio"]
 
 
@@ -575,6 +579,7 @@ def _run_sparse_compact_backtests(
     execution_keys: pl.DataFrame | None = None,
     market_context: _SparseMarketContext | None = None,
     slippage_rates: pl.DataFrame | None = None,
+    slippage_rates_validated: bool = False,
 ) -> dict[str, _CompactBacktestResult]:
     """Evaluate several sparse portfolios in one market-state scan."""
 
@@ -591,8 +596,8 @@ def _run_sparse_compact_backtests(
         else validate_execution_availability(execution_availability)
     )
     resolved_slippage_rates = (
-        None
-        if slippage_rates is None
+        slippage_rates
+        if slippage_rates is None or slippage_rates_validated
         else validate_slippage_rates(slippage_rates)
     )
     context = market_context or _prepare_sparse_market_context(

@@ -23,7 +23,7 @@ from bagelquant_bt.window import compute_window_tables
 
 def test_result_section_version_is_public() -> None:
     assert PORTFOLIO_PATH_VERSION == 3
-    assert RESULT_SECTION_VERSION == 9
+    assert RESULT_SECTION_VERSION == 12
 
 
 def _prices() -> pl.DataFrame:
@@ -552,3 +552,62 @@ def test_quantile_window_tables_use_numeric_label_order() -> None:
         .to_list()
         == expected
     )
+
+
+def test_daily_alpha_return_and_quantile_test_window_tables() -> None:
+    times = [date(2024, 1, day) for day in range(2, 5)]
+    lag_returns = pl.DataFrame(
+        {
+            "time": times * 2,
+            "path_kind": ["book"] * 3 + ["tail"] * 3,
+            "lag": [0] * 6,
+            "gross_return": [0.01, -0.02, 0.03] * 2,
+            "net_return": [0.009, -0.021, 0.029] * 2,
+        }
+    )
+    daily = lag_returns.filter(pl.col("path_kind") == "book").select(
+        "time", "gross_return", "net_return"
+    )
+    _, alpha_tables = compute_window_tables(
+        "alpha_return",
+        ("gross_lag_performance", "net_lag_performance", "drawdown"),
+        returns=pl.DataFrame(),
+        turnover=pl.DataFrame(),
+        costs=pl.DataFrame(),
+        series={
+            "daily_alpha_return_lag_returns": lag_returns,
+            "daily_book_returns": daily,
+            "daily_tail_returns": daily,
+        },
+        annualization=240,
+        ic_annualization=240,
+    )
+    assert alpha_tables["alpha_return_lag_returns"].equals(lag_returns)
+    assert alpha_tables["book_daily_returns"].equals(daily)
+
+    quantile = pl.DataFrame(
+        {
+            "time": times * 2,
+            "window_id": ["cumulative_1d"] * 3 + ["cumulative_5d"] * 3,
+            "quantile": ["q1"] * 6,
+            "quantile_return": [0.01, 0.02, -0.01, 9.0, 9.0, 9.0],
+        }
+    )
+    _, quantile_tables = compute_window_tables(
+        "quantile_test",
+        ("time_series", "annualized_return"),
+        returns=pl.DataFrame(),
+        turnover=pl.DataFrame(),
+        costs=pl.DataFrame(),
+        series={"horizon_quantile_forward_returns": quantile},
+        annualization=240,
+        ic_annualization=240,
+    )
+    expected_total = (1.01 * 1.02 * 0.99) - 1.0
+    expected_annualized = (1.0 + expected_total) ** (240 / 3) - 1.0
+    assert quantile_tables["quantile_test_returns"].item(
+        -1, "cumulative_return"
+    ) == pytest.approx(expected_total)
+    assert quantile_tables["quantile_test_performance"].item(
+        0, "annualized_return"
+    ) == pytest.approx(expected_annualized)

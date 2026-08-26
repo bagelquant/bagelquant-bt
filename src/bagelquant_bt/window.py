@@ -10,6 +10,12 @@ import polars as pl
 
 from ._quantiles import sort_quantile_frame
 from .benchmarks import benchmark_performance, top_n_excess_returns
+from .horizon import (
+    SIGNAL_PERSISTENCE_HORIZONS,
+    build_statistical_inference,
+    summarize_signal_persistence,
+    summarize_window_ic,
+)
 from .inputs import TIME
 from .performance import _annualized_return, rolling_performance
 from .statistics import one_sample_t_test, quantile_rank_information_coefficients
@@ -31,6 +37,90 @@ def compute_window_tables(
     """Build one result section from already-windowed primitive series."""
 
     selected = set(items)
+    horizon_protocol = "horizon_ic" in series
+    daily_summary_items = {
+        "signal_coverage",
+        "daily_turnover",
+        "signal_autocorrelation",
+        "implied_half_life",
+        "sharpe_lead_lag",
+        "cumulative_return",
+    }
+    if section == "summary" and selected & daily_summary_items:
+        return {}, _daily_summary_tables(series, selected)
+    if section == "summary" and horizon_protocol:
+        return {}, _horizon_summary_tables(
+            series,
+            annualization_sessions=ic_annualization,
+        )
+    if section == "ic_horizon_profile":
+        ic = series.get("horizon_ic", pl.DataFrame())
+        tables = {
+            "ic_horizon": ic,
+            "ic_horizon_summary": summarize_window_ic(
+                ic,
+                annualization_sessions=ic_annualization,
+            ),
+        }
+        if "rolling_ic" in selected:
+            tables["rolling_ic"] = series.get("daily_rolling_ic", pl.DataFrame())
+        return {}, tables
+    if section == "alpha_return":
+        return {}, {
+            "alpha_return_lag_returns": series.get(
+                "daily_alpha_return_lag_returns", pl.DataFrame()
+            ),
+            "book_daily_returns": series.get("daily_book_returns", pl.DataFrame()),
+            "tail_daily_returns": series.get("daily_tail_returns", pl.DataFrame()),
+        }
+    if section == "quantile_test":
+        return {}, _daily_quantile_test_tables(
+            series.get("horizon_quantile_forward_returns", pl.DataFrame()),
+            annualization=annualization,
+        )
+    if section == "book_tail_quantiles":
+        tables: dict[str, pl.DataFrame] = {}
+        for item, primitive in (
+            ("book_returns", "horizon_book_returns"),
+            ("tail_returns", "horizon_tail_returns"),
+            ("quantile_curve", "horizon_quantile_forward_returns"),
+            ("quantile_structure", "horizon_quantile_structure"),
+        ):
+            if item in selected:
+                tables[item] = series.get(primitive, pl.DataFrame())
+        return {}, tables
+    if section == "signal_persistence":
+        persistence = series.get("horizon_signal_persistence", pl.DataFrame())
+        return {}, {
+            "signal_persistence": persistence,
+            "signal_persistence_summary": summarize_signal_persistence(
+                persistence,
+                SIGNAL_PERSISTENCE_HORIZONS,
+            ),
+        }
+    if section == "stability":
+        tables = {}
+        if "full_is_oos" in selected:
+            tables["stability"] = series.get("horizon_stability", pl.DataFrame())
+        if "rolling" in selected:
+            tables["rolling_stability"] = series.get(
+                "horizon_rolling_stability", pl.DataFrame()
+            )
+        return {}, tables
+    if section == "statistical_tests" and horizon_protocol:
+        return {}, {
+            "statistical_inference": build_statistical_inference(
+                ic=series.get("horizon_ic", pl.DataFrame()),
+                book_returns=series.get("horizon_book_returns", pl.DataFrame()),
+                tail_returns=series.get("horizon_tail_returns", pl.DataFrame()),
+                quantile_structure=series.get(
+                    "horizon_quantile_structure", pl.DataFrame()
+                ),
+                factor_returns=series.get(
+                    "horizon_factor_returns", pl.DataFrame()
+                ),
+            )
+        }
     if section == "summary":
         metrics, tables = _summary(
             returns,
@@ -98,6 +188,130 @@ def compute_window_tables(
             ),
         }
     raise ValueError(f"unknown result section: {section}")
+
+
+def _daily_quantile_test_tables(
+    frame: pl.DataFrame,
+    *,
+    annualization: int,
+) -> dict[str, pl.DataFrame]:
+    """Build the fixed 1D gross diagnostic quantile path."""
+
+    required = {TIME, "window_id", "quantile", "quantile_return"}
+    if frame.is_empty() or not required.issubset(frame.columns):
+        return {}
+    returns = (
+        frame.filter(pl.col("window_id") == "cumulative_1d")
+        .select(
+            TIME,
+            "quantile",
+            pl.col("quantile_return").cast(pl.Float64).alias("return"),
+        )
+        .filter(pl.col("return").is_not_null() & pl.col("return").is_finite())
+        .sort(["quantile", TIME])
+    )
+    if returns.is_empty():
+        return {}
+    path = sort_quantile_frame(returns, after=(TIME,)).with_columns(
+        ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
+            "cumulative_return"
+        )
+    )
+    rows = []
+    for sample in returns.partition_by("quantile", maintain_order=True):
+        values = sample.get_column("return")
+        rows.append(
+            {
+                "quantile": sample.item(0, "quantile"),
+                "annualized_return": _single_return_metrics(
+                    values, annualization
+                )["annualized_return"],
+                "observation_count": values.len(),
+            }
+        )
+    performance = sort_quantile_frame(pl.DataFrame(rows))
+    return {
+        "quantile_test_returns": path,
+        "quantile_test_performance": performance,
+    }
+
+
+def _daily_summary_tables(
+    series: Mapping[str, pl.DataFrame],
+    selected: set[str],
+) -> dict[str, pl.DataFrame]:
+    tables: dict[str, pl.DataFrame] = {}
+    if "signal_coverage" in selected:
+        tables["signal_coverage"] = series.get(
+            "daily_signal_coverage", pl.DataFrame()
+        )
+    if "daily_turnover" in selected:
+        tables["daily_turnover"] = series.get(
+            "daily_book_turnover", pl.DataFrame()
+        )
+    if {"signal_autocorrelation", "implied_half_life"} & selected:
+        tables["signal_autocorrelation"] = series.get(
+            "daily_signal_autocorrelation", pl.DataFrame()
+        )
+    if "sharpe_lead_lag" in selected:
+        tables["lead_lag_returns"] = series.get(
+            "daily_book_lead_lag_returns", pl.DataFrame()
+        )
+    if "cumulative_return" in selected:
+        tables["book_daily_returns"] = series.get(
+            "daily_book_returns", pl.DataFrame()
+        )
+        tables["tail_daily_returns"] = series.get(
+            "daily_tail_returns", pl.DataFrame()
+        )
+    return tables
+
+
+def _horizon_summary_tables(
+    series: Mapping[str, pl.DataFrame],
+    *,
+    annualization_sessions: int,
+) -> dict[str, pl.DataFrame]:
+    ic = series.get("horizon_ic", pl.DataFrame())
+    ic_summary = summarize_window_ic(
+        ic,
+        annualization_sessions=annualization_sessions,
+    )
+    keys = ["window_kind", "window_id", "start_session", "end_session"]
+    horizon = ic.select(*keys).unique() if not ic.is_empty() else pl.DataFrame()
+    for method in ("pearson", "spearman"):
+        selected = (
+            ic_summary.filter(pl.col("method") == method)
+            .select(
+                *keys,
+                pl.col("mean").alias(f"{method}_ic"),
+                pl.col("icir").alias(f"{method}_icir"),
+                pl.col("positive_ratio").alias(f"{method}_positive_ratio"),
+            )
+        )
+        horizon = selected if horizon.is_empty() else horizon.join(
+            selected, on=keys, how="left"
+        )
+    for primitive, value_column, output in (
+        ("horizon_book_returns", "book_return", "book_return"),
+        ("horizon_tail_returns", "tail_return", "tail_return"),
+        ("horizon_coverage", "coverage_ratio", "coverage_ratio"),
+    ):
+        frame = series.get(primitive, pl.DataFrame())
+        if frame.is_empty():
+            continue
+        summary = frame.group_by(*keys).agg(
+            pl.col(value_column).mean().alias(output)
+        )
+        horizon = summary if horizon.is_empty() else horizon.join(
+            summary, on=keys, how="left"
+        )
+    return {
+        "horizon_summary": horizon.sort(["window_kind", "end_session"])
+        if not horizon.is_empty()
+        else horizon,
+        "coverage": series.get("horizon_coverage", pl.DataFrame()),
+    }
 
 
 def _summary(

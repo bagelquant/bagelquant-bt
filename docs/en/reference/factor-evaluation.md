@@ -3,6 +3,60 @@
 Signal evaluation treats each scheduled `PredictionPanel` snapshot as
 cross-sectional predictions. Higher values are better.
 
+## Fixed prediction horizons
+
+`run_prediction_horizon_diagnostics` is the prediction-only entry point. It
+keeps the prediction update cadence separate from the economic forecast
+horizon. The fixed daily protocol evaluates cumulative `1/5/10/20/40/60/120D`
+returns and the disjoint `1D`, `2–5D`, `6–20D`, `21–60D`, and `61–120D`
+buckets from the mapped next-open execution price. An unfinished end label is
+excluded and reported through per-window coverage; the signal cross-section is
+never selected or renormalized using future price availability.
+
+The main continuous cross-sectional return uses average-tie percentile ranks,
+centers them within the evaluation-date Universe, and normalizes by the sum of
+absolute centered scores. The resulting Book has net zero, gross one, and
+long/short books of `+0.5/-0.5`. `centered_rank_book_weights` returns unavailable
+for a constant or one-sided cross-section. `gross_one_tail_weights` retains q1
+long and q10 short at the same gross-one scale. Book, Tail, and the complete
+quantile curve are diagnostics; they do not create NAV, costs, turnover,
+Sharpe, or drawdown.
+
+Every window reports Pearson/Spearman IC, positive-IC ratio, ICIR, Book, Tail,
+quantile-rank IC, and cross-sectional regression slopes. Mean inference uses a
+Bartlett Newey–West estimator with
+`max(window_width-1, floor(4*(n/100)^(2/9)))` lags, two-sided p-values and 95%
+confidence intervals. Benjamini–Hochberg q-values are calculated within each
+metric family across all twelve windows. All modulo-window-width staggered
+non-overlapping cohorts are retained as robustness diagnostics. Signal rank
+persistence is evaluated at `1/5/10/20/40/60/120D`; half-life is reported only
+as the first grid band crossing 0.5, or `>120D`.
+
+The legacy `run_prediction_evaluation` sections below remain the portfolio
+evaluation API. They are distinct from fixed-horizon prediction diagnostics.
+
+## Daily diagnostic rank paths
+
+`run_daily_rank_path_diagnostics` turns each PIT daily signal into the same
+centered-rank Book and gross-one Tail targets, then runs them through the public
+portfolio engine. Its output contains daily Book/Tail gross and net returns,
+Book requested and executed turnover, and Book gross/net returns for every
+integer lead or lag from `-30` through `+30`. Initial construction counts toward
+turnover and cost and is explicitly marked by `is_initial_rebalance`, allowing
+read-time summaries to exclude that one event without dropping the first row of
+an arbitrary date slice. `alpha_return_lag_returns` additionally contains Book
+and Tail gross/net paths at lags `0/1/2/5/10/20/60`; all fourteen paths use one
+common complete date sample. Negative lags intentionally trade before the signal and are
+therefore labeled non-PIT/look-ahead diagnostics; every lag uses the common
+complete overlap of shifted execution dates.
+
+The daily Summary autocorrelation grid uses average-tie cross-sectional rank
+correlation for all lags `1..120`. Per-lag implied half-life is
+`-lag * ln(2) / ln(rho_lag)` only when `0 < rho_lag < 1`. Rolling IC uses exactly
+240 valid observations, is causal, and emits no value before that warm-up is
+complete. These outputs support diagnostic charts and do not turn an Alpha
+result into an account or Weight-Policy Portfolio Performance section.
+
 ## IC and ICIR
 
 For each date, `bagelquant-bt` computes the cross-sectional correlation between

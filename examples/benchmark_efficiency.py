@@ -3,6 +3,7 @@
 Examples:
 
     uv run python examples/benchmark_efficiency.py --case dense-factor
+    uv run python examples/benchmark_efficiency.py --case daily-rank-path
     uv run python examples/benchmark_efficiency.py --case all --runs 3
 """
 
@@ -21,13 +22,16 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
+from bagelquant_core import Domain, PredictionPanel
 
 from bagelquant_bt import (
     BacktestConfig,
     PortfolioPathIdentity,
+    ScheduledPrediction,
     materialize_portfolio_path,
     prepare_factor_market_data,
     resume_portfolio_path,
+    run_daily_rank_path_diagnostics,
 )
 from bagelquant_bt.factor import run_factor_evaluation, top_n_equal_weights
 
@@ -35,6 +39,7 @@ CASES = (
     "dense-factor",
     "monthly-factor",
     "constrained-factor",
+    "daily-rank-path",
     "portfolio-path",
 )
 
@@ -309,6 +314,49 @@ def _portfolio_path_case() -> BenchmarkMeasurement:
     )
 
 
+def _daily_rank_path_case() -> BenchmarkMeasurement:
+    data_started = time.perf_counter()
+    prices, factor = _market(
+        asset_count=250,
+        session_count=300,
+        signal_stride=1,
+    )
+    sessions = factor.get_column("time").unique().sort().to_list()
+    assets = factor.get_column("asset_id").unique().sort().to_list()
+    prediction = PredictionPanel.from_domain(
+        factor.rename({"factor": "value"}),
+        Domain(calendar=sessions, universe=assets),
+        name="daily-rank-path-benchmark",
+        metadata={"normalization": {"ddof": 0}},
+    )
+    scheduled = ScheduledPrediction(
+        schedule=pl.DataFrame(
+            {"rebalance_date": sessions, "execution_date": sessions}
+        ),
+        prediction=prediction,
+    )
+    data_seconds = time.perf_counter() - data_started
+    data_peak_rss_mb = _peak_rss_mb()
+
+    compute_started = time.perf_counter()
+    diagnostics = run_daily_rank_path_diagnostics(
+        scheduled,
+        prices,
+        config=BacktestConfig(initial_capital=1_000_000, quantiles=10),
+    )
+    compute_seconds = time.perf_counter() - compute_started
+    return BenchmarkMeasurement(
+        case="daily-rank-path",
+        data_seconds=data_seconds,
+        data_peak_rss_mb=data_peak_rss_mb,
+        compute_seconds=compute_seconds,
+        peak_rss_mb=_peak_rss_mb(),
+        rows=diagnostics.book_lead_lag_returns.height,
+        segments=61,
+        materialized_peak_rss_mb=_peak_rss_mb(),
+    )
+
+
 def _run_child(case: str) -> BenchmarkMeasurement:
     if case == "dense-factor":
         return _factor_case(
@@ -334,6 +382,8 @@ def _run_child(case: str) -> BenchmarkMeasurement:
             signal_stride=20,
             constrained=True,
         )
+    if case == "daily-rank-path":
+        return _daily_rank_path_case()
     return _portfolio_path_case()
 
 

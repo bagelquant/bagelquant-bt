@@ -22,9 +22,17 @@ from .returns import _prepare_price_data
 from .window import compute_window_tables
 
 PORTFOLIO_PATH_VERSION = 3
-RESULT_SECTION_VERSION = 9
+RESULT_SECTION_VERSION = 12
 RESULT_SECTIONS = (
     "summary",
+    "ic_horizon_profile",
+    "alpha_return",
+    "quantile_test",
+    "book_tail_quantiles",
+    "signal_persistence",
+    "stability",
+    # Legacy generic portfolio sections remain available to BT callers. The
+    # Workbench Alpha/Strategy prediction surface exposes only horizon sections.
     "ic",
     "spread",
     "top_n",

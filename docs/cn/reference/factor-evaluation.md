@@ -3,6 +3,46 @@
 Signal 评估会把 `ScheduledPrediction` 中的每个 `PredictionPanel` 快照解释为截面
 prediction，数值越高代表越正向。
 
+## 固定预测期限
+
+`run_prediction_horizon_diagnostics` 是只评估预测能力的入口，将 prediction 更新频率与
+经济预测期限分开。固定日频协议从映射后的 next-open execution price 开始，计算累计
+`1/5/10/20/40/60/120D`，以及互不重叠的 `1D`、`2–5D`、`6–20D`、`21–60D`、
+`61–120D` bucket。尚未完成的尾部标签不进入统计，并通过逐 window coverage 公开；
+系统不会按未来价格可得性筛选信号截面或重新归一化权重。
+
+主要连续截面收益先计算平均并列 percentile rank，在评价日 Universe 内中心化，再按中心化
+分数绝对值之和归一化。所得 Book 的净敞口为 0、gross 为 1，多空两侧分别为
+`+0.5/-0.5`。常数截面或无法形成双侧时，`centered_rank_book_weights` 返回 unavailable。
+`gross_one_tail_weights` 在相同 gross-one 口径下做多 q1、做空 q10。Book、Tail 和完整
+quantile curve 都是预测诊断，不生成 NAV、成本、换手、Sharpe 或回撤。
+
+每个 window 输出 Pearson/Spearman IC、正 IC 比例、ICIR、Book、Tail、quantile-rank IC
+和截面回归斜率。均值推断统一使用 Bartlett Newey–West，lag 为
+`max(window_width-1, floor(4*(n/100)^(2/9)))`，并输出双侧 p-value 与 95% CI。
+同一指标族的全部十二个 window 统一进行 Benjamini–Hochberg 校正；全部按 window width
+取模的 staggered non-overlapping cohorts 保留为稳健性检查。Signal rank persistence 在
+`1/5/10/20/40/60/120D` 计算；half-life 只报告首次跨过 0.5 的网格区间，或 `>120D`。
+
+下文旧 `run_prediction_evaluation` 属于组合评估 API，与固定期限预测诊断相互独立。
+
+## 日频诊断排名路径
+
+`run_daily_rank_path_diagnostics` 把每日 PIT 信号转换为同一 centered-rank Book 与
+gross-one Tail 目标，再交给公开组合引擎执行。输出包含 Book/Tail 每日 gross/net return、
+Book requested/executed turnover，以及 `-30` 到 `+30` 每个整数 lead/lag 的 Book
+gross/net return。初始建仓计入换手与成本，并由 `is_initial_rebalance` 精确标记，因此读取
+任意日期窗口时只排除这一次真实初始建仓，不会误删截取窗口的首行。
+`alpha_return_lag_returns` 还输出 Book/Tail 在 `0/1/2/5/10/20/60` lag 下的 gross/net
+路径，十四条路径共用同一完整日期样本。负 lag 会在信号出现前交易，必须明确标为
+非 PIT/look-ahead 诊断；所有 lag 都只使用平移后 execution date 的共同完整重叠区间。
+
+日频 Summary 的 autocorrelation 使用 `1..120` 全部 lag 的平均并列横截面 rank
+correlation。逐 lag implied half-life 仅在 `0 < rho_lag < 1` 时按
+`-lag * ln(2) / ln(rho_lag)` 计算。Rolling IC 严格使用 240 个有效 observation，保持因果，
+warm-up 未完成时不输出数值。这些结果只服务诊断图表，不会把 Alpha 结果变成账户或真实
+Weight Policy 的 Portfolio Performance section。
+
 ## IC 和 ICIR
 
 对每个信号期，`bagelquant-bt` 计算 Signal 与本次 execution price 到下一次

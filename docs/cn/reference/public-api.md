@@ -6,7 +6,7 @@
 ## 入口函数
 
 ```python
-from bagelquant_bt import compose_prediction, run_prediction_backtest, run_prediction_evaluation
+from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, run_prediction_backtest, run_prediction_evaluation, run_prediction_horizon_diagnostics
 ```
 
 - `compose_prediction(...) -> PredictionPanel`：按 `AlphaPolicy` 的 cadence
@@ -16,6 +16,18 @@ from bagelquant_bt import compose_prediction, run_prediction_backtest, run_predi
   `ExecutionPolicy`、`WeightPolicy` 和内部 weights 引擎。
 - `run_prediction_evaluation(scheduled_signal, prices, ...)`：计算 IC、分位数、
   lag、IC decay 和 Signal 驱动的组合结果。
+- `run_prediction_horizon_diagnostics(scheduled_signal, prices, ...)`：在不构造组合绩效的
+  前提下计算固定 session 前向收益、IC、centered-rank Book、gross-one Tail、quantile
+  结构、信号持久性、HAC 推断、BH q-value 与 staggered cohorts。
+- `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`：
+  模拟每日 Book/Tail gross/net 诊断路径、Book requested/executed turnover，以及
+  初始建仓标记、`-30..30` 整数 lag 的共同样本 Book lead-lag return，并输出
+  `0/1/2/5/10/20/60` 的 Book/Tail lag 路径。
+- `rolling_window_information_coefficients` 与 `implied_signal_half_life` 公开日频图表使用的
+  因果 240-valid-observation rolling IC 与逐 lag half-life primitive。
+- `session_window_forward_returns`、`centered_rank_book_weights`、
+  `gross_one_tail_weights`、`hac_mean_test` 与
+  `non_overlapping_cohort_statistics` 公开对应的确定性 primitive。
 - `quantile_rank_information_coefficients(quantile_returns, *, periods=None)`：从 q1 到
   qN 的 gross 组收益生成单调性 rank IC；可选的 `time`/`next_time` periods 会先把逐日
   收益压缩为每个完整 execution 区间一个观测。
