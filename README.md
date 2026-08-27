@@ -62,9 +62,17 @@ Book/Tail factor return; Net subtracts proportional commission, sell tax,
 transfer fees, and slippage from requested weight changes. Initial capital,
 cash, minimum fees, execution blocks, and insolvency state never enter these
 returns. Execution availability affects only the separately reported executed
-turnover. The result marks the true initial rebalance, evaluates the Book over a common-sample integer lead-lag grid from
+turnover. It also publishes ten continuous daily-rebalanced equal-weight
+quantile Gross paths. Missing asset returns freeze at zero and recover later
+without reselecting or renormalizing the group. The result marks the true
+initial rebalance, evaluates the Book over a common-sample integer lead-lag grid from
 `-30` through `+30` sessions, and publishes common-sample Book/Tail paths for
 lags `0/1/2/5/10/20/60`.
+Applications that need both result families should call
+`run_daily_prediction_diagnostics`. It validates and collects the scheduled
+Prediction once, prepares the market/calendar and rank weights once, streams
+one asset-label window at a time, and reuses one `1..120` autocorrelation pass.
+The two narrower entry points remain available for independent analysis.
 `AlphaPolicy` owns only evaluation-date alignment. `StandardizePolicy` is the
 independent cross-sectional preprocessing contract (`none`, `z_score`, or
 `percentile_rank`). Prediction composition returns the composer's raw

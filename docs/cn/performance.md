@@ -58,6 +58,11 @@ uv run python examples/benchmark_efficiency.py --case all --runs 3
 - 完整结果在首次访问对应字段时才展开目标/执行权重，物化过程线程安全且缓存。
 - 相关结果共享线程安全的执行键排序缓存；按需 signal diagnostics 只执行
   请求的 quantile、spread 或 lag 家族，并将同时请求的家族合并为一次扫描。
+- 日频统一入口只校验并 collect 一次 Prediction，共用市场、日历与排名上下文，并只计算
+  一次完整 `1..120` autocorrelation，供期限与路径两类结果复用；
+- 十个日频分位组合通过一次长表 join 与 group-by 聚合，不构造十份组合副本；
+- rolling IC 使用 Polars 分组滚动均值处理有效 observation，保持 null 不消耗窗口的语义，
+  不再执行 Python 逐行循环。
 
 所有优化都保持公开结果 schema 和交易语义不变。连续数值使用
 `rtol=1e-12, atol=1e-12` 做回归验证；日期、资产、事件计数、blocked

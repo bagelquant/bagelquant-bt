@@ -76,6 +76,13 @@ The main optimizations are:
 - daily research lag paths reuse prepared ranks and one-day market returns and
   calculate proportional-cost factor returns directly, avoiding account-state,
   capital, and fee matrices for each lag.
+- the combined daily diagnostic entry validates and collects Prediction once,
+  reuses one market/calendar/rank context, and calculates the full `1..120`
+  autocorrelation grid once for both result families;
+- all ten daily quantile portfolios are aggregated by one long-table join and
+  group-by instead of ten portfolio copies;
+- rolling IC uses native grouped Polars rolling means over valid observations,
+  so nulls retain their non-consuming window semantics without Python row loops.
 
 All optimizations preserve the public result schemas and execution semantics.
 Continuous numerical values are regression-tested at `rtol=1e-12` and

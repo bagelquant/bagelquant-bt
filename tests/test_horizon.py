@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 from bagelquant_core import Domain, PredictionPanel
 
+import bagelquant_bt.horizon as horizon_module
 from bagelquant_bt import (
     BacktestConfig,
     SessionWindow,
@@ -18,6 +19,7 @@ from bagelquant_bt import (
     non_overlapping_cohort_statistics,
     quantile_curve_structure,
     rolling_window_information_coefficients,
+    run_daily_prediction_diagnostics,
     run_daily_rank_path_diagnostics,
     run_prediction_horizon_diagnostics,
     session_window_forward_returns,
@@ -187,9 +189,7 @@ def test_session_windows_use_execution_price_and_bucket_offsets() -> None:
     assert first["end_offset"] == 1
     assert first["forward_return"] == pytest.approx(120.0 / 110.0 - 1.0)
 
-    bucket = forward.filter(pl.col("window_id") == "bucket_2_5d").row(
-        0, named=True
-    )
+    bucket = forward.filter(pl.col("window_id") == "bucket_2_5d").row(0, named=True)
     assert bucket["start_offset"] == 1
     assert bucket["end_offset"] == 5
     assert bucket["forward_return"] == pytest.approx(160.0 / 120.0 - 1.0)
@@ -230,9 +230,7 @@ def test_session_window_price_gap_freezes_then_recognizes_cumulative_move() -> N
         calendar=pl.DataFrame({"time": sessions}),
     )
 
-    returns = dict(
-        forward.select("window_id", "forward_return").iter_rows()
-    )
+    returns = dict(forward.select("window_id", "forward_return").iter_rows())
     assert returns["cumulative_1d"] == pytest.approx(0.0)
     assert returns["cumulative_3d"] == pytest.approx(0.3)
 
@@ -296,9 +294,10 @@ def test_book_tail_and_quantiles_reveal_different_cross_section_structure() -> N
             "forward_return": [0.0, 0.0, -0.1, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0],
         }
     )
-    assert window_book_returns(book_weights, middle_only).get_column(
-        "book_return"
-    ).item() > 0.0
+    assert (
+        window_book_returns(book_weights, middle_only).get_column("book_return").item()
+        > 0.0
+    )
     assert window_tail_returns(tail_weights, middle_only).get_column(
         "tail_return"
     ).item() == pytest.approx(0.0)
@@ -306,17 +305,15 @@ def test_book_tail_and_quantiles_reveal_different_cross_section_structure() -> N
     extreme_only = pl.DataFrame(
         {**metadata, "forward_return": [-0.1] + [0.0] * 8 + [0.1]}
     )
-    book = window_book_returns(book_weights, extreme_only).get_column(
-        "book_return"
-    ).item()
-    tail = window_tail_returns(tail_weights, extreme_only).get_column(
-        "tail_return"
-    ).item()
+    book = (
+        window_book_returns(book_weights, extreme_only).get_column("book_return").item()
+    )
+    tail = (
+        window_tail_returns(tail_weights, extreme_only).get_column("tail_return").item()
+    )
     assert 0.0 < book < tail
 
-    u_shape = pl.DataFrame(
-        {**metadata, "forward_return": [0.1] + [0.0] * 8 + [0.1]}
-    )
+    u_shape = pl.DataFrame({**metadata, "forward_return": [0.1] + [0.0] * 8 + [0.1]})
     assert window_book_returns(book_weights, u_shape).get_column(
         "book_return"
     ).item() == pytest.approx(0.0)
@@ -351,9 +348,7 @@ def test_hac_bh_and_all_staggered_cohorts_are_deterministic() -> None:
     assert q_values == pytest.approx([0.03, 0.04, 0.04, None])
 
     dates = [date(2024, 1, 1) + timedelta(days=value) for value in range(6)]
-    cohorts = non_overlapping_cohort_statistics(
-        dates, values, window_width=2
-    )
+    cohorts = non_overlapping_cohort_statistics(dates, values, window_width=2)
     assert cohorts["cohort_count"] == 2
     assert cohorts["cohort_same_sign_ratio"] == pytest.approx(1.0)
 
@@ -474,6 +469,13 @@ def test_daily_rank_paths_apply_costs_and_distinguish_requested_execution() -> N
         "gross_return",
         "net_return",
     }
+    assert set(result.quantile_returns.columns) == {
+        "time",
+        "quantile",
+        "gross_return",
+        "constituent_count",
+        "unavailable_reason",
+    }
 
     unblocked = run_daily_rank_path_diagnostics(
         signals,
@@ -503,9 +505,247 @@ def test_daily_rank_paths_apply_costs_and_distinguish_requested_execution() -> N
     )
     assert -1.0 not in result.book_daily_returns.get_column("net_return").to_list()
     assert (
-        result.book_daily_returns.get_column("gross_return").tail(2).abs().sum()
-        > 0.0
+        result.book_daily_returns.get_column("gross_return").tail(2).abs().sum() > 0.0
     )
+
+
+def test_daily_quantile_paths_are_complete_equal_weight_decile_portfolios() -> None:
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(4)]
+    assets = [f"a{index:02d}" for index in range(23)]
+    signals = _daily_scheduled_prediction(
+        sessions,
+        assets,
+        reverse_every_other_day=True,
+    )
+    asset_returns = {asset: 0.001 * index for index, asset in enumerate(assets)}
+    prices = pl.DataFrame(
+        {
+            "time": [session for session in sessions for _ in assets],
+            "asset_id": assets * len(sessions),
+            "price": [
+                100.0 * (1.0 + asset_returns[asset]) ** day
+                for day, _session in enumerate(sessions)
+                for asset in assets
+            ],
+        }
+    )
+
+    result = run_daily_rank_path_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=1.0, annualization=240),
+        calendar=pl.DataFrame({"time": sessions}),
+        lead_lags=(0,),
+        alpha_return_lags=(0,),
+        autocorrelation_lags=(1,),
+        rolling_observations=1,
+    )
+
+    quantiles = result.quantile_returns
+    assert quantiles.height == 3 * 10
+    assert quantiles.group_by("time").len().get_column("len").to_list() == [10] * 3
+    counts = quantiles.get_column("constituent_count")
+    assert counts.min() == 2
+    assert counts.max() == 3
+    assert quantiles.get_column("unavailable_reason").null_count() == quantiles.height
+    first_q1 = quantiles.filter(
+        (pl.col("time") == sessions[0]) & (pl.col("quantile") == "q1")
+    ).item(0, "gross_return")
+    second_q1 = quantiles.filter(
+        (pl.col("time") == sessions[1]) & (pl.col("quantile") == "q1")
+    ).item(0, "gross_return")
+    assert first_q1 == pytest.approx(
+        sum(asset_returns[f"a{index:02d}"] for index in (20, 21, 22)) / 3
+    )
+    assert second_q1 == pytest.approx(
+        sum(asset_returns[f"a{index:02d}"] for index in (0, 1, 2)) / 3
+    )
+
+
+def test_daily_quantile_date_chunks_preserve_book_and_quantile_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(5)]
+    assets = [f"a{index:02d}" for index in range(23)]
+    signals = _daily_scheduled_prediction(
+        sessions,
+        assets,
+        reverse_every_other_day=True,
+    )
+    prices = pl.DataFrame(
+        {
+            "time": [session for session in sessions for _ in assets],
+            "asset_id": assets * len(sessions),
+            "price": [
+                100.0 + day * (index + 1) / 100.0
+                for day, _session in enumerate(sessions)
+                for index in range(len(assets))
+            ],
+        }
+    )
+    options = {
+        "config": BacktestConfig(initial_capital=1.0, annualization=240),
+        "calendar": pl.DataFrame({"time": sessions}),
+        "lead_lags": (0,),
+        "alpha_return_lags": (0,),
+        "autocorrelation_lags": (1,),
+        "rolling_observations": 1,
+    }
+    baseline = run_daily_rank_path_diagnostics(signals, prices, **options)
+
+    monkeypatch.setattr(
+        horizon_module,
+        "_DAILY_BOOK_QUANTILE_JOIN_ROW_BUDGET",
+        20,
+    )
+    monkeypatch.setattr(
+        horizon_module,
+        "_DAILY_RANK_LINEAGE_ROW_BUDGET",
+        20,
+    )
+    chunked = run_daily_rank_path_diagnostics(signals, prices, **options)
+
+    assert chunked.book_daily_returns.equals(baseline.book_daily_returns)
+    assert chunked.quantile_returns.equals(baseline.quantile_returns)
+
+
+def test_daily_quantile_paths_freeze_price_gaps_without_renormalizing() -> None:
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(4)]
+    assets = [f"a{index:02d}" for index in range(20)]
+    signals = _daily_scheduled_prediction(sessions, assets)
+    prices = pl.DataFrame(
+        [
+            {"time": session, "asset_id": asset, "price": price}
+            for asset in assets
+            for session, price in (
+                [
+                    (sessions[0], 100.0),
+                    (sessions[2], 120.0),
+                    (sessions[3], 120.0),
+                ]
+                if asset == "a19"
+                else [
+                    (sessions[0], 100.0),
+                    (sessions[1], 110.0 if asset == "a18" else 100.0),
+                    (sessions[2], 110.0 if asset == "a18" else 100.0),
+                    (sessions[3], 110.0 if asset == "a18" else 100.0),
+                ]
+            )
+        ]
+    ).sort(["time", "asset_id"])
+
+    result = run_daily_rank_path_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=1.0, annualization=240),
+        calendar=pl.DataFrame({"time": sessions}),
+        lead_lags=(0,),
+        alpha_return_lags=(0,),
+        autocorrelation_lags=(1,),
+        rolling_observations=1,
+    )
+    q1 = result.quantile_returns.filter(pl.col("quantile") == "q1").sort("time")
+
+    assert q1.get_column("constituent_count").to_list() == [2, 2, 2]
+    assert q1.get_column("gross_return").to_list() == pytest.approx([0.05, 0.1, 0.0])
+    assert q1.get_column("unavailable_reason").null_count() == 3
+
+
+def test_unified_daily_diagnostics_match_the_independent_public_entries() -> None:
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(8)]
+    assets = [f"a{index}" for index in range(10)]
+    signals = _daily_scheduled_prediction(
+        sessions,
+        assets,
+        reverse_every_other_day=True,
+    )
+    prices = pl.DataFrame(
+        {
+            "time": [session for session in sessions for _ in assets],
+            "asset_id": assets * len(sessions),
+            "price": [
+                100.0 + index * day
+                for day, _session in enumerate(sessions)
+                for index in range(len(assets))
+            ],
+        }
+    )
+    calendar = pl.DataFrame({"time": sessions})
+    windows = (SessionWindow("cumulative", "cumulative_1d", 1, 1),)
+    config = BacktestConfig(initial_capital=1_000_000.0, annualization=240)
+
+    independent_horizons = run_prediction_horizon_diagnostics(
+        signals,
+        prices,
+        calendar=calendar,
+        windows=windows,
+    )
+    independent_paths = run_daily_rank_path_diagnostics(
+        signals,
+        prices,
+        config=config,
+        calendar=calendar,
+        horizon_ic=independent_horizons.ic,
+        lead_lags=(-1, 0, 1),
+        alpha_return_lags=(0, 1),
+        autocorrelation_lags=(1, 2),
+        rolling_observations=2,
+    )
+    unified = run_daily_prediction_diagnostics(
+        signals,
+        prices,
+        config=config,
+        calendar=calendar,
+        windows=windows,
+        lead_lags=(-1, 0, 1),
+        alpha_return_lags=(0, 1),
+        autocorrelation_lags=(1, 2),
+        rolling_observations=2,
+    )
+
+    for field in independent_horizons.__dataclass_fields__:
+        expected = getattr(independent_horizons, field)
+        actual = getattr(unified.horizons, field)
+        if isinstance(expected, pl.DataFrame):
+            assert actual.equals(expected)
+        else:
+            assert actual == expected
+    for field in independent_paths.__dataclass_fields__:
+        assert getattr(unified.paths, field).equals(getattr(independent_paths, field))
+
+
+def test_unified_daily_diagnostics_handles_no_following_session() -> None:
+    evaluation = date(2024, 1, 1)
+    execution = date(2024, 1, 2)
+    assets = [f"a{index}" for index in range(5)]
+    signals = _scheduled_prediction(
+        evaluation_dates=[evaluation],
+        execution_dates=[execution],
+        values={execution: [float(index) for index in range(5)]},
+        assets=assets,
+    )
+    prices = pl.DataFrame(
+        {
+            "time": [execution] * len(assets),
+            "asset_id": assets,
+            "price": [100.0] * len(assets),
+        }
+    )
+
+    result = run_daily_prediction_diagnostics(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=1.0, annualization=240),
+        calendar=pl.DataFrame({"time": [evaluation, execution]}),
+        windows=(SessionWindow("cumulative", "cumulative_1d", 1, 1),),
+        quantiles=5,
+        lead_lags=(0,),
+        alpha_return_lags=(0,),
+        autocorrelation_lags=(1,),
+        rolling_observations=1,
+    )
+
+    assert result.horizons.quantile_forward_returns.is_empty()
 
 
 def test_daily_lead_lag_has_every_integer_offset_on_one_common_sample() -> None:
@@ -535,9 +775,7 @@ def test_daily_lead_lag_has_every_integer_offset_on_one_common_sample() -> None:
     )
 
     lead_lag = result.book_lead_lag_returns
-    assert lead_lag.get_column("lag").unique().sort().to_list() == list(
-        range(-30, 31)
-    )
+    assert lead_lag.get_column("lag").unique().sort().to_list() == list(range(-30, 31))
     sample_sizes = lead_lag.group_by("lag").len().get_column("len").to_list()
     assert len(set(sample_sizes)) == 1
     date_counts = (

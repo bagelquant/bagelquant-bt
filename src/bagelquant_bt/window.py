@@ -75,7 +75,7 @@ def compute_window_tables(
         }
     if section == "quantile_test":
         return {}, _daily_quantile_test_tables(
-            series.get("horizon_quantile_forward_returns", pl.DataFrame()),
+            series.get("daily_quantile_returns", pl.DataFrame()),
             annualization=annualization,
         )
     if section == "book_tail_quantiles":
@@ -195,30 +195,80 @@ def _daily_quantile_test_tables(
     *,
     annualization: int,
 ) -> dict[str, pl.DataFrame]:
-    """Build the fixed 1D gross diagnostic quantile path."""
+    """Build continuous daily-rebalanced gross quantile portfolio paths."""
 
-    required = {TIME, "window_id", "quantile", "quantile_return"}
+    required = {TIME, "quantile", "gross_return"}
     if frame.is_empty() or not required.issubset(frame.columns):
         return {}
     returns = (
-        frame.filter(pl.col("window_id") == "cumulative_1d")
-        .select(
+        frame.select(
             TIME,
             "quantile",
-            pl.col("quantile_return").cast(pl.Float64).alias("return"),
+            pl.col("gross_return").cast(pl.Float64).alias("return"),
+            *(
+                ["constituent_count"]
+                if "constituent_count" in frame.columns
+                else []
+            ),
+            *(
+                ["unavailable_reason"]
+                if "unavailable_reason" in frame.columns
+                else []
+            ),
         )
-        .filter(pl.col("return").is_not_null() & pl.col("return").is_finite())
         .sort(["quantile", TIME])
     )
     if returns.is_empty():
         return {}
-    path = sort_quantile_frame(returns, after=(TIME,)).with_columns(
-        ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
-            "cumulative_return"
+    quantile_count = returns.get_column("quantile").n_unique()
+    common_dates = (
+        returns.group_by(TIME)
+        .agg(
+            pl.col("quantile").n_unique().alias("_quantile_count"),
+            (
+                pl.col("return").is_not_null()
+                & pl.col("return").is_finite()
+            )
+            .all()
+            .alias("_all_finite"),
         )
+        .filter(
+            (pl.col("_quantile_count") == quantile_count)
+            & pl.col("_all_finite")
+        )
+        .select(TIME)
     )
+    path = (
+        sort_quantile_frame(returns, after=(TIME,))
+        .with_columns(
+            pl.when(pl.col("return").is_not_null() & pl.col("return").is_finite())
+            .then(1.0 + pl.col("return"))
+            .otherwise(None)
+            .alias("_growth")
+        )
+        .with_columns(
+            (pl.col("_growth").cum_prod().over("quantile") - 1.0).alias(
+                "cumulative_return"
+            )
+        )
+        .drop("_growth")
+    )
+    performance_returns = returns.join(common_dates, on=TIME, how="inner")
+    if performance_returns.is_empty():
+        return {
+            "quantile_test_returns": path,
+            "quantile_test_performance": pl.DataFrame(
+                schema={
+                    "quantile": pl.String,
+                    "annualized_return": pl.Float64,
+                    "observation_count": pl.Int64,
+                }
+            ),
+        }
     rows = []
-    for sample in returns.partition_by("quantile", maintain_order=True):
+    for sample in performance_returns.partition_by(
+        "quantile", maintain_order=True
+    ):
         values = sample.get_column("return")
         rows.append(
             {

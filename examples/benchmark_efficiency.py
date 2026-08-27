@@ -4,6 +4,9 @@ Examples:
 
     uv run python examples/benchmark_efficiency.py --case dense-factor
     uv run python examples/benchmark_efficiency.py --case daily-rank-path
+    uv run python examples/benchmark_efficiency.py --case daily-prediction
+    uv run python examples/benchmark_efficiency.py --case daily-prediction
+        --assets 3149 --sessions 6500
     uv run python examples/benchmark_efficiency.py --case all --runs 3
 """
 
@@ -31,6 +34,7 @@ from bagelquant_bt import (
     materialize_portfolio_path,
     prepare_factor_market_data,
     resume_portfolio_path,
+    run_daily_prediction_diagnostics,
     run_daily_rank_path_diagnostics,
 )
 from bagelquant_bt.factor import run_factor_evaluation, top_n_equal_weights
@@ -40,6 +44,7 @@ CASES = (
     "monthly-factor",
     "constrained-factor",
     "daily-rank-path",
+    "daily-prediction",
     "portfolio-path",
 )
 
@@ -57,6 +62,7 @@ class BenchmarkMeasurement:
     segmented_seconds: float = 0.0
     materialization_seconds: float = 0.0
     materialized_peak_rss_mb: float = 0.0
+    max_window_rows: int = 0
 
 
 def _peak_rss_mb() -> float:
@@ -357,7 +363,67 @@ def _daily_rank_path_case() -> BenchmarkMeasurement:
     )
 
 
-def _run_child(case: str) -> BenchmarkMeasurement:
+def _daily_prediction_case(
+    *,
+    asset_count: int,
+    session_count: int,
+) -> BenchmarkMeasurement:
+    """Measure the unified daily kernel with configurable production shape."""
+
+    data_started = time.perf_counter()
+    prices, factor = _market(
+        asset_count=asset_count,
+        session_count=session_count,
+        signal_stride=1,
+    )
+    sessions = factor.get_column("time").unique().sort().to_list()
+    assets = factor.get_column("asset_id").unique().sort().to_list()
+    prediction_frame = factor.rename({"factor": "value"})
+    prediction = PredictionPanel.from_domain(
+        prediction_frame,
+        Domain(calendar=sessions, universe=assets),
+        name="daily-prediction-benchmark",
+        metadata={"normalization": {"ddof": 0}},
+    )
+    scheduled = ScheduledPrediction(
+        schedule=pl.DataFrame(
+            {"rebalance_date": sessions, "execution_date": sessions}
+        ),
+        prediction=prediction,
+    )
+    data_seconds = time.perf_counter() - data_started
+    data_peak_rss_mb = _peak_rss_mb()
+
+    compute_started = time.perf_counter()
+    diagnostics = run_daily_prediction_diagnostics(
+        scheduled,
+        prices,
+        config=BacktestConfig(initial_capital=1_000_000, quantiles=10),
+        prediction_frame=prediction_frame,
+    )
+    compute_seconds = time.perf_counter() - compute_started
+    return BenchmarkMeasurement(
+        case="daily-prediction",
+        data_seconds=data_seconds,
+        data_peak_rss_mb=data_peak_rss_mb,
+        compute_seconds=compute_seconds,
+        peak_rss_mb=_peak_rss_mb(),
+        rows=(
+            diagnostics.horizons.ic.height
+            + diagnostics.paths.book_lead_lag_returns.height
+        ),
+        segments=12,
+        materialized_peak_rss_mb=_peak_rss_mb(),
+        max_window_rows=diagnostics.horizons.max_window_forward_rows,
+    )
+
+
+def _run_child(
+    case: str,
+    *,
+    asset_count: int,
+    session_count: int,
+) -> BenchmarkMeasurement:
     if case == "dense-factor":
         return _factor_case(
             case=case,
@@ -384,15 +450,29 @@ def _run_child(case: str) -> BenchmarkMeasurement:
         )
     if case == "daily-rank-path":
         return _daily_rank_path_case()
+    if case == "daily-prediction":
+        return _daily_prediction_case(
+            asset_count=asset_count,
+            session_count=session_count,
+        )
     return _portfolio_path_case()
 
 
-def _run_isolated(case: str) -> BenchmarkMeasurement:
+def _run_isolated(
+    case: str,
+    *,
+    asset_count: int,
+    session_count: int,
+) -> BenchmarkMeasurement:
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
         "--_child",
         case,
+        "--assets",
+        str(asset_count),
+        "--sessions",
+        str(session_count),
     ]
     completed = subprocess.run(
         command,
@@ -407,17 +487,39 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", choices=(*CASES, "all"), default="dense-factor")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--assets", type=int, default=250)
+    parser.add_argument("--sessions", type=int, default=300)
     parser.add_argument("--_child", choices=CASES, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args._child:
-        print(json.dumps(asdict(_run_child(args._child)), sort_keys=True))
+        print(
+            json.dumps(
+                asdict(
+                    _run_child(
+                        args._child,
+                        asset_count=args.assets,
+                        session_count=args.sessions,
+                    )
+                ),
+                sort_keys=True,
+            )
+        )
         return
     if args.runs <= 0:
         parser.error("--runs must be positive")
+    if args.assets <= 0 or args.sessions <= 1:
+        parser.error("--assets must be positive and --sessions must exceed one")
 
     cases = CASES if args.case == "all" else (args.case,)
     for case in cases:
-        measurements = [_run_isolated(case) for _ in range(args.runs)]
+        measurements = [
+            _run_isolated(
+                case,
+                asset_count=args.assets,
+                session_count=args.sessions,
+            )
+            for _ in range(args.runs)
+        ]
         summary = {
             "case": case,
             "runs": args.runs,
@@ -435,6 +537,7 @@ def main() -> None:
             ),
             "rows": measurements[0].rows,
             "segments": measurements[0].segments,
+            "max_window_rows": measurements[0].max_window_rows,
         }
         if case != "portfolio-path":
             summary["median_materialization_seconds"] = statistics.median(

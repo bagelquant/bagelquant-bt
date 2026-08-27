@@ -23,7 +23,7 @@ from bagelquant_bt.window import compute_window_tables
 
 def test_result_section_version_is_public() -> None:
     assert PORTFOLIO_PATH_VERSION == 3
-    assert RESULT_SECTION_VERSION == 12
+    assert RESULT_SECTION_VERSION == 13
 
 
 def _prices() -> pl.DataFrame:
@@ -588,9 +588,10 @@ def test_daily_alpha_return_and_quantile_test_window_tables() -> None:
     quantile = pl.DataFrame(
         {
             "time": times * 2,
-            "window_id": ["cumulative_1d"] * 3 + ["cumulative_5d"] * 3,
-            "quantile": ["q1"] * 6,
-            "quantile_return": [0.01, 0.02, -0.01, 9.0, 9.0, 9.0],
+            "quantile": ["q1"] * 3 + ["q2"] * 3,
+            "gross_return": [0.01, 0.02, -0.01, -0.01, 0.0, 0.01],
+            "constituent_count": [10] * 6,
+            "unavailable_reason": [None] * 6,
         }
     )
     _, quantile_tables = compute_window_tables(
@@ -599,15 +600,59 @@ def test_daily_alpha_return_and_quantile_test_window_tables() -> None:
         returns=pl.DataFrame(),
         turnover=pl.DataFrame(),
         costs=pl.DataFrame(),
-        series={"horizon_quantile_forward_returns": quantile},
+        series={"daily_quantile_returns": quantile},
         annualization=240,
         ic_annualization=240,
     )
     expected_total = (1.01 * 1.02 * 0.99) - 1.0
     expected_annualized = (1.0 + expected_total) ** (240 / 3) - 1.0
-    assert quantile_tables["quantile_test_returns"].item(
-        -1, "cumulative_return"
-    ) == pytest.approx(expected_total)
+    assert quantile_tables["quantile_test_returns"].filter(
+        pl.col("quantile") == "q1"
+    ).item(-1, "cumulative_return") == pytest.approx(expected_total)
     assert quantile_tables["quantile_test_performance"].item(
         0, "annualized_return"
     ) == pytest.approx(expected_annualized)
+    assert quantile_tables["quantile_test_performance"].get_column(
+        "observation_count"
+    ).to_list() == [3, 3]
+
+
+def test_daily_quantile_window_uses_one_common_sample_and_preserves_true_gap() -> None:
+    times = [date(2024, 2, day) for day in range(1, 4)]
+    quantile = pl.DataFrame(
+        {
+            "time": times * 2,
+            "quantile": ["q1"] * 3 + ["q2"] * 3,
+            "gross_return": [0.1, None, 0.1, 0.0, None, 0.0],
+            "constituent_count": [10, 0, 10] * 2,
+            "unavailable_reason": [
+                None,
+                "constant signal",
+                None,
+                None,
+                "constant signal",
+                None,
+            ],
+        }
+    )
+
+    _, tables = compute_window_tables(
+        "quantile_test",
+        ("time_series", "annualized_return"),
+        returns=pl.DataFrame(),
+        turnover=pl.DataFrame(),
+        costs=pl.DataFrame(),
+        series={"daily_quantile_returns": quantile},
+        annualization=2,
+        ic_annualization=2,
+    )
+
+    q1 = tables["quantile_test_returns"].filter(pl.col("quantile") == "q1")
+    assert q1.get_column("cumulative_return").to_list() == pytest.approx(
+        [0.1, None, 0.21]
+    )
+    performance = tables["quantile_test_performance"]
+    assert performance.get_column("observation_count").to_list() == [2, 2]
+    assert performance.get_column("annualized_return").to_list() == pytest.approx(
+        [0.21, 0.0]
+    )

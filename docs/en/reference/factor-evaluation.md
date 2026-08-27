@@ -45,6 +45,10 @@ slippage from requested weight changes. It deliberately excludes initial
 capital, cash, minimum fees, blocked execution, and bankruptcy state. Price
 gaps retain the freeze-and-catch-up valuation rule without selecting or
 renormalizing the cross-section. Its output contains daily Book/Tail gross and net returns,
+plus ten daily-rebalanced equal-weight quantile Gross paths. Each quantile
+covers about one tenth of the valid signal cross-section and rebalances at the
+mapped next open. A missing constituent return contributes zero during the gap
+and catches up on recovery; it never invalidates or renormalizes the group.
 Book requested and executed turnover, and Book gross/net returns for every
 integer lead or lag from `-30` through `+30`. Initial construction counts toward
 turnover and cost and is explicitly marked by `is_initial_rebalance`, allowing
@@ -69,6 +73,14 @@ correlation for all lags `1..120`. Per-lag implied half-life is
 240 valid observations, is causal, and emits no value before that warm-up is
 complete. These outputs support diagnostic charts and do not turn an Alpha
 result into an account or Weight-Policy Portfolio Performance section.
+
+`run_daily_prediction_diagnostics` is the application-facing combined entry.
+It returns `DailyPredictionDiagnostics(horizons, paths)` after one Signal
+validation/collection and one market, calendar, Book, Tail, and quantile
+preparation. It streams each forward-label window to aggregates, calculates the
+`1..120` rank-persistence grid once, and reuses the required subset in the
+horizon result. The two independent entry points retain the same schemas and
+remain suitable when only one diagnostic family is requested.
 
 ## IC and ICIR
 
@@ -124,6 +136,13 @@ into quantiles: `q1` contains the highest scores and `qN` the lowest.
 
 Each quantile return is the equal-weight average forward return of assets in
 that bucket.
+
+Daily prediction Quantile Test uses the separate continuous requested-target
+series from `DailyRankPathDiagnostics.quantile_returns`, not the independent
+fixed-horizon label means. All ten groups share the same structurally valid
+dates; a cross-section with fewer than ten assets, a constant signal, or no
+following session makes all groups unavailable together. Costs, execution
+constraints, cash, and account state remain excluded.
 
 The spread is:
 

@@ -752,6 +752,35 @@ def test_signal_evaluation_reuses_prepared_prices_and_scheduled_returns() -> Non
     assert reused.lag_returns.equals(direct.lag_returns)
 
 
+def test_prediction_evaluation_without_synthetic_diagnostics_runs_primary_path(
+) -> None:
+    prices = pl.DataFrame(
+        {
+            "time": ["2024-01-02", "2024-01-03", "2024-01-04"] * 2,
+            "asset_id": ["a"] * 3 + ["b"] * 3,
+            "price": [10.0, 10.5, 11.0, 20.0, 19.0, 21.0],
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": ["2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"],
+            "asset_id": ["a", "b", "a", "b"],
+            "signal": [2.0, 1.0, 1.0, 2.0],
+        }
+    )
+
+    result = run_prediction_evaluation(
+        _scheduled_signal(signals),
+        prices,
+        config=BacktestConfig(initial_capital=10_000, quantiles=2, top_n=1),
+        include_synthetic_diagnostics=False,
+    )
+
+    assert result.top_n_backtest.returns.height > 0
+    assert result.quantile_returns.is_empty()
+    assert result.lag_returns.is_empty()
+
+
 def test_factor_quantile_returns_preserve_bucket_semantics_and_low_counts() -> None:
     factor = pl.DataFrame(
         {

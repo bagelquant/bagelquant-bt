@@ -266,19 +266,21 @@ def materialize_factor_diagnostics(
         result["lag_analysis"] = lag_analysis
         result["lag_returns"] = lag_returns
     if diagnostic_quantile_weights:
-        quantile_returns = _batched_quantile_gross_returns(
-            diagnostic_quantile_weights,
-            prepared.prices,
-            prepared.forward_returns,
-            execution_availability=resolved_execution_availability,
-            retry_blocked=resolved_config.retry_blocked_orders,
-        ).rename({"gross_return": "return"}).with_columns(
-            (
-                (1.0 + pl.col("return").fill_null(0.0))
-                .cum_prod()
-                .over("quantile")
-                - 1.0
-            ).alias("cumulative_return")
+        quantile_returns = (
+            _batched_quantile_gross_returns(
+                diagnostic_quantile_weights,
+                prepared.prices,
+                prepared.forward_returns,
+                execution_availability=resolved_execution_availability,
+                retry_blocked=resolved_config.retry_blocked_orders,
+            )
+            .rename({"gross_return": "return"})
+            .with_columns(
+                (
+                    (1.0 + pl.col("return").fill_null(0.0)).cum_prod().over("quantile")
+                    - 1.0
+                ).alias("cumulative_return")
+            )
         )
         if include_quantiles:
             result["quantile_returns"] = quantile_returns
@@ -412,6 +414,8 @@ def evaluate_factor_frame(
         aligned_prices,
         portfolio_inputs,
     )
+    if top_n_weights.is_empty():
+        raise InputValidationError("portfolio policy produced no valid target weights")
     spread_weights = pl.DataFrame(
         schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
     )
@@ -423,13 +427,11 @@ def evaluate_factor_frame(
             "cumulative_return": pl.Float64,
         }
     )
-    spread_returns = pl.DataFrame(
-        schema={TIME: pl.Date, "spread_return": pl.Float64}
-    )
+    spread_returns = pl.DataFrame(schema={TIME: pl.Date, "spread_return": pl.Float64})
     lag_analysis = pl.DataFrame()
     lag_returns = pl.DataFrame()
     ic_decay = pl.DataFrame()
-    primary_compact_results: Mapping[str, _CompactBacktestResult] = {}
+    primary_compact_results: Mapping[str, _CompactBacktestResult] | None = None
     if include_synthetic_diagnostics:
         quantile_weights = quantile_equal_weights(
             factor,
@@ -459,19 +461,21 @@ def evaluate_factor_frame(
             },
             slippage_rates=slippage_rates,
         )
-        quantile_returns = _batched_quantile_gross_returns(
-            quantile_weights,
-            aligned_prices if total_return_prices is None else total_return_prices,
-            forward_returns,
-            execution_availability=resolved_execution_availability,
-            retry_blocked=config.retry_blocked_orders,
-        ).rename({"gross_return": "return"}).with_columns(
-            (
-                (1.0 + pl.col("return").fill_null(0.0))
-                .cum_prod()
-                .over("quantile")
-                - 1.0
-            ).alias("cumulative_return")
+        quantile_returns = (
+            _batched_quantile_gross_returns(
+                quantile_weights,
+                aligned_prices if total_return_prices is None else total_return_prices,
+                forward_returns,
+                execution_availability=resolved_execution_availability,
+                retry_blocked=config.retry_blocked_orders,
+            )
+            .rename({"gross_return": "return"})
+            .with_columns(
+                (
+                    (1.0 + pl.col("return").fill_null(0.0)).cum_prod().over("quantile")
+                    - 1.0
+                ).alias("cumulative_return")
+            )
         )
         spread_returns = _spread_returns(quantile_returns, config.quantiles)
         ic_decay = factor_ic_decay(
@@ -673,9 +677,7 @@ def _policy_weights(
         universe=prediction_frame.get_column(ASSET_ID).unique().sort(),
     )
     output = build(
-        PredictionPanel.from_domain(
-            prediction_frame, domain, name="prediction"
-        ),
+        PredictionPanel.from_domain(prediction_frame, domain, name="prediction"),
         prices=prices,
         config=config,
         **dict(inputs or {}),
@@ -950,17 +952,14 @@ def _quantile_returns_from_compact_results(
         ),
         how="cross",
     )
-    returns = (
-        grid.join(
-            pl.concat(return_frames),
-            on=[TIME, "quantile"],
-            how="left",
-        )
-        .with_columns(
-            pl.col("return").fill_null(0.0),
-            pl.col("is_bankrupt").fill_null(False),
-            pl.col("bankruptcy_event").fill_null(False),
-        )
+    returns = grid.join(
+        pl.concat(return_frames),
+        on=[TIME, "quantile"],
+        how="left",
+    ).with_columns(
+        pl.col("return").fill_null(0.0),
+        pl.col("is_bankrupt").fill_null(False),
+        pl.col("bankruptcy_event").fill_null(False),
     )
     return sort_quantile_frame(returns, before=(TIME,)).with_columns(
         ((1.0 + pl.col("return")).cum_prod().over("quantile") - 1.0).alias(
@@ -1003,9 +1002,7 @@ def _batched_quantile_gross_returns(
     # performance ledger itself records that return when t+1 is observed.
     returns = (
         paths.sort("portfolio", TIME)
-        .with_columns(
-            pl.col("gross_return").shift(-1).over("portfolio")
-        )
+        .with_columns(pl.col("gross_return").shift(-1).over("portfolio"))
         .drop_nulls("gross_return")
         .select(
             TIME,
