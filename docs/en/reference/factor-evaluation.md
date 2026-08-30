@@ -22,6 +22,13 @@ long and q10 short at the same gross-one scale. Book, Tail, and the complete
 quantile curve are diagnostics; they do not create NAV, costs, turnover,
 Sharpe, or drawdown.
 
+Once Book or Tail weights are structurally valid, a missing member forward
+return contributes zero while the original weight remains in place. The row is
+still usable, and `expected_count`, `observed_count`, and `coverage_ratio`
+continue to report the incomplete label coverage. No member is dropped and no
+weight is recomputed. This rule does not relax the complete common-sample rule
+for the ten-quantile curve or the inputs required by IC and other diagnostics.
+
 Every window reports Pearson/Spearman IC, positive-IC ratio, ICIR, Book, Tail,
 quantile-rank IC, and cross-sectional regression slopes. Mean inference uses a
 Bartlett Newey–West estimator with

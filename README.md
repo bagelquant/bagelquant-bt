@@ -56,6 +56,11 @@ fixed cumulative `1/5/10/20/40/60/120D` windows and `1D`, `2–5D`, `6–20D`,
 `21–60D`, and `61–120D` buckets. It publishes centered-rank gross-one Book
 returns, gross-one Tail returns, full quantile curves, IC, signal persistence,
 and Bartlett Newey–West inference without constructing a portfolio NAV.
+For a structurally valid Book or Tail, a member whose forward label is missing
+contributes zero for that window while its original weight is preserved. The
+reported expected/observed counts and coverage ratio still expose the gap; the
+cross-section is never reselected or renormalized. Quantile completeness and IC
+rules remain strict and unchanged.
 `run_daily_rank_path_diagnostics` complements those forward-window statistics
 with a daily-rebalanced, capital-free research path. Gross is the requested
 Book/Tail factor return; Net subtracts proportional commission, sell tax,

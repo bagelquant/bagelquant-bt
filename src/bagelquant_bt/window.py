@@ -100,7 +100,7 @@ def compute_window_tables(
         }
     if section == "stability":
         tables = {}
-        if "full_is_oos" in selected:
+        if "period_comparison" in selected:
             tables["stability"] = series.get("horizon_stability", pl.DataFrame())
         if "rolling" in selected:
             tables["rolling_stability"] = series.get(
@@ -116,9 +116,7 @@ def compute_window_tables(
                 quantile_structure=series.get(
                     "horizon_quantile_structure", pl.DataFrame()
                 ),
-                factor_returns=series.get(
-                    "horizon_factor_returns", pl.DataFrame()
-                ),
+                factor_returns=series.get("horizon_factor_returns", pl.DataFrame()),
             )
         }
     if section == "summary":
@@ -200,24 +198,13 @@ def _daily_quantile_test_tables(
     required = {TIME, "quantile", "gross_return"}
     if frame.is_empty() or not required.issubset(frame.columns):
         return {}
-    returns = (
-        frame.select(
-            TIME,
-            "quantile",
-            pl.col("gross_return").cast(pl.Float64).alias("return"),
-            *(
-                ["constituent_count"]
-                if "constituent_count" in frame.columns
-                else []
-            ),
-            *(
-                ["unavailable_reason"]
-                if "unavailable_reason" in frame.columns
-                else []
-            ),
-        )
-        .sort(["quantile", TIME])
-    )
+    returns = frame.select(
+        TIME,
+        "quantile",
+        pl.col("gross_return").cast(pl.Float64).alias("return"),
+        *(["constituent_count"] if "constituent_count" in frame.columns else []),
+        *(["unavailable_reason"] if "unavailable_reason" in frame.columns else []),
+    ).sort(["quantile", TIME])
     if returns.is_empty():
         return {}
     quantile_count = returns.get_column("quantile").n_unique()
@@ -225,17 +212,11 @@ def _daily_quantile_test_tables(
         returns.group_by(TIME)
         .agg(
             pl.col("quantile").n_unique().alias("_quantile_count"),
-            (
-                pl.col("return").is_not_null()
-                & pl.col("return").is_finite()
-            )
+            (pl.col("return").is_not_null() & pl.col("return").is_finite())
             .all()
             .alias("_all_finite"),
         )
-        .filter(
-            (pl.col("_quantile_count") == quantile_count)
-            & pl.col("_all_finite")
-        )
+        .filter((pl.col("_quantile_count") == quantile_count) & pl.col("_all_finite"))
         .select(TIME)
     )
     path = (
@@ -266,16 +247,14 @@ def _daily_quantile_test_tables(
             ),
         }
     rows = []
-    for sample in performance_returns.partition_by(
-        "quantile", maintain_order=True
-    ):
+    for sample in performance_returns.partition_by("quantile", maintain_order=True):
         values = sample.get_column("return")
         rows.append(
             {
                 "quantile": sample.item(0, "quantile"),
-                "annualized_return": _single_return_metrics(
-                    values, annualization
-                )["annualized_return"],
+                "annualized_return": _single_return_metrics(values, annualization)[
+                    "annualized_return"
+                ],
                 "observation_count": values.len(),
             }
         )
@@ -292,13 +271,9 @@ def _daily_summary_tables(
 ) -> dict[str, pl.DataFrame]:
     tables: dict[str, pl.DataFrame] = {}
     if "signal_coverage" in selected:
-        tables["signal_coverage"] = series.get(
-            "daily_signal_coverage", pl.DataFrame()
-        )
+        tables["signal_coverage"] = series.get("daily_signal_coverage", pl.DataFrame())
     if "daily_turnover" in selected:
-        tables["daily_turnover"] = series.get(
-            "daily_book_turnover", pl.DataFrame()
-        )
+        tables["daily_turnover"] = series.get("daily_book_turnover", pl.DataFrame())
     if {"signal_autocorrelation", "implied_half_life"} & selected:
         tables["signal_autocorrelation"] = series.get(
             "daily_signal_autocorrelation", pl.DataFrame()
@@ -308,12 +283,8 @@ def _daily_summary_tables(
             "daily_book_lead_lag_returns", pl.DataFrame()
         )
     if "cumulative_return" in selected:
-        tables["book_daily_returns"] = series.get(
-            "daily_book_returns", pl.DataFrame()
-        )
-        tables["tail_daily_returns"] = series.get(
-            "daily_tail_returns", pl.DataFrame()
-        )
+        tables["book_daily_returns"] = series.get("daily_book_returns", pl.DataFrame())
+        tables["tail_daily_returns"] = series.get("daily_tail_returns", pl.DataFrame())
     return tables
 
 
@@ -330,17 +301,16 @@ def _horizon_summary_tables(
     keys = ["window_kind", "window_id", "start_session", "end_session"]
     horizon = ic.select(*keys).unique() if not ic.is_empty() else pl.DataFrame()
     for method in ("pearson", "spearman"):
-        selected = (
-            ic_summary.filter(pl.col("method") == method)
-            .select(
-                *keys,
-                pl.col("mean").alias(f"{method}_ic"),
-                pl.col("icir").alias(f"{method}_icir"),
-                pl.col("positive_ratio").alias(f"{method}_positive_ratio"),
-            )
+        selected = ic_summary.filter(pl.col("method") == method).select(
+            *keys,
+            pl.col("mean").alias(f"{method}_ic"),
+            pl.col("icir").alias(f"{method}_icir"),
+            pl.col("positive_ratio").alias(f"{method}_positive_ratio"),
         )
-        horizon = selected if horizon.is_empty() else horizon.join(
-            selected, on=keys, how="left"
+        horizon = (
+            selected
+            if horizon.is_empty()
+            else horizon.join(selected, on=keys, how="left")
         )
     for primitive, value_column, output in (
         ("horizon_book_returns", "book_return", "book_return"),
@@ -350,11 +320,11 @@ def _horizon_summary_tables(
         frame = series.get(primitive, pl.DataFrame())
         if frame.is_empty():
             continue
-        summary = frame.group_by(*keys).agg(
-            pl.col(value_column).mean().alias(output)
-        )
-        horizon = summary if horizon.is_empty() else horizon.join(
-            summary, on=keys, how="left"
+        summary = frame.group_by(*keys).agg(pl.col(value_column).mean().alias(output))
+        horizon = (
+            summary
+            if horizon.is_empty()
+            else horizon.join(summary, on=keys, how="left")
         )
     return {
         "horizon_summary": horizon.sort(["window_kind", "end_session"])
@@ -402,14 +372,10 @@ def _summary(
                 )
             ),
             "top_n_net_sharpe": top_n["net_sharpe"],
-            "top_n_net_annualized_volatility": top_n[
-                "net_annualized_volatility"
-            ],
+            "top_n_net_annualized_volatility": top_n["net_annualized_volatility"],
             "top_n_net_max_drawdown": top_n["net_max_drawdown"],
             "top_n_net_calmar": top_n["net_calmar"],
-            "top_n_annualized_turnover": _annualized_turnover(
-                turnover, annualization
-            ),
+            "top_n_annualized_turnover": _annualized_turnover(turnover, annualization),
             "top_n_annualized_cost_drag": _difference(
                 top_n["gross_annualized_return"],
                 top_n["net_annualized_return"],
@@ -464,9 +430,9 @@ def _ic_tables(
             # Canonical Strategy artifacts persist the already-aggregated
             # decay table.  Reusing it must not attempt to aggregate a
             # non-existent per-date ``ic`` column again.
-            tables["ic_decay"] = decay.select(
-                "lag", "method", "ic_mean"
-            ).sort(["method", "lag"])
+            tables["ic_decay"] = decay.select("lag", "method", "ic_mean").sort(
+                ["method", "lag"]
+            )
     return tables
 
 
@@ -762,9 +728,7 @@ def _single_return_metrics(
     }
 
 
-def _annualized_turnover(
-    turnover: pl.DataFrame, annualization: int
-) -> float | None:
+def _annualized_turnover(turnover: pl.DataFrame, annualization: int) -> float | None:
     if turnover.is_empty() or "turnover" not in turnover.columns:
         return None
     values = turnover.get_column("turnover").drop_nulls()
@@ -820,9 +784,7 @@ def _annualized_relative_wealth_excess(
     if benchmark_wealth <= 0.0 or portfolio_wealth < 0.0:
         return None
     return float(
-        (portfolio_wealth / benchmark_wealth)
-        ** (annualization / aligned.height)
-        - 1.0
+        (portfolio_wealth / benchmark_wealth) ** (annualization / aligned.height) - 1.0
     )
 
 
@@ -993,9 +955,13 @@ def _bankruptcies(
             )
     if not frames:
         return pl.DataFrame(schema=schema)
-    return pl.concat(frames).unique().sort(
-        ["portfolio", "lag", "quantile", "bankruptcy_time"],
-        nulls_last=True,
+    return (
+        pl.concat(frames)
+        .unique()
+        .sort(
+            ["portfolio", "lag", "quantile", "bankruptcy_time"],
+            nulls_last=True,
+        )
     )
 
 

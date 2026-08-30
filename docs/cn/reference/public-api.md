@@ -18,7 +18,8 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
   lag、IC decay 和 Signal 驱动的组合结果。
 - `run_prediction_horizon_diagnostics(scheduled_signal, prices, ...)`：在不构造组合绩效的
   前提下计算固定 session 前向收益、IC、centered-rank Book、gross-one Tail、quantile
-  结构、信号持久性、HAC 推断、BH q-value 与 staggered cohorts。
+  结构、信号持久性、HAC 推断、BH q-value 与 staggered cohorts。Book/Tail 权重结构有效后，
+  成员标签缺失时保留原权重并把该成员贡献记为 0，同时 coverage 计数继续公开缺口。
 - `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`：
   模拟每日 Book/Tail gross/net 诊断路径、Book requested/executed turnover，以及
   初始建仓标记、`-30..30` 整数 lag 的共同样本 Book lead-lag return，并输出

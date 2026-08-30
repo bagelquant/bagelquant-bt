@@ -17,6 +17,11 @@ prediction，数值越高代表越正向。
 `gross_one_tail_weights` 在相同 gross-one 口径下做多 q1、做空 q10。Book、Tail 和完整
 quantile curve 都是预测诊断，不生成 NAV、成本、换手、Sharpe 或回撤。
 
+Book 或 Tail 的权重结构有效后，某成员 forward return 缺失时，该成员当期贡献记为 0，
+但原始权重仍保留；该行结果继续可用，`expected_count`、`observed_count` 与
+`coverage_ratio` 仍如实公开标签缺口。系统不会剔除成员或重新计算权重。这个规则不放宽
+十个 quantile 的完整共同样本要求，也不改变 IC 与其他诊断的输入口径。
+
 每个 window 输出 Pearson/Spearman IC、正 IC 比例、ICIR、Book、Tail、quantile-rank IC
 和截面回归斜率。均值推断统一使用 Bartlett Newey–West，lag 为
 `max(window_width-1, floor(4*(n/100)^(2/9)))`，并输出双侧 p-value 与 95% CI。

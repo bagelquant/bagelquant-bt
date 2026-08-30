@@ -2861,11 +2861,7 @@ def _weighted_window_returns(
             .alias("coverage_ratio")
         )
         .with_columns(
-            pl.when(
-                pl.col("_weight_reason").is_null()
-                & (pl.col("expected_count") > 0)
-                & (pl.col("observed_count") == pl.col("expected_count"))
-            )
+            pl.when(pl.col("_weight_reason").is_null() & (pl.col("expected_count") > 0))
             .then(pl.col("_weighted_return"))
             .otherwise(None)
             .alias(return_column),
@@ -2873,8 +2869,6 @@ def _weighted_window_returns(
             .then(pl.col("_weight_reason"))
             .when(pl.col("expected_count") == 0)
             .then(pl.lit("weights are unavailable"))
-            .when(pl.col("observed_count") != pl.col("expected_count"))
-            .then(pl.lit("forward-return coverage is incomplete"))
             .otherwise(None)
             .alias("unavailable_reason"),
         )

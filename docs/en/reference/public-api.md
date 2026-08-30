@@ -22,7 +22,9 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
   one fixed-session label window at a time and retains aggregate IC,
   centered-rank Book, gross-one Tail,
   quantile structure, signal persistence, HAC inference, BH q-values, and
-  staggered cohorts without constructing portfolio performance.
+  staggered cohorts without constructing portfolio performance. Structurally
+  valid Book/Tail weights remain fixed when a member label is missing: that
+  contribution is zero while coverage counts continue to expose the gap.
 - `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`
   calculates capital-free daily Book/Tail gross/net diagnostic paths, where Net
   subtracts requested-turnover proportional costs but excludes capital, minimum

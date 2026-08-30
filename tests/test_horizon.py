@@ -267,8 +267,39 @@ def test_book_return_never_reweights_around_missing_forward_labels() -> None:
             .alias("forward_return")
         ),
     ).row(0, named=True)
-    assert missing["book_return"] is None
+    assert missing["book_return"] == pytest.approx(0.01375)
+    assert missing["expected_count"] == 4
+    assert missing["observed_count"] == 3
     assert missing["coverage_ratio"] == pytest.approx(0.75)
+    assert missing["unavailable_reason"] is None
+
+
+def test_tail_return_keeps_original_weights_when_one_label_is_missing() -> None:
+    factor = _factor([float(value) for value in range(10)])
+    weights = gross_one_tail_weights(factor)
+    forward = pl.DataFrame(
+        {
+            "evaluation_date": [date(2024, 1, 1)] * 10,
+            "execution_date": [date(2024, 1, 2)] * 10,
+            "target_end_date": [date(2024, 1, 3)] * 10,
+            "asset_id": [f"a{index}" for index in range(10)],
+            "window_kind": ["cumulative"] * 10,
+            "window_id": ["cumulative_1d"] * 10,
+            "start_session": [1] * 10,
+            "end_session": [1] * 10,
+            "start_offset": [0] * 10,
+            "end_offset": [1] * 10,
+            "forward_return": [-0.02, *([0.0] * 8), None],
+        }
+    )
+
+    result = window_tail_returns(weights, forward).row(0, named=True)
+
+    assert result["tail_return"] == pytest.approx(0.01)
+    assert result["expected_count"] == 2
+    assert result["observed_count"] == 1
+    assert result["coverage_ratio"] == pytest.approx(0.5)
+    assert result["unavailable_reason"] is None
 
 
 def test_book_tail_and_quantiles_reveal_different_cross_section_structure() -> None:
