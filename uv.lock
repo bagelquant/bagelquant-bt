@@ -4,7 +4,7 @@ requires-python = "==3.13.*"
 
 [[package]]
 name = "bagelquant-bt"
-version = "0.7.2"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "bagelquant-core" },
@@ -48,7 +48,7 @@ dev = [
 
 [[package]]
 name = "bagelquant-core"
-version = "0.7.1"
+version = "0.8.0"
 source = { editable = "../bagelquant-core" }
 dependencies = [
     { name = "numpy" },
