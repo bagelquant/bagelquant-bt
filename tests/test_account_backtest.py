@@ -9,6 +9,7 @@ from bagelquant_bt import (
     AccountBacktestConfig,
     TransactionCostConfig,
     run_account_backtest,
+    run_planned_account_backtest,
 )
 
 
@@ -66,6 +67,99 @@ def test_account_buys_and_sells_whole_lots_with_t_plus_one() -> None:
         [10_500.0, 10_500.0, 10_500.0]
     )
     assert result.final_checkpoint.cash == pytest.approx(10_500.0)
+
+
+def test_planned_account_executes_frozen_quantity_and_expires_remainder() -> None:
+    decision = date(2024, 8, 30)
+    execution = date(2024, 9, 2)
+    following = date(2024, 9, 3)
+    plans = pl.DataFrame(
+        {
+            "decision_date": [decision, decision],
+            "execution_date": [execution, execution],
+            "asset_id": ["a", "b"],
+            "target_weight": [0.5, 0.5],
+            "sizing_notional": [10_000.0, 10_000.0],
+            "decision_price": [10.0, 10.0],
+            "target_quantity": [500, 500],
+        }
+    )
+    prices = pl.DataFrame(
+        {
+            "time": [execution, execution, following, following],
+            "asset_id": ["a", "b", "a", "b"],
+            "open": [20.0, 10.0, 10.0, 10.0],
+            "close": [20.0, 10.0, 10.0, 10.0],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "time": [execution, execution, following, following],
+            "asset_id": ["a", "b", "a", "b"],
+            "can_buy": [True, False, True, True],
+            "can_sell": [True, True, True, True],
+            "reason": [None, "limit_up", None, None],
+        }
+    )
+
+    result = run_planned_account_backtest(
+        plans,
+        prices,
+        corporate_action_coverage=_coverage(execution, following),
+        execution_availability=availability,
+        lot_sizes=pl.DataFrame(
+            {"asset_id": ["a", "b"], "buy_lot_size": [100, 100]}
+        ),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=10_000.0,
+            retry_blocked_orders=True,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.target_positions.select(
+        "asset_id", "decision_price", "open_price", "target_quantity"
+    ).to_dicts() == [
+        {
+            "asset_id": "a",
+            "decision_price": 10.0,
+            "open_price": 20.0,
+            "target_quantity": 500,
+        },
+        {
+            "asset_id": "b",
+            "decision_price": 10.0,
+            "open_price": 10.0,
+            "target_quantity": 500,
+        },
+    ]
+    assert result.fills.select("asset_id", "quantity").to_dicts() == [
+        {"asset_id": "a", "quantity": 500}
+    ]
+    assert result.orders.filter(pl.col("asset_id") == "b").select(
+        "time",
+        "requested_quantity",
+        "filled_quantity",
+        "unfilled_quantity",
+        "implementation_gap",
+        "status",
+        "expires_at",
+    ).to_dicts() == [
+        {
+            "time": execution,
+            "requested_quantity": 500,
+            "filled_quantity": 0,
+            "unfilled_quantity": 500,
+            "implementation_gap": 1.0,
+            "status": "expired",
+            "expires_at": execution,
+        }
+    ]
+    assert result.final_checkpoint.pending_target_positions.is_empty()
+    assert result.executable_weights.filter(pl.col("time") == execution).item(
+        0, "actual_weight"
+    ) == pytest.approx(1.0)
 
 
 def test_t_plus_one_pending_sell_has_reason_and_retries_once_available() -> None:

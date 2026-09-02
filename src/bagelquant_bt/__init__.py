@@ -5,6 +5,7 @@ from .account import (
     AccountBacktestResult,
     AccountStateCheckpoint,
     run_account_backtest,
+    run_planned_account_backtest,
 )
 from .allocation import IntegerTargetAllocation, allocate_integer_positions
 from .benchmarks import (
@@ -257,6 +258,7 @@ __all__ = [
     "run_continuous_target_path",
     "run_daily_prediction_diagnostics",
     "run_daily_rank_path_diagnostics",
+    "run_planned_account_backtest",
     "run_prediction_backtest",
     "run_prediction_evaluation",
     "run_prediction_horizon_diagnostics",

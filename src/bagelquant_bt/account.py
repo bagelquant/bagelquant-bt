@@ -105,6 +105,78 @@ def run_account_backtest(
     can never be silently replaced by adjusted prices.
     """
 
+    return _run_account_backtest(
+        target_weights,
+        market_prices,
+        corporate_action_coverage=corporate_action_coverage,
+        config=config,
+        execution_availability=execution_availability,
+        lot_sizes=lot_sizes,
+        corporate_actions=corporate_actions,
+        initial_positions=initial_positions,
+        initial_cash=initial_cash,
+        checkpoint=checkpoint,
+        target_position_plans=None,
+    )
+
+
+def run_planned_account_backtest(
+    target_position_plans: pl.DataFrame,
+    market_prices: pl.DataFrame,
+    *,
+    corporate_action_coverage: pl.DataFrame,
+    config: AccountBacktestConfig | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    lot_sizes: pl.DataFrame | None = None,
+    corporate_actions: pl.DataFrame | None = None,
+    initial_positions: pl.DataFrame | None = None,
+    initial_cash: float | None = None,
+    checkpoint: AccountStateCheckpoint | None = None,
+) -> AccountBacktestResult:
+    """Execute immutable decision-close target quantities at the next open.
+
+    Each plan row carries ``decision_date``, ``execution_date``, ``asset_id``,
+    ``target_weight``, ``sizing_notional``, ``decision_price``, and
+    ``target_quantity``.  The execution session may constrain or reduce an
+    order, but it never converts the target weight into a new quantity using
+    the execution open.  Any unfilled remainder expires with that session.
+    """
+
+    plans = _validate_target_position_plans(target_position_plans)
+    targets = plans.select(
+        pl.col("execution_date").alias(TIME),
+        ASSET_ID,
+        pl.col("target_weight").alias("weight"),
+    )
+    return _run_account_backtest(
+        targets,
+        market_prices,
+        corporate_action_coverage=corporate_action_coverage,
+        config=config,
+        execution_availability=execution_availability,
+        lot_sizes=lot_sizes,
+        corporate_actions=corporate_actions,
+        initial_positions=initial_positions,
+        initial_cash=initial_cash,
+        checkpoint=checkpoint,
+        target_position_plans=plans,
+    )
+
+
+def _run_account_backtest(
+    target_weights: pl.DataFrame,
+    market_prices: pl.DataFrame,
+    *,
+    corporate_action_coverage: pl.DataFrame,
+    config: AccountBacktestConfig | None,
+    execution_availability: pl.DataFrame | None,
+    lot_sizes: pl.DataFrame | None,
+    corporate_actions: pl.DataFrame | None,
+    initial_positions: pl.DataFrame | None,
+    initial_cash: float | None,
+    checkpoint: AccountStateCheckpoint | None,
+    target_position_plans: pl.DataFrame | None,
+) -> AccountBacktestResult:
     resolved_config = config or AccountBacktestConfig()
     prices = _validate_market_prices(market_prices)
     targets = _validate_target_weights(target_weights)
@@ -123,6 +195,7 @@ def run_account_backtest(
     actions_by_list = _group_actions(actions, "share_available_date")
     prices_by_date = _price_lookup(prices)
     targets_by_date = _target_lookup(targets)
+    plans_by_date = _target_position_plan_lookup(target_position_plans)
 
     state = _restore_state(
         resolved_config,
@@ -176,7 +249,11 @@ def run_account_backtest(
 
         if is_target_session:
             state["latest_target"] = targets_by_date[session]
-            state["target_revision_time"] = session
+            state["target_revision_time"] = (
+                plans_by_date[session]["decision_date"]
+                if session in plans_by_date
+                else session
+            )
         latest_target: dict[str, float] = state["latest_target"]
         sizing_capital = (
             resolved_config.fixed_notional
@@ -184,16 +261,25 @@ def run_account_backtest(
             else _state_equity(state)
         )
         if is_target_session:
-            state["pending_target_positions"] = _desired_positions(
-                session,
-                sizing_capital,
-                latest_target,
-                state,
-                session_prices,
-                lots,
-                rows["target_weights"],
-                rows["target_positions"],
-            )
+            if session in plans_by_date:
+                state["pending_target_positions"] = _planned_positions(
+                    session,
+                    plans_by_date[session],
+                    session_prices,
+                    rows["target_weights"],
+                    rows["target_positions"],
+                )
+            else:
+                state["pending_target_positions"] = _desired_positions(
+                    session,
+                    sizing_capital,
+                    latest_target,
+                    state,
+                    session_prices,
+                    lots,
+                    rows["target_weights"],
+                    rows["target_positions"],
+                )
         desired = state["pending_target_positions"]
         daily_cost = 0.0
         withdrawal_flow = 0.0
@@ -211,6 +297,7 @@ def run_account_backtest(
                 rows["orders"],
                 rows["fills"],
                 rows["external_flows"],
+                expire_unfilled=session in plans_by_date,
             )
             state["pending_target_positions"] = pending
         external_flow += withdrawal_flow
@@ -348,6 +435,78 @@ def _validate_target_weights(frame: pl.DataFrame) -> pl.DataFrame:
     if invalid_sums.height:
         raise InputValidationError("target weights must sum to at most one per date")
     return result.sort([TIME, ASSET_ID])
+
+
+def _validate_target_position_plans(frame: pl.DataFrame) -> pl.DataFrame:
+    required = {
+        "decision_date",
+        "execution_date",
+        ASSET_ID,
+        "target_weight",
+        "sizing_notional",
+        "decision_price",
+        "target_quantity",
+    }
+    if not isinstance(frame, pl.DataFrame) or not required.issubset(frame.columns):
+        raise InputValidationError(
+            "target_position_plans requires decision_date, execution_date, "
+            "asset_id, target_weight, sizing_notional, decision_price, and "
+            "target_quantity columns"
+        )
+    result = frame.select(*sorted(required)).with_columns(
+        pl.col("decision_date").cast(pl.Date, strict=False),
+        pl.col("execution_date").cast(pl.Date, strict=False),
+        pl.col(ASSET_ID).cast(pl.String),
+        pl.col("target_weight").cast(pl.Float64, strict=False),
+        pl.col("sizing_notional").cast(pl.Float64, strict=False),
+        pl.col("decision_price").cast(pl.Float64, strict=False),
+        pl.col("target_quantity").cast(pl.Int64, strict=False),
+    )
+    if result.select(
+        pl.struct("execution_date", ASSET_ID).is_duplicated().any()
+    ).item():
+        raise InputValidationError(
+            "target_position_plans must be unique by (execution_date, asset_id)"
+        )
+    invalid = result.filter(
+        pl.col("decision_date").is_null()
+        | pl.col("execution_date").is_null()
+        | (pl.col("decision_date") >= pl.col("execution_date"))
+        | pl.col(ASSET_ID).is_null()
+        | (pl.col(ASSET_ID).str.len_chars() == 0)
+        | pl.col("target_weight").is_null()
+        | ~pl.col("target_weight").is_finite()
+        | (pl.col("target_weight") < 0)
+        | pl.col("sizing_notional").is_null()
+        | ~pl.col("sizing_notional").is_finite()
+        | (pl.col("sizing_notional") <= 0)
+        | pl.col("decision_price").is_null()
+        | ~pl.col("decision_price").is_finite()
+        | (pl.col("decision_price") <= 0)
+        | pl.col("target_quantity").is_null()
+        | (pl.col("target_quantity") < 0)
+    )
+    if invalid.height:
+        raise InputValidationError("target_position_plans contains invalid values")
+    inconsistent = (
+        result.group_by("execution_date")
+        .agg(
+            pl.col("decision_date").n_unique().alias("decision_dates"),
+            pl.col("sizing_notional").n_unique().alias("notionals"),
+            pl.col("target_weight").sum().alias("total_weight"),
+        )
+        .filter(
+            (pl.col("decision_dates") != 1)
+            | (pl.col("notionals") != 1)
+            | (pl.col("total_weight") > 1.0 + 1e-8)
+        )
+    )
+    if inconsistent.height:
+        raise InputValidationError(
+            "each execution_date requires one decision_date, one sizing_notional, "
+            "and target weights summing to at most one"
+        )
+    return result.sort(["execution_date", ASSET_ID])
 
 
 def _validate_corporate_action_coverage(
@@ -532,6 +691,8 @@ def _execute_rebalance(
     order_rows: list[dict[str, Any]],
     fill_rows: list[dict[str, Any]],
     flow_rows: list[dict[str, Any]],
+    *,
+    expire_unfilled: bool = False,
 ) -> tuple[float, float, dict[str, int | None]]:
     total_cost = 0.0
     pending: dict[str, int | None] = {}
@@ -560,7 +721,14 @@ def _execute_rebalance(
         elif executable < requested:
             reason = "cash_or_lot_constraint"
         order = _order_row(
-            session, state, asset_id, "sell", requested, executable, reason
+            session,
+            state,
+            asset_id,
+            "sell",
+            requested,
+            executable,
+            reason,
+            expire_unfilled=expire_unfilled,
         )
         order_rows.append(order)
         if executable:
@@ -581,6 +749,7 @@ def _execute_rebalance(
         if (
             requested > executable
             and config.retry_blocked_orders
+            and not expire_unfilled
             and (market_blocked or settlement_blocked)
         ):
             pending[asset_id] = target
@@ -641,7 +810,16 @@ def _execute_rebalance(
             reason = reason or "buy_blocked"
         elif planned < requested:
             reason = "cash_or_lot_constraint"
-        order = _order_row(session, state, asset_id, "buy", requested, planned, reason)
+        order = _order_row(
+            session,
+            state,
+            asset_id,
+            "buy",
+            requested,
+            planned,
+            reason,
+            expire_unfilled=expire_unfilled,
+        )
         if requested or planned:
             order_rows.append(order)
         if planned:
@@ -661,6 +839,7 @@ def _execute_rebalance(
         if (
             requested > planned
             and config.retry_blocked_orders
+            and not expire_unfilled
             and (not can_buy or prices.get(asset_id, {}).get("open") is None)
         ):
             pending[asset_id] = target
@@ -774,6 +953,45 @@ def _desired_positions(
                 "target_weight": weight,
                 "sizing_capital": sizing_capital,
                 "open_price": open_price,
+                "target_quantity": quantity,
+            }
+        )
+    return desired
+
+
+def _planned_positions(
+    session: date,
+    plan: dict[str, Any],
+    prices: dict[str, dict[str, float | None]],
+    target_weight_rows: list[dict[str, Any]],
+    target_position_rows: list[dict[str, Any]],
+) -> dict[str, int]:
+    decision_date = plan["decision_date"]
+    sizing_notional = float(plan["sizing_notional"])
+    desired: dict[str, int] = {}
+    for asset_id, row in sorted(plan["positions"].items()):
+        weight = float(row["target_weight"])
+        quantity = int(row["target_quantity"])
+        desired[asset_id] = quantity
+        target_weight_rows.append(
+            {
+                TIME: session,
+                "target_revision_time": decision_date,
+                ASSET_ID: asset_id,
+                "weight": weight,
+            }
+        )
+        target_position_rows.append(
+            {
+                TIME: session,
+                "target_revision_time": decision_date,
+                "decision_date": decision_date,
+                "execution_date": session,
+                ASSET_ID: asset_id,
+                "target_weight": weight,
+                "sizing_capital": sizing_notional,
+                "decision_price": float(row["decision_price"]),
+                "open_price": prices.get(asset_id, {}).get("open"),
                 "target_quantity": quantity,
             }
         )
@@ -966,6 +1184,7 @@ def _record_end_of_day_state(
                 TIME: session,
                 ASSET_ID: asset_id,
                 "weight": value / equity if equity else 0.0,
+                "actual_weight": value / equity if equity else 0.0,
             }
         )
     rows["cash"].append(
@@ -1116,6 +1335,26 @@ def _target_lookup(frame: pl.DataFrame) -> dict[date, dict[str, float]]:
     return result
 
 
+def _target_position_plan_lookup(
+    frame: pl.DataFrame | None,
+) -> dict[date, dict[str, Any]]:
+    result: dict[date, dict[str, Any]] = {}
+    if frame is None:
+        return result
+    for row in frame.iter_rows(named=True):
+        execution_date = row["execution_date"]
+        plan = result.setdefault(
+            execution_date,
+            {
+                "decision_date": row["decision_date"],
+                "sizing_notional": row["sizing_notional"],
+                "positions": {},
+            },
+        )
+        plan["positions"][row[ASSET_ID]] = row
+    return result
+
+
 def _group_actions(
     frame: pl.DataFrame,
     column: str,
@@ -1175,6 +1414,8 @@ def _order_row(
     requested: int,
     executable: int,
     reason: str,
+    *,
+    expire_unfilled: bool = False,
 ) -> dict[str, Any]:
     revision = state["target_revision_time"]
     seed = f"{session}|{revision}|{asset_id}|{side}".encode()
@@ -1184,6 +1425,8 @@ def _order_row(
         if requested == executable and executable
         else "reduced"
         if executable
+        else "expired"
+        if expire_unfilled
         else "pending"
     )
     return {
@@ -1194,8 +1437,14 @@ def _order_row(
         "side": side,
         "requested_quantity": requested,
         "order_quantity": executable,
+        "filled_quantity": executable,
+        "unfilled_quantity": requested - executable,
+        "implementation_gap": (
+            (requested - executable) / requested if requested else 0.0
+        ),
         "status": status,
         "reason": reason or None,
+        "expires_at": session if expire_unfilled and requested > executable else None,
     }
 
 
@@ -1216,4 +1465,5 @@ __all__ = [
     "AccountBacktestResult",
     "AccountStateCheckpoint",
     "run_account_backtest",
+    "run_planned_account_backtest",
 ]

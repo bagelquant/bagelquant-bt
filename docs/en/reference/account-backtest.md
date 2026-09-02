@@ -5,6 +5,13 @@ It consumes target weights, provider-neutral unadjusted open/close prices,
 corporate actions and coverage, execution availability, lot sizes, initial
 cash/positions, and `AccountBacktestConfig`.
 
+`run_planned_account_backtest` uses the same account mechanics but accepts an
+immutable decision plan with `decision_date`, `execution_date`, `asset_id`,
+`target_weight`, `sizing_notional`, `decision_price`, and `target_quantity`.
+The execution open is used only for fills and affordability; it never resizes
+the frozen target quantity. Any blocked or unaffordable remainder expires at
+the end of that execution session and is not retried on a later date.
+
 Each session restores the prior checkpoint, releases settlement and corporate
 action receivables, marks at the open, applies fixed-notional flows when
 configured, sizes integer target positions, executes eligible sells, pays a
@@ -27,4 +34,3 @@ leverage. Compounding mode has no external flow and sizes from current equity.
 daily positions, cash, receivables, external flows, pending withdrawals,
 account equity, performance NAV, executable weights, target/implementation/cost
 drag, and a resumable checkpoint.
-

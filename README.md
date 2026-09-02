@@ -106,6 +106,13 @@ returns `AccountBacktestResult` and does not change the fractional-weight
 engine used by research diagnostics. See
 [Whole-share account backtests](docs/en/reference/account-backtest.md).
 
+`run_planned_account_backtest` is the causal execution counterpart for a
+decision system. It accepts quantities frozen from decision-date target
+weights, notional, and prices, executes those quantities on the declared next
+session without sizing them again at the open, and expires every unfilled
+remainder at the end of that session. Its resulting executable weights are
+actual account weights and remain distinct from the frozen target weights.
+
 During an asset-specific price gap, its holding is frozen at the last observed
 price. The gap sessions have zero return and the cumulative move is recognized
 when a new price appears.
