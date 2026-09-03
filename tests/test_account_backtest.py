@@ -10,6 +10,7 @@ from bagelquant_bt import (
     TransactionCostConfig,
     run_account_backtest,
     run_planned_account_backtest,
+    run_stateful_account_backtest,
 )
 
 
@@ -160,6 +161,112 @@ def test_planned_account_executes_frozen_quantity_and_expires_remainder() -> Non
     assert result.executable_weights.filter(pl.col("time") == execution).item(
         0, "actual_weight"
     ) == pytest.approx(1.0)
+
+
+def test_stateful_account_sizes_and_executes_all_decisions_in_one_pass() -> None:
+    days = [date(2024, 8, 30), date(2024, 9, 2), date(2024, 9, 3)]
+    calls = []
+
+    def targets(context):
+        calls.append(context)
+        weight = 1.0 if context.decision_date == days[0] else 0.0
+        return pl.DataFrame({"asset_id": ["a"], "weight": [weight]})
+
+    result = run_stateful_account_backtest(
+        pl.DataFrame(
+            {
+                "decision_date": days[:2],
+                "execution_date": days[1:],
+            }
+        ),
+        pl.DataFrame(
+            {
+                "time": days,
+                "asset_id": ["a"] * 3,
+                "open": [10.0, 20.0, 20.0],
+                "close": [10.0, 20.0, 20.0],
+            }
+        ),
+        targets,
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [1]}),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=1_000.0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert [item.decision_date for item in calls] == days[:2]
+    assert calls[1].reference_weights.select("asset_id", "weight").to_dicts() == [
+        {"asset_id": "a", "weight": 1.0}
+    ]
+    assert result.target_position_plans.select(
+        "decision_date", "execution_date", "target_quantity"
+    ).to_dicts() == [
+        {
+            "decision_date": days[0],
+            "execution_date": days[1],
+            "target_quantity": 100,
+        },
+        {
+            "decision_date": days[1],
+            "execution_date": days[2],
+            "target_quantity": 0,
+        },
+    ]
+    assert result.account.fills.select("time", "side", "quantity").to_dicts() == [
+        {"time": days[1], "side": "buy", "quantity": 50},
+        {"time": days[2], "side": "sell", "quantity": 50},
+    ]
+    buy = result.account.orders.filter(pl.col("side") == "buy").row(0, named=True)
+    assert buy["requested_quantity"] == 100
+    assert buy["unfilled_quantity"] == 50
+    assert buy["expires_at"] == days[1]
+
+
+def test_stateful_account_resumes_checkpoint_and_keeps_prior_plans() -> None:
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    prices = pl.DataFrame(
+        {
+            "time": days,
+            "asset_id": ["a"] * 3,
+            "open": [10.0] * 3,
+            "close": [10.0] * 3,
+        }
+    )
+    config = AccountBacktestConfig(
+        capital_mode="compounding",
+        initial_capital=1_000.0,
+        transaction_cost=_zero_cost(),
+    )
+    first = run_stateful_account_backtest(
+        pl.DataFrame(
+            {"decision_date": [days[0]], "execution_date": [days[1]]}
+        ),
+        prices.filter(pl.col("time") <= days[1]),
+        lambda _context: pl.DataFrame({"asset_id": ["a"], "weight": [1.0]}),
+        corporate_action_coverage=_coverage(*days[:2]),
+        config=config,
+    )
+    resumed = run_stateful_account_backtest(
+        pl.DataFrame(
+            {"decision_date": [days[1]], "execution_date": [days[2]]}
+        ),
+        prices.filter(pl.col("time") >= days[1]),
+        lambda _context: pl.DataFrame({"asset_id": ["a"], "weight": [0.0]}),
+        corporate_action_coverage=_coverage(*days[1:]),
+        config=config,
+        checkpoint=first.account.final_checkpoint,
+        initial_target_position_plans=first.target_position_plans,
+    )
+
+    assert resumed.target_position_plans.get_column(
+        "decision_date"
+    ).to_list() == days[:2]
+    assert resumed.account.fills.select("time", "side", "quantity").to_dicts() == [
+        {"time": days[2], "side": "sell", "quantity": 100}
+    ]
 
 
 def test_t_plus_one_pending_sell_has_reason_and_retries_once_available() -> None:

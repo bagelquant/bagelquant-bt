@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
 
 import polars as pl
 
+from .allocation import allocate_integer_positions
 from .config import TransactionCostConfig
 from .exceptions import BacktestConfigError, InputValidationError
 from .inputs import ASSET_ID, TIME
@@ -83,6 +85,30 @@ class AccountBacktestResult:
     executable_weights: pl.DataFrame
     attribution: pl.DataFrame
     final_checkpoint: AccountStateCheckpoint
+
+
+@dataclass(frozen=True, slots=True)
+class AccountDecisionContext:
+    """Causal account state exposed once at a decision close."""
+
+    decision_date: date
+    execution_date: date
+    equity: float
+    sizing_notional: float
+    reference_weights: pl.DataFrame
+    close_prices: pl.DataFrame
+    checkpoint: AccountStateCheckpoint
+
+
+@dataclass(frozen=True, slots=True)
+class StatefulAccountBacktestResult:
+    """One-pass account result plus quantities frozen by decision callbacks."""
+
+    target_position_plans: pl.DataFrame
+    account: AccountBacktestResult
+
+
+AccountTargetProvider = Callable[[AccountDecisionContext], pl.DataFrame]
 
 
 def run_account_backtest(
@@ -163,6 +189,72 @@ def run_planned_account_backtest(
     )
 
 
+def run_stateful_account_backtest(
+    decision_schedule: pl.DataFrame,
+    market_prices: pl.DataFrame,
+    target_provider: AccountTargetProvider,
+    *,
+    corporate_action_coverage: pl.DataFrame,
+    config: AccountBacktestConfig | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    lot_sizes: pl.DataFrame | None = None,
+    corporate_actions: pl.DataFrame | None = None,
+    initial_positions: pl.DataFrame | None = None,
+    initial_cash: float | None = None,
+    checkpoint: AccountStateCheckpoint | None = None,
+    initial_target_position_plans: pl.DataFrame | None = None,
+) -> StatefulAccountBacktestResult:
+    """Generate decision-close quantities and execute them in one stateful pass.
+
+    ``target_provider`` is called exactly once for each decision date, after that
+    session's close has been marked.  It receives only the causal account state
+    at that close.  The returned ``asset_id, weight`` snapshot is converted to
+    immutable whole-lot quantities immediately and executed on the declared
+    future session without sizing again at its open.
+    """
+
+    schedule = _validate_decision_schedule(decision_schedule)
+    if not callable(target_provider):
+        raise InputValidationError("target_provider must be callable")
+    initial_plans = (
+        None
+        if initial_target_position_plans is None
+        else _validate_target_position_plans(initial_target_position_plans)
+    )
+    generated: list[pl.DataFrame] = []
+    empty_targets = pl.DataFrame(
+        schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
+    )
+    account = _run_account_backtest(
+        empty_targets,
+        market_prices,
+        corporate_action_coverage=corporate_action_coverage,
+        config=config,
+        execution_availability=execution_availability,
+        lot_sizes=lot_sizes,
+        corporate_actions=corporate_actions,
+        initial_positions=initial_positions,
+        initial_cash=initial_cash,
+        checkpoint=checkpoint,
+        target_position_plans=initial_plans,
+        decision_schedule=schedule,
+        target_provider=target_provider,
+        generated_plans=generated,
+    )
+    frames = ([] if initial_plans is None else [initial_plans]) + generated
+    plans = (
+        _validate_target_position_plans(
+            pl.concat(frames, how="vertical")
+        ).sort("decision_date", ASSET_ID)
+        if frames
+        else _empty_target_position_plans()
+    )
+    return StatefulAccountBacktestResult(
+        target_position_plans=plans,
+        account=account,
+    )
+
+
 def _run_account_backtest(
     target_weights: pl.DataFrame,
     market_prices: pl.DataFrame,
@@ -176,14 +268,22 @@ def _run_account_backtest(
     initial_cash: float | None,
     checkpoint: AccountStateCheckpoint | None,
     target_position_plans: pl.DataFrame | None,
+    decision_schedule: pl.DataFrame | None = None,
+    target_provider: AccountTargetProvider | None = None,
+    generated_plans: list[pl.DataFrame] | None = None,
 ) -> AccountBacktestResult:
     resolved_config = config or AccountBacktestConfig()
     prices = _validate_market_prices(market_prices)
     targets = _validate_target_weights(target_weights)
-    calendar = prices.get_column(TIME).unique().sort().to_list()
+    full_calendar = prices.get_column(TIME).unique().sort().to_list()
+    calendar = full_calendar
     if checkpoint is not None:
         calendar = [value for value in calendar if value > checkpoint.time]
-    if not calendar:
+    decisions_by_date = _decision_schedule_lookup(decision_schedule)
+    checkpoint_decision = (
+        checkpoint is not None and checkpoint.time in decisions_by_date
+    )
+    if not calendar and not checkpoint_decision:
         raise InputValidationError("account backtest has no market sessions to run")
     _validate_corporate_action_coverage(corporate_action_coverage, calendar)
     availability = _availability_lookup(execution_availability)
@@ -223,6 +323,32 @@ def _run_account_backtest(
     }
     previous_equity = _state_equity(state)
     previous_nav = previous_equity / state["units"]
+
+    def generate_plan(decision_date: date) -> None:
+        if target_provider is None or generated_plans is None:
+            return
+        execution_date = decisions_by_date[decision_date]
+        plan = _build_stateful_decision_plan(
+            decision_date=decision_date,
+            execution_date=execution_date,
+            prices=prices_by_date[decision_date],
+            state=state,
+            config=resolved_config,
+            lots=lots,
+            target_provider=target_provider,
+        )
+        generated_plans.append(plan)
+        if not plan.is_empty():
+            plans_by_date[execution_date] = _target_position_plan_lookup(plan)[
+                execution_date
+            ]
+            targets_by_date[execution_date] = {
+                str(row[ASSET_ID]): float(row["target_weight"])
+                for row in plan.iter_rows(named=True)
+            }
+
+    if checkpoint_decision:
+        generate_plan(checkpoint.time)
 
     for session_index, session in enumerate(calendar):
         session_prices = prices_by_date[session]
@@ -353,10 +479,12 @@ def _run_account_backtest(
             state,
             actions_by_record.get(session, ()),
         )
+        if session in decisions_by_date:
+            generate_plan(session)
         previous_equity = equity
         previous_nav = nav
 
-    final_time = calendar[-1]
+    final_time = calendar[-1] if calendar else checkpoint.time
     checkpoint_result = _checkpoint(final_time, state)
     return AccountBacktestResult(
         target_weights=_rows_frame(rows["target_weights"]),
@@ -453,7 +581,7 @@ def _validate_target_position_plans(frame: pl.DataFrame) -> pl.DataFrame:
             "asset_id, target_weight, sizing_notional, decision_price, and "
             "target_quantity columns"
         )
-    result = frame.select(*sorted(required)).with_columns(
+    result = frame.select(*list(_empty_target_position_plans().schema)).with_columns(
         pl.col("decision_date").cast(pl.Date, strict=False),
         pl.col("execution_date").cast(pl.Date, strict=False),
         pl.col(ASSET_ID).cast(pl.String),
@@ -507,6 +635,170 @@ def _validate_target_position_plans(frame: pl.DataFrame) -> pl.DataFrame:
             "and target weights summing to at most one"
         )
     return result.sort(["execution_date", ASSET_ID])
+
+
+def _validate_decision_schedule(frame: pl.DataFrame) -> pl.DataFrame:
+    required = {"decision_date", "execution_date"}
+    if not isinstance(frame, pl.DataFrame) or not required.issubset(frame.columns):
+        raise InputValidationError(
+            "decision_schedule requires decision_date and execution_date columns"
+        )
+    result = frame.select("decision_date", "execution_date").with_columns(
+        pl.col("decision_date").cast(pl.Date, strict=False),
+        pl.col("execution_date").cast(pl.Date, strict=False),
+    )
+    if result.filter(
+        pl.col("decision_date").is_null()
+        | pl.col("execution_date").is_null()
+        | (pl.col("decision_date") >= pl.col("execution_date"))
+    ).height:
+        raise InputValidationError(
+            "each decision must execute on a later market session"
+        )
+    if result.get_column("decision_date").n_unique() != result.height:
+        raise InputValidationError("decision_schedule must be unique by decision_date")
+    if result.get_column("execution_date").n_unique() != result.height:
+        raise InputValidationError("decision_schedule must be unique by execution_date")
+    return result.sort("decision_date")
+
+
+def _empty_target_position_plans() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "decision_date": pl.Date,
+            "execution_date": pl.Date,
+            ASSET_ID: pl.String,
+            "target_weight": pl.Float64,
+            "sizing_notional": pl.Float64,
+            "decision_price": pl.Float64,
+            "target_quantity": pl.Int64,
+        }
+    )
+
+
+def _build_stateful_decision_plan(
+    *,
+    decision_date: date,
+    execution_date: date,
+    prices: dict[str, dict[str, float | None]],
+    state: dict[str, Any],
+    config: AccountBacktestConfig,
+    lots: dict[str, int],
+    target_provider: AccountTargetProvider,
+) -> pl.DataFrame:
+    equity = _state_equity(state)
+    sizing_notional = (
+        config.fixed_notional
+        if config.capital_mode == "fixed_notional"
+        else equity
+    )
+    if sizing_notional <= 0:
+        raise InputValidationError("decision sizing notional must be positive")
+    checkpoint = _checkpoint(decision_date, state)
+    close_rows = [
+        {ASSET_ID: asset_id, "price": float(item["close"])}
+        for asset_id, item in sorted(prices.items())
+        if item.get("close") is not None
+    ]
+    close_prices = (
+        pl.DataFrame(close_rows, schema={ASSET_ID: pl.String, "price": pl.Float64})
+        if close_rows
+        else pl.DataFrame(schema={ASSET_ID: pl.String, "price": pl.Float64})
+    )
+    reference_rows = [
+        {
+            TIME: decision_date,
+            ASSET_ID: asset_id,
+            "weight": quantity * state["marks"].get(asset_id, 0.0)
+            / sizing_notional,
+        }
+        for asset_id, quantity in sorted(state["positions"].items())
+        if quantity
+    ]
+    reference_weights = (
+        pl.DataFrame(
+            reference_rows,
+            schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64},
+        )
+        if reference_rows
+        else pl.DataFrame(
+            schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
+        )
+    )
+    provided = target_provider(
+        AccountDecisionContext(
+            decision_date=decision_date,
+            execution_date=execution_date,
+            equity=equity,
+            sizing_notional=sizing_notional,
+            reference_weights=reference_weights,
+            close_prices=close_prices,
+            checkpoint=checkpoint,
+        )
+    )
+    if not isinstance(provided, pl.DataFrame) or not {
+        ASSET_ID,
+        "weight",
+    }.issubset(provided.columns):
+        raise InputValidationError(
+            "target_provider must return asset_id and weight columns"
+        )
+    target_snapshot = _validate_target_weights(
+        provided.select(ASSET_ID, "weight").with_columns(
+            pl.lit(decision_date).cast(pl.Date).alias(TIME)
+        )
+    ).drop(TIME)
+    current_assets = set(state["positions"])
+    target_assets = set(target_snapshot.get_column(ASSET_ID).to_list())
+    required_assets = sorted(current_assets | target_assets)
+    if not required_assets:
+        return _empty_target_position_plans()
+    price_by_asset = {
+        str(row[ASSET_ID]): float(row["price"])
+        for row in close_prices.iter_rows(named=True)
+    }
+    missing = sorted(set(required_assets) - set(price_by_asset))
+    if missing:
+        raise InputValidationError(
+            "decision sizing requires a finite close for: " + ", ".join(missing)
+        )
+    lot_frame = pl.DataFrame(
+        [
+            {ASSET_ID: asset_id, "lot_size": int(lots.get(asset_id, 1))}
+            for asset_id in required_assets
+        ],
+        schema={ASSET_ID: pl.String, "lot_size": pl.Int64},
+    )
+    allocation = allocate_integer_positions(
+        target_snapshot,
+        close_prices.filter(pl.col(ASSET_ID).is_in(required_assets)),
+        total_notional=sizing_notional,
+        lot_sizes=lot_frame,
+        allow_one_lot_over_target=True,
+    )
+    allocated = {
+        str(row[ASSET_ID]): int(row["target_quantity"])
+        for row in allocation.positions.iter_rows(named=True)
+    }
+    weights = {
+        str(row[ASSET_ID]): float(row["weight"])
+        for row in target_snapshot.iter_rows(named=True)
+    }
+    return pl.DataFrame(
+        [
+            {
+                "decision_date": decision_date,
+                "execution_date": execution_date,
+                ASSET_ID: asset_id,
+                "target_weight": weights.get(asset_id, 0.0),
+                "sizing_notional": sizing_notional,
+                "decision_price": price_by_asset[asset_id],
+                "target_quantity": allocated.get(asset_id, 0),
+            }
+            for asset_id in required_assets
+        ],
+        schema=_empty_target_position_plans().schema,
+    )
 
 
 def _validate_corporate_action_coverage(
@@ -1355,6 +1647,15 @@ def _target_position_plan_lookup(
     return result
 
 
+def _decision_schedule_lookup(frame: pl.DataFrame | None) -> dict[date, date]:
+    if frame is None:
+        return {}
+    return {
+        row["decision_date"]: row["execution_date"]
+        for row in frame.iter_rows(named=True)
+    }
+
+
 def _group_actions(
     frame: pl.DataFrame,
     column: str,
@@ -1463,7 +1764,11 @@ def _rows_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
 __all__ = [
     "AccountBacktestConfig",
     "AccountBacktestResult",
+    "AccountDecisionContext",
     "AccountStateCheckpoint",
+    "AccountTargetProvider",
+    "StatefulAccountBacktestResult",
     "run_account_backtest",
     "run_planned_account_backtest",
+    "run_stateful_account_backtest",
 ]

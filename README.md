@@ -113,6 +113,11 @@ session without sizing them again at the open, and expires every unfilled
 remainder at the end of that session. Its resulting executable weights are
 actual account weights and remain distinct from the frozen target weights.
 
+`run_stateful_account_backtest` combines decision-close sizing and later
+execution in one causal account pass. Its callback sees the actual checkpoint
+and reference weights at each decision close, returns target weights once, and
+the engine freezes whole-lot quantities without replaying prior sessions.
+
 During an asset-specific price gap, its holding is frozen at the last observed
 price. The gap sessions have zero return and the cumulative move is recognized
 when a new price appears.

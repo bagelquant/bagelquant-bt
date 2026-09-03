@@ -3,9 +3,13 @@
 from .account import (
     AccountBacktestConfig,
     AccountBacktestResult,
+    AccountDecisionContext,
     AccountStateCheckpoint,
+    AccountTargetProvider,
+    StatefulAccountBacktestResult,
     run_account_backtest,
     run_planned_account_backtest,
+    run_stateful_account_backtest,
 )
 from .allocation import IntegerTargetAllocation, allocate_integer_positions
 from .benchmarks import (
@@ -166,7 +170,9 @@ __all__ = [
     "SIGNAL_PERSISTENCE_HORIZONS",
     "AccountBacktestConfig",
     "AccountBacktestResult",
+    "AccountDecisionContext",
     "AccountStateCheckpoint",
+    "AccountTargetProvider",
     "ActualPerformancePath",
     "AlphaPolicy",
     "AlphaPolicyResult",
@@ -209,6 +215,7 @@ __all__ = [
     "ScheduledWeights",
     "SessionWindow",
     "StandardizePolicy",
+    "StatefulAccountBacktestResult",
     "TargetVolatilityPolicy",
     "TopNSelectionResult",
     "TransactionCostBreakdown",
@@ -262,6 +269,7 @@ __all__ = [
     "run_prediction_backtest",
     "run_prediction_evaluation",
     "run_prediction_horizon_diagnostics",
+    "run_stateful_account_backtest",
     "run_total_return_weight_paths",
     "score_ic_validation",
     "score_top_n_performance",
