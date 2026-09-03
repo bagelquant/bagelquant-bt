@@ -750,18 +750,22 @@ def _build_stateful_decision_plan(
     ).drop(TIME)
     current_assets = set(state["positions"])
     target_assets = set(target_snapshot.get_column(ASSET_ID).to_list())
-    required_assets = sorted(current_assets | target_assets)
-    if not required_assets:
-        return _empty_target_position_plans()
     price_by_asset = {
         str(row[ASSET_ID]): float(row["price"])
         for row in close_prices.iter_rows(named=True)
     }
-    missing = sorted(set(required_assets) - set(price_by_asset))
-    if missing:
+    missing_targets = sorted(target_assets - set(price_by_asset))
+    if missing_targets:
         raise InputValidationError(
-            "decision sizing requires a finite close for: " + ", ".join(missing)
+            "decision sizing requires a finite close for target assets: "
+            + ", ".join(missing_targets)
         )
+    # A held asset without a decision-close price stays outside the immutable
+    # execution plan.  The account engine will preserve its quantity and its
+    # last observed mark until a later decision can price it again.
+    required_assets = sorted(target_assets | (current_assets & set(price_by_asset)))
+    if not required_assets:
+        return _empty_target_position_plans()
     lot_frame = pl.DataFrame(
         [
             {ASSET_ID: asset_id, "lot_size": int(lots.get(asset_id, 1))}

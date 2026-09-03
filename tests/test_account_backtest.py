@@ -7,6 +7,7 @@ import pytest
 
 from bagelquant_bt import (
     AccountBacktestConfig,
+    InputValidationError,
     TransactionCostConfig,
     run_account_backtest,
     run_planned_account_backtest,
@@ -223,6 +224,88 @@ def test_stateful_account_sizes_and_executes_all_decisions_in_one_pass() -> None
     assert buy["requested_quantity"] == 100
     assert buy["unfilled_quantity"] == 50
     assert buy["expires_at"] == days[1]
+
+
+def test_stateful_account_freezes_unpriced_holding_outside_decision_plan() -> None:
+    decision = date(2024, 8, 30)
+    execution = date(2024, 9, 2)
+    result = run_stateful_account_backtest(
+        pl.DataFrame(
+            {"decision_date": [decision], "execution_date": [execution]}
+        ),
+        pl.DataFrame(
+            {
+                "time": [decision, execution],
+                "asset_id": ["b", "b"],
+                "open": [10.0, 10.0],
+                "close": [10.0, 10.0],
+            }
+        ),
+        lambda _context: pl.DataFrame({"asset_id": ["b"], "weight": [1.0]}),
+        corporate_action_coverage=_coverage(decision, execution),
+        initial_positions=pl.DataFrame(
+            {
+                "asset_id": ["a"],
+                "quantity": [100],
+                "available_quantity": [100],
+                "last_mark": [10.0],
+            }
+        ),
+        initial_cash=0.0,
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.target_position_plans.select(
+        "asset_id", "target_weight", "decision_price", "target_quantity"
+    ).to_dicts() == [
+        {
+            "asset_id": "b",
+            "target_weight": 1.0,
+            "decision_price": 10.0,
+            "target_quantity": 100,
+        }
+    ]
+    assert result.account.fills.is_empty()
+    assert result.account.final_checkpoint.positions.select(
+        "asset_id", "quantity", "last_mark"
+    ).to_dicts() == [
+        {"asset_id": "a", "quantity": 100, "last_mark": 10.0}
+    ]
+
+
+def test_stateful_account_rejects_unpriced_target_asset() -> None:
+    decision = date(2024, 8, 30)
+    execution = date(2024, 9, 2)
+
+    with pytest.raises(
+        InputValidationError,
+        match="decision sizing requires a finite close for target assets: b",
+    ):
+        run_stateful_account_backtest(
+            pl.DataFrame(
+                {"decision_date": [decision], "execution_date": [execution]}
+            ),
+            pl.DataFrame(
+                {
+                    "time": [decision, execution],
+                    "asset_id": ["a", "a"],
+                    "open": [10.0, 10.0],
+                    "close": [10.0, 10.0],
+                }
+            ),
+            lambda _context: pl.DataFrame(
+                {"asset_id": ["b"], "weight": [1.0]}
+            ),
+            corporate_action_coverage=_coverage(decision, execution),
+            config=AccountBacktestConfig(
+                capital_mode="compounding",
+                initial_capital=1_000.0,
+                transaction_cost=_zero_cost(),
+            ),
+        )
 
 
 def test_stateful_account_resumes_checkpoint_and_keeps_prior_plans() -> None:

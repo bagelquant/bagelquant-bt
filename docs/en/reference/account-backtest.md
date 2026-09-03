@@ -25,6 +25,11 @@ holdings establish dividend entitlements; ex-date creates cash and stock
 receivables; pay-date releases cash; share-available date releases stock.
 Coverage must be complete for every simulated market session.
 
+At a stateful decision close, an existing holding with no finite close remains
+frozen at its last observed mark and is omitted from that decision's immutable
+execution plan. A target asset still requires a finite decision-close price.
+The holding can be resized by a later decision after its close price recovers.
+
 Fixed-notional mode injects or requests removal of cash to maintain the chosen
 notional. External flows change fund units, not unit NAV. A blocked withdrawal
 remains explicit and the engine permits neither negative cash nor implicit

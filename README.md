@@ -119,8 +119,10 @@ and reference weights at each decision close, returns target weights once, and
 the engine freezes whole-lot quantities without replaying prior sessions.
 
 During an asset-specific price gap, its holding is frozen at the last observed
-price. The gap sessions have zero return and the cumulative move is recognized
-when a new price appears.
+price. A held asset without a decision-close price remains outside that
+decision's immutable execution plan, while every newly targeted asset still
+requires a finite close. The gap sessions have zero return and the cumulative
+move is recognized when a new price appears.
 
 ## Development
 
