@@ -1,6 +1,6 @@
 [project]
 name = "bagelquant-bt"
-version = "0.9.1"
+version = "0.9.2"
 description = "Typed prediction composition, evaluation, and backtesting for BagelQuant"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"

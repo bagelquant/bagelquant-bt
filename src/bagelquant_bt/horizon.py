@@ -766,7 +766,7 @@ def quantile_curve_structure(
     *,
     quantiles: int = 10,
 ) -> pl.DataFrame:
-    """Summarize monotonicity and quantile-rank IC for each curve."""
+    """Summarize ordering and linearity for each complete quantile curve."""
 
     schema = {
         "evaluation_date": pl.Date,
@@ -778,6 +778,8 @@ def quantile_curve_structure(
         "end_session": pl.Int64,
         "quantile_rank_ic": pl.Float64,
         "monotonicity": pl.Float64,
+        "quantile_linearity_slope": pl.Float64,
+        "quantile_linearity_r_squared": pl.Float64,
         "unavailable_reason": pl.String,
     }
     rows: list[dict[str, object]] = []
@@ -791,14 +793,22 @@ def quantile_curve_structure(
         )
         quantile_ic = None
         monotonicity = None
+        linearity_slope = None
+        linearity_r_squared = None
         reason = None
         if complete:
             signal_order = np.arange(quantiles, 0, -1, dtype=float)
-            return_ranks = stats.rankdata(
-                np.asarray(values, dtype=float), method="average"
+            return_values = np.asarray(values, dtype=float)
+            return_ranks = stats.rankdata(return_values, method="average")
+            linearity_slope = float(
+                np.cov(signal_order, return_values, ddof=0)[0, 1] / np.var(signal_order)
             )
             if np.unique(return_ranks).size >= 2:
                 quantile_ic = float(np.corrcoef(signal_order, return_ranks)[0, 1])
+                linearity_correlation = float(
+                    np.corrcoef(signal_order, return_values)[0, 1]
+                )
+                linearity_r_squared = linearity_correlation**2
             else:
                 reason = "quantile-rank IC requires non-constant returns"
             monotonicity = float(
@@ -812,6 +822,8 @@ def quantile_curve_structure(
                 **metadata,
                 "quantile_rank_ic": quantile_ic,
                 "monotonicity": monotonicity,
+                "quantile_linearity_slope": linearity_slope,
+                "quantile_linearity_r_squared": linearity_r_squared,
                 "unavailable_reason": reason,
             }
         )
@@ -825,20 +837,53 @@ def quantile_curve_structure(
 def window_factor_returns(
     factor: pl.DataFrame,
     forward_returns: pl.DataFrame,
+    *,
+    standardization: Literal["none", "cross_sectional_zscore"] = "none",
 ) -> pl.DataFrame:
-    """Estimate per-date cross-sectional OLS slopes for every window."""
+    """Estimate per-date cross-sectional OLS slopes for every window.
+
+    ``cross_sectional_zscore`` uses a population standard deviation (``ddof=0``)
+    on each evaluation-date cross-section, so the slope is expressed per one
+    cross-sectional standard deviation.  The default preserves the historical
+    raw-factor contract.
+    """
+
+    if standardization not in {"none", "cross_sectional_zscore"}:
+        raise ValueError(f"unsupported factor standardization: {standardization}")
 
     normalized = _validate_scheduled_factor_frame(factor)
+    window_groups = None
+    if standardization == "cross_sectional_zscore":
+        window_groups = forward_returns.select(*_RETURN_GROUP_COLUMNS).unique()
+        normalized = normalized.with_columns(
+            pl.len().over("evaluation_date").alias("_factor_count"),
+            pl.col("factor").mean().over("evaluation_date").alias("_factor_mean"),
+            pl.col("factor").std(ddof=0).over("evaluation_date").alias("_factor_std"),
+        ).with_columns(
+            pl.when(
+                (pl.col("_factor_count") >= 3)
+                & pl.col("_factor_std").is_finite()
+                & (pl.col("_factor_std") > 0)
+            )
+            .then((pl.col("factor") - pl.col("_factor_mean")) / pl.col("_factor_std"))
+            .otherwise(None)
+            .alias("factor")
+        )
     paired = forward_returns.join(
         normalized.select("evaluation_date", ASSET_ID, "factor"),
         on=["evaluation_date", ASSET_ID],
         how="left",
     ).drop_nulls(["factor", "forward_return"])
     if paired.is_empty():
+        if window_groups is not None:
+            return window_groups.with_columns(
+                pl.lit(None, dtype=pl.Float64).alias("factor_return"),
+                pl.lit(0, dtype=pl.Int64).alias("sample_size"),
+            ).sort(["evaluation_date", "window_id"])
         return _empty_window_metric(
             {"factor_return": pl.Float64, "sample_size": pl.Int64}
         )
-    return (
+    result = (
         paired.group_by(*_RETURN_GROUP_COLUMNS)
         .agg(
             pl.len().alias("sample_size"),
@@ -859,6 +904,13 @@ def window_factor_returns(
         .select(*_RETURN_GROUP_COLUMNS, "factor_return", "sample_size")
         .sort(["evaluation_date", "window_id"])
     )
+    if window_groups is not None:
+        result = window_groups.join(
+            result,
+            on=list(_RETURN_GROUP_COLUMNS),
+            how="left",
+        ).with_columns(pl.col("sample_size").fill_null(0))
+    return result.sort(["evaluation_date", "window_id"])
 
 
 def signal_rank_persistence(
@@ -1323,6 +1375,7 @@ def run_prediction_horizon_diagnostics(
     quantiles: int = 10,
     annualization_sessions: int = 240,
     prediction_frame: pl.DataFrame | None = None,
+    factor_standardization: Literal["none", "cross_sectional_zscore"] = "none",
 ) -> PredictionHorizonDiagnostics:
     """Run fixed-window diagnostics while retaining one label window at a time."""
 
@@ -1343,6 +1396,7 @@ def run_prediction_horizon_diagnostics(
         windows=resolved_windows,
         quantiles=quantiles,
         annualization_sessions=annualization_sessions,
+        factor_standardization=factor_standardization,
     )
 
 
@@ -1352,6 +1406,7 @@ def _run_prediction_horizon_diagnostics_prepared(
     windows: Sequence[SessionWindow],
     quantiles: int,
     annualization_sessions: int,
+    factor_standardization: Literal["none", "cross_sectional_zscore"] = "none",
     signal_persistence: pl.DataFrame | None = None,
 ) -> PredictionHorizonDiagnostics:
     """Aggregate window diagnostics from a caller-owned prepared context."""
@@ -1398,7 +1453,13 @@ def _run_prediction_horizon_diagnostics_prepared(
             )
         )
         factor_return_frames.append(
-            _restore_window_key_dtypes(window_factor_returns(prepared.factor, forward))
+            _restore_window_key_dtypes(
+                window_factor_returns(
+                    prepared.factor,
+                    forward,
+                    standardization=factor_standardization,
+                )
+            )
         )
     coverage = pl.concat(coverage_frames, how="diagonal_relaxed").sort(
         ["evaluation_date", "window_id"]
@@ -1618,6 +1679,7 @@ def run_daily_prediction_diagnostics(
     rolling_observations: int = DAILY_ROLLING_IC_OBSERVATIONS,
     progress: DailyDiagnosticProgress | None = None,
     prediction_frame: pl.DataFrame | None = None,
+    factor_standardization: Literal["none", "cross_sectional_zscore"] = "none",
 ) -> DailyPredictionDiagnostics:
     """Run all daily prediction diagnostics from one validated input context."""
 
@@ -1651,6 +1713,7 @@ def run_daily_prediction_diagnostics(
         windows=resolved_windows,
         quantiles=quantiles,
         annualization_sessions=annualization_sessions,
+        factor_standardization=factor_standardization,
         signal_persistence=signal_autocorrelation,
     )
     if progress is not None:

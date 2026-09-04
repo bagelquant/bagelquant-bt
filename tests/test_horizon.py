@@ -24,6 +24,7 @@ from bagelquant_bt import (
     run_prediction_horizon_diagnostics,
     session_window_forward_returns,
     window_book_returns,
+    window_factor_returns,
     window_quantile_forward_returns,
     window_tail_returns,
 )
@@ -360,9 +361,126 @@ def test_book_tail_and_quantiles_reveal_different_cross_section_structure() -> N
     )
     flat_structure = quantile_curve_structure(flat)
     assert flat_structure.get_column("quantile_rank_ic").item() is None
+    assert flat_structure.get_column(
+        "quantile_linearity_slope"
+    ).item() == pytest.approx(0.0)
+    assert flat_structure.get_column("quantile_linearity_r_squared").item() is None
     assert flat_structure.get_column("unavailable_reason").item() == (
         "quantile-rank IC requires non-constant returns"
     )
+
+
+def test_quantile_structure_reports_positive_signal_order_linearity() -> None:
+    factor = _factor([float(value) for value in range(10)])
+    metadata = {
+        "evaluation_date": [date(2024, 1, 1)] * 10,
+        "execution_date": [date(2024, 1, 2)] * 10,
+        "target_end_date": [date(2024, 1, 3)] * 10,
+        "asset_id": [f"a{index}" for index in range(10)],
+        "window_kind": ["cumulative"] * 10,
+        "window_id": ["cumulative_1d"] * 10,
+        "start_session": [1] * 10,
+        "end_session": [1] * 10,
+        "start_offset": [0] * 10,
+        "end_offset": [1] * 10,
+        "forward_return": [float(value) / 100.0 for value in range(10)],
+    }
+
+    structure = quantile_curve_structure(
+        window_quantile_forward_returns(factor, pl.DataFrame(metadata))
+    ).row(0, named=True)
+
+    assert structure["quantile_rank_ic"] == pytest.approx(1.0)
+    assert structure["monotonicity"] == pytest.approx(1.0)
+    assert structure["quantile_linearity_slope"] > 0.0
+    assert structure["quantile_linearity_r_squared"] == pytest.approx(1.0)
+
+    reversed_curve = quantile_curve_structure(
+        window_quantile_forward_returns(
+            factor,
+            pl.DataFrame(
+                {
+                    **metadata,
+                    "forward_return": list(reversed(metadata["forward_return"])),
+                }
+            ),
+        )
+    ).row(0, named=True)
+    assert reversed_curve["quantile_linearity_slope"] < 0.0
+    assert reversed_curve["quantile_linearity_r_squared"] == pytest.approx(1.0)
+
+    incomplete = quantile_curve_structure(
+        window_quantile_forward_returns(factor, pl.DataFrame(metadata)).filter(
+            pl.col("quantile") != "q10"
+        )
+    ).row(0, named=True)
+    assert incomplete["quantile_linearity_slope"] is None
+    assert incomplete["quantile_linearity_r_squared"] is None
+    assert incomplete["unavailable_reason"] == "complete q1-to-q10 curve required"
+
+
+def test_standardized_factor_return_is_per_cross_sectional_standard_deviation() -> None:
+    factor = _factor([1.0, 2.0, 3.0, 4.0])
+    metadata = {
+        "evaluation_date": [date(2024, 1, 1)] * 4,
+        "execution_date": [date(2024, 1, 2)] * 4,
+        "target_end_date": [date(2024, 1, 3)] * 4,
+        "asset_id": [f"a{index}" for index in range(4)],
+        "window_kind": ["cumulative"] * 4,
+        "window_id": ["cumulative_1d"] * 4,
+        "start_session": [1] * 4,
+        "end_session": [1] * 4,
+        "start_offset": [0] * 4,
+        "end_offset": [1] * 4,
+        "forward_return": [0.01, 0.02, 0.03, 0.04],
+    }
+    forward = pl.DataFrame(metadata)
+
+    standardized = (
+        window_factor_returns(
+            factor,
+            forward,
+            standardization="cross_sectional_zscore",
+        )
+        .get_column("factor_return")
+        .item()
+    )
+    shifted_scaled = (
+        window_factor_returns(
+            factor.with_columns((pl.col("factor") * 7.0 + 100.0).alias("factor")),
+            forward,
+            standardization="cross_sectional_zscore",
+        )
+        .get_column("factor_return")
+        .item()
+    )
+
+    assert standardized == pytest.approx(0.01 * (5.0**0.5) / 2.0)
+    assert shifted_scaled == pytest.approx(standardized)
+
+    constant = window_factor_returns(
+        factor.with_columns(pl.lit(1.0).alias("factor")),
+        forward,
+        standardization="cross_sectional_zscore",
+    )
+    too_sparse = window_factor_returns(
+        factor.head(2),
+        forward,
+        standardization="cross_sectional_zscore",
+    )
+    three_finite = window_factor_returns(
+        factor.with_columns(
+            pl.when(pl.col("asset_id") == "a3")
+            .then(float("nan"))
+            .otherwise(pl.col("factor"))
+            .alias("factor")
+        ),
+        forward,
+        standardization="cross_sectional_zscore",
+    )
+    assert constant.get_column("factor_return").item() is None
+    assert too_sparse.get_column("factor_return").item() is None
+    assert three_finite.get_column("factor_return").item() is not None
 
 
 def test_hac_bh_and_all_staggered_cohorts_are_deterministic() -> None:
