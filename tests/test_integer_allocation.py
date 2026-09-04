@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import polars as pl
 import pytest
 
+import bagelquant_bt.allocation as allocation_module
 from bagelquant_bt import InputValidationError, allocate_integer_positions
 
 
@@ -98,4 +101,29 @@ def test_integer_allocation_rejects_unfunded_minimum_positions() -> None:
             minimum_quantities=pl.DataFrame(
                 {"asset_id": ["A"], "minimum_quantity": [100]}
             ),
+        )
+
+
+def test_integer_allocation_preserves_solver_status_and_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocation_module,
+        "milp",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            success=False,
+            x=None,
+            status=4,
+            message="HiGHS model error",
+        ),
+    )
+
+    with pytest.raises(
+        InputValidationError,
+        match=r"maximize the stock budget.*status=4.*HiGHS model error",
+    ):
+        allocate_integer_positions(
+            pl.DataFrame({"asset_id": ["A"], "weight": [1.0]}),
+            pl.DataFrame({"asset_id": ["A"], "price": [10.0]}),
+            total_notional=10_000.0,
         )

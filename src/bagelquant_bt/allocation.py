@@ -177,6 +177,7 @@ def _solve_lot_counts(
     if not first.success or first.x is None:
         raise InputValidationError(
             "whole-lot allocation could not maximize the stock budget"
+            + _solver_failure_detail(first)
         )
     maximum_deployment = float(lot_values @ np.rint(first.x))
 
@@ -226,11 +227,25 @@ def _solve_lot_counts(
     if not second.success or second.x is None:
         raise InputValidationError(
             "whole-lot allocation could not minimize target deviation"
+            + _solver_failure_detail(second)
         )
     result = np.rint(second.x[:count]).astype(np.int64)
     if np.any(result < 0) or np.any(result > maximum_lot_counts + 1e-8):
         raise RuntimeError("whole-lot allocation returned invalid lot counts")
     return result
+
+
+def _solver_failure_detail(result: object) -> str:
+    """Preserve HiGHS status without exposing solver internals elsewhere."""
+
+    status = getattr(result, "status", None)
+    message = str(getattr(result, "message", "") or "").strip()
+    values = []
+    if status is not None:
+        values.append(f"status={status}")
+    if message:
+        values.append(f"message={message}")
+    return "" if not values else f" ({', '.join(values)})"
 
 
 def _targets(frame: pl.DataFrame) -> dict[str, float]:
