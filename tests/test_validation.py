@@ -6,11 +6,53 @@ import polars as pl
 import pytest
 
 from bagelquant_bt import (
+    score_horizon_ic_validation,
     score_ic_validation,
     score_top_n_performance,
     select_top_n_stable,
     top_n_monthly_performance,
 )
+
+
+def test_horizon_ic_validation_is_frequency_explicit_and_overlap_robust() -> None:
+    rows: list[tuple[date, str, float, float]] = []
+    for day in range(1, 9):
+        current = date(2024, 1, day)
+        rows.extend(
+            [(current, "A", 1.0, float(day)), (current, "B", 2.0, float(day + 1))]
+        )
+
+    result = score_horizon_ic_validation(
+        _prediction_frame(rows),
+        horizon_sessions=5,
+        annualization=240,
+        minimum_valid_periods=6,
+        objective="icir",
+    )
+
+    assert result.horizon_sessions == 5
+    assert result.annualization == 240
+    assert result.score.valid
+    assert result.score.score == 0.0
+    assert result.hac_lag >= 4
+    assert result.cohort_count == 5
+
+
+@pytest.mark.parametrize(
+    ("horizon", "annualization"),
+    [(0, 240), (1, 0), (True, 240)],
+)
+def test_horizon_ic_validation_rejects_implicit_or_invalid_frequency(
+    horizon: object,
+    annualization: int,
+) -> None:
+    with pytest.raises(ValueError):
+        score_horizon_ic_validation(
+            _prediction_frame([]),
+            horizon_sessions=horizon,  # type: ignore[arg-type]
+            annualization=annualization,
+            minimum_valid_periods=1,
+        )
 
 
 def _prediction_frame(rows: list[tuple[date, str, float, float]]) -> pl.DataFrame:

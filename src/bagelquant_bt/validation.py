@@ -15,6 +15,8 @@ from math import sqrt
 import numpy as np
 import polars as pl
 
+from .horizon import hac_mean_test, non_overlapping_cohort_statistics
+
 TIME = "time"
 ASSET_ID = "asset_id"
 
@@ -52,6 +54,84 @@ class ValidationScore:
     valid: bool
     reason: str | None
     monthly_ic: tuple[MonthlyIcObservation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HorizonIcValidation:
+    """Frequency-explicit IC score and overlap-robust horizon evidence."""
+
+    horizon_sessions: int
+    annualization: int
+    score: ValidationScore
+    hac_standard_error: float | None
+    hac_t: float | None
+    hac_p_value: float | None
+    hac_lag: int
+    cohort_count: int
+    cohort_mean_median: float | None
+    cohort_mean_min: float | None
+    cohort_mean_max: float | None
+    cohort_same_sign_ratio: float | None
+
+
+def score_horizon_ic_validation(
+    predictions: pl.DataFrame,
+    *,
+    horizon_sessions: int,
+    annualization: int,
+    minimum_valid_periods: int,
+    objective: str | ValidationObjective = ValidationObjective.MEAN_IC,
+    minimum_pairs: int = 2,
+    expected_periods: Sequence[object] | None = None,
+) -> HorizonIcValidation:
+    """Score daily horizon IC without relying on monthly defaults.
+
+    The point estimate is the ordinary per-date cross-sectional Spearman IC.
+    Bartlett Newey-West and staggered non-overlapping cohorts are reported as
+    evidence for the serial dependence induced by overlapping horizon labels.
+    """
+
+    if not isinstance(horizon_sessions, int) or isinstance(horizon_sessions, bool):
+        raise ValueError("horizon_sessions must be a positive integer")
+    if horizon_sessions <= 0:
+        raise ValueError("horizon_sessions must be a positive integer")
+    if not isinstance(annualization, int) or isinstance(annualization, bool):
+        raise ValueError("annualization must be a positive integer")
+    if annualization <= 0:
+        raise ValueError("annualization must be a positive integer")
+    score = score_ic_validation(
+        predictions,
+        minimum_valid_months=minimum_valid_periods,
+        objective=objective,
+        minimum_pairs=minimum_pairs,
+        annualization=annualization,
+        expected_periods=expected_periods,
+    )
+    valid = [item for item in score.monthly_ic if item.valid]
+    values = [item.ic for item in valid]
+    dates = [item.time for item in valid]
+    if any(not hasattr(value, "year") for value in dates):
+        raise ValueError("horizon IC periods must be date-like")
+    hac = hac_mean_test(values, window_width=horizon_sessions)
+    cohorts = non_overlapping_cohort_statistics(
+        dates,
+        values,
+        window_width=horizon_sessions,
+    )
+    return HorizonIcValidation(
+        horizon_sessions=horizon_sessions,
+        annualization=annualization,
+        score=score,
+        hac_standard_error=hac.standard_error,
+        hac_t=hac.t_value,
+        hac_p_value=hac.p_value,
+        hac_lag=hac.lag,
+        cohort_count=int(cohorts["cohort_count"]),
+        cohort_mean_median=cohorts["cohort_mean_median"],
+        cohort_mean_min=cohorts["cohort_mean_min"],
+        cohort_mean_max=cohorts["cohort_mean_max"],
+        cohort_same_sign_ratio=cohorts["cohort_same_sign_ratio"],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,10 +512,12 @@ def _require_columns(frame: pl.DataFrame, required: set[str]) -> None:
 
 
 __all__ = [
+    "HorizonIcValidation",
     "MonthlyIcObservation",
     "TopNSelectionResult",
     "ValidationObjective",
     "ValidationScore",
+    "score_horizon_ic_validation",
     "score_ic_validation",
     "score_top_n_performance",
     "select_top_n_stable",

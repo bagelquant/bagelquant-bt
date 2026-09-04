@@ -147,10 +147,12 @@ from .statistics import (
     quantile_rank_information_coefficients,
 )
 from .validation import (
+    HorizonIcValidation,
     MonthlyIcObservation,
     TopNSelectionResult,
     ValidationObjective,
     ValidationScore,
+    score_horizon_ic_validation,
     score_ic_validation,
     score_top_n_performance,
     select_top_n_stable,
@@ -192,6 +194,7 @@ __all__ = [
     "FloatMarketCapWeightPolicy",
     "HACMeanTest",
     "HolidayAdjustment",
+    "HorizonIcValidation",
     "InputValidationError",
     "IntegerTargetAllocation",
     "MissingSnapshotAction",
@@ -271,6 +274,7 @@ __all__ = [
     "run_prediction_horizon_diagnostics",
     "run_stateful_account_backtest",
     "run_total_return_weight_paths",
+    "score_horizon_ic_validation",
     "score_ic_validation",
     "score_top_n_performance",
     "select_top_n_stable",
