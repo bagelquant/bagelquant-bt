@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint, OptimizeResult, milp
 
 from .exceptions import InputValidationError
 
@@ -167,12 +167,11 @@ def _solve_lot_counts(
         -np.inf,
         remaining_budget,
     )
-    first = milp(
+    first = _solve_milp(
         -lot_values,
         integrality=np.ones(count),
         bounds=bounds,
         constraints=budget,
-        options={"disp": False},
     )
     if not first.success or first.x is None:
         raise InputValidationError(
@@ -217,12 +216,11 @@ def _solve_lot_counts(
         lower.append(-np.inf)
         upper.append(-target_gap[index])
 
-    second = milp(
+    second = _solve_milp(
         objective,
         integrality=integrality,
         bounds=Bounds(lower_bounds, upper_bounds),
         constraints=LinearConstraint(np.vstack(rows), lower, upper),
-        options={"disp": False},
     )
     if not second.success or second.x is None:
         raise InputValidationError(
@@ -232,6 +230,36 @@ def _solve_lot_counts(
     result = np.rint(second.x[:count]).astype(np.int64)
     if np.any(result < 0) or np.any(result > maximum_lot_counts + 1e-8):
         raise RuntimeError("whole-lot allocation returned invalid lot counts")
+    deployment = float(lot_values @ result)
+    if deployment > remaining_budget + _BUDGET_TOLERANCE:
+        raise RuntimeError("whole-lot allocation exceeded its stock budget")
+    if deployment < maximum_deployment - _BUDGET_TOLERANCE:
+        raise RuntimeError("whole-lot allocation lost the first-stage deployment")
+    return result
+
+
+def _solve_milp(
+    objective: np.ndarray,
+    *,
+    integrality: np.ndarray,
+    bounds: Bounds,
+    constraints: LinearConstraint,
+) -> OptimizeResult:
+    """Retry a numerical solver error with the identical unpresolved model."""
+
+    kwargs = {
+        "integrality": integrality,
+        "bounds": bounds,
+        "constraints": constraints,
+    }
+    result = milp(objective, **kwargs, options={"disp": False})
+    if not result.success and getattr(result, "status", None) == 4:
+        # HiGHS can fail while mapping an integer solution out of presolve.
+        # Re-solving the original model changes neither objective nor bounds;
+        # infeasibility, unboundedness and limit statuses remain explicit.
+        result = milp(
+            objective, **kwargs, options={"disp": False, "presolve": False}
+        )
     return result
 
 

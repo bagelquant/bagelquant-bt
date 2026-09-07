@@ -19,3 +19,8 @@ Fixed-notional 模式通过注入或申请取出现金维持 notional。外部�
 `AccountBacktestResult` 保存 target weights/positions、orders、fills、每日持仓、现金、应收、
 外部流、pending withdrawal、账户 equity、performance NAV、derived executable weights、
 target/implementation/cost drag 和可恢复 checkpoint。
+
+整手分配先最大化股票投入金额，再最小化目标偏差。HiGHS 出现数值求解错误时，只关闭
+presolve 并对同一模型重试一次；目标、上下界、资金预算及整数约束均保持不变，不放宽
+不可行约束，也不接受未完成求解的结果。取整后的股数仍须满足股票预算和第一阶段的
+投入金额下限。

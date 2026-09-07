@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -127,3 +130,80 @@ def test_integer_allocation_preserves_solver_status_and_message(
             pl.DataFrame({"asset_id": ["A"], "price": [10.0]}),
             total_notional=10_000.0,
         )
+
+
+def test_integer_allocation_recovers_real_presolve_failure() -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/allocation_presolve_failure.json")
+        .read_text(encoding="utf-8")
+    )
+    arrays = {
+        key: np.asarray(fixture[key])
+        for key in (
+            "lot_values", "maximum_lot_counts", "minimum_values", "ideal_values"
+        )
+    }
+    result = allocation_module._solve_lot_counts(
+        assets=fixture["assets"],
+        remaining_budget=fixture["remaining_budget"],
+        **arrays,
+    )
+    deployed = float(arrays["lot_values"] @ result)
+    first = np.rint(fixture["first_x"])
+    assert np.all(result >= 0)
+    assert np.all(result <= arrays["maximum_lot_counts"])
+    assert float(arrays["lot_values"] @ first) - 1e-7 <= deployed
+    assert deployed <= fixture["remaining_budget"] + 1e-7
+    gap = arrays["ideal_values"] - arrays["minimum_values"]
+    assert np.abs(arrays["lot_values"] * result - gap).sum() <= (
+        np.abs(arrays["lot_values"] * first - gap).sum() + 1e-7
+    )
+
+
+@pytest.mark.parametrize("failed_stage", [1, 2])
+def test_integer_allocation_retries_numerical_error_without_relaxing_problem(
+    monkeypatch: pytest.MonkeyPatch, failed_stage: int
+) -> None:
+    original = allocation_module.milp
+    calls = 0
+
+    def solve(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == failed_stage:
+            return SimpleNamespace(success=False, x=None, status=4)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(allocation_module, "milp", solve)
+    result = allocate_integer_positions(
+        pl.DataFrame({"asset_id": ["A", "B", "C"], "weight": [0.4, 0.35, 0.25]}),
+        pl.DataFrame({"asset_id": ["A", "B", "C"], "price": [11.0, 7.0, 3.0]}),
+        total_notional=10_000.0,
+        lot_sizes=pl.DataFrame(
+            {"asset_id": ["A", "B", "C"], "lot_size": [100, 100, 100]}
+        ),
+    )
+    assert calls == 3
+    assert result.allocated_notional == 10_000.0
+    assert result.positions.get_column("target_quantity").to_list() == [400, 500, 700]
+
+
+@pytest.mark.parametrize("status", [1, 2, 3])
+def test_integer_allocation_does_not_retry_non_numerical_failure(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    calls = 0
+
+    def solve(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(success=False, x=None, status=status)
+
+    monkeypatch.setattr(allocation_module, "milp", solve)
+    with pytest.raises(InputValidationError, match=f"status={status}"):
+        allocate_integer_positions(
+            pl.DataFrame({"asset_id": ["A"], "weight": [1.0]}),
+            pl.DataFrame({"asset_id": ["A"], "price": [10.0]}),
+            total_notional=10_000.0,
+        )
+    assert calls == 1

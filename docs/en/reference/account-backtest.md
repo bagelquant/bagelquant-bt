@@ -39,3 +39,10 @@ leverage. Compounding mode has no external flow and sizes from current equity.
 daily positions, cash, receivables, external flows, pending withdrawals,
 account equity, performance NAV, executable weights, target/implementation/cost
 drag, and a resumable checkpoint.
+
+Whole-lot sizing maximizes deployed stock notional before minimizing target
+deviation. A HiGHS numerical solver error triggers one retry of the identical
+model with presolve disabled. The retry keeps the objective, bounds, budget,
+and integrality constraints; it does not relax infeasibility or accept a
+partial solution. Rounded quantities must still satisfy the stock budget and
+the first-stage deployment floor.
