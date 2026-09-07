@@ -84,6 +84,13 @@ independent cross-sectional preprocessing contract (`none`, `z_score`, or
 `PredictionPanel`; callers may explicitly apply Core Transformers before the
 Weight Policy boundary.
 
+On-demand factor research can use `partial_rank_ic`, `incremental_ic_summary`,
+`factor_return_correlation`, `monthly_rank_returns`, and
+`holdings_factor_exposure`. These pure numerical functions accept explicit
+cross-sectional signals, labels, returns, and actual holdings. Callers own
+source resolution, cadence and authorization; these functions never build
+artifacts, access a provider, or construct an account.
+
 `PredictionRegularizedOptimizerPolicy` converts a Prediction plus explicit
 reference weights into target weights under long-only, fully-invested, and
 maximum-weight constraints. CVXPY is available through the `optimizer` extra;
@@ -125,6 +132,13 @@ requires a finite close. The gap sessions have zero return and the cumulative
 move is recognized when a new price appears.
 
 ## Development
+
+The public `risk` module provides application-neutral constrained cross-sectional
+factor-return WLS, causal standardized rolling Ridge, rolling volatility and
+wealth-linked return contributions. Callers supply numerical panels and explicit
+interval start/availability dates; the module never fetches market data or
+constructs an account. `link_risk_contributions` rebases valid segments and keeps
+linked contributions separate from independently compounded specific return.
 
 ```bash
 uv run ruff check .

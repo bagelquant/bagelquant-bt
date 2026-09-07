@@ -27,6 +27,7 @@ RESULT_SECTIONS = (
     "summary",
     "ic_horizon_profile",
     "alpha_return",
+    "risk_profile",
     "quantile_test",
     "book_tail_quantiles",
     "signal_persistence",

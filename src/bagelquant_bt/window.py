@@ -65,6 +65,16 @@ def compute_window_tables(
         if "rolling_ic" in selected:
             tables["rolling_ic"] = series.get("daily_rolling_ic", pl.DataFrame())
         return {}, tables
+    if section == "risk_profile":
+        return {
+            "regression_window": 240,
+            "ridge": 1.0,
+            "volatility_window": 120,
+            "annualization": 240,
+        }, {
+            name: series.get(name, pl.DataFrame())
+            for name in ("risk_returns", "risk_exposures", "risk_diagnostics")
+        }
     if section == "alpha_return":
         return {}, {
             "alpha_return_lag_returns": series.get(
