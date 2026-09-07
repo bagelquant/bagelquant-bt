@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from scipy.optimize import Bounds, LinearConstraint, OptimizeResult, milp
+
+if TYPE_CHECKING:
+    from scipy.optimize import Bounds, LinearConstraint, OptimizeResult
 
 from .exceptions import InputValidationError
 
@@ -160,6 +163,8 @@ def _solve_lot_counts(
     ideal_values: np.ndarray,
     remaining_budget: float,
 ) -> np.ndarray:
+    from scipy.optimize import Bounds, LinearConstraint
+
     count = len(assets)
     bounds = Bounds(np.zeros(count), maximum_lot_counts)
     budget = LinearConstraint(
@@ -246,6 +251,8 @@ def _solve_milp(
     constraints: LinearConstraint,
 ) -> OptimizeResult:
     """Retry a numerical solver error with the identical unpresolved model."""
+
+    from scipy.optimize import milp
 
     kwargs = {
         "integrality": integrality,

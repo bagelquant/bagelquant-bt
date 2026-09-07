@@ -3,6 +3,10 @@
 `bagelquant-bt` provides typed signal composition, evaluation, portfolio-policy
 application, performance metrics, and Plotly visualization.
 
+Importing the public package does not load SciPy's optimizer or statistical
+runtime. These dependencies load only when their numerical operations are
+called, keeping read-only application workers inexpensive to start.
+
 The public investment flow is:
 
 ```text

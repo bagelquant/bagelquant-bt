@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import polars as pl
 import pytest
+import scipy.optimize as optimize
 
 import bagelquant_bt.allocation as allocation_module
 from bagelquant_bt import InputValidationError, allocate_integer_positions
@@ -111,7 +112,7 @@ def test_integer_allocation_preserves_solver_status_and_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        allocation_module,
+        optimize,
         "milp",
         lambda *_args, **_kwargs: SimpleNamespace(
             success=False,
@@ -164,7 +165,7 @@ def test_integer_allocation_recovers_real_presolve_failure() -> None:
 def test_integer_allocation_retries_numerical_error_without_relaxing_problem(
     monkeypatch: pytest.MonkeyPatch, failed_stage: int
 ) -> None:
-    original = allocation_module.milp
+    original = optimize.milp
     calls = 0
 
     def solve(*args: object, **kwargs: object) -> object:
@@ -174,7 +175,7 @@ def test_integer_allocation_retries_numerical_error_without_relaxing_problem(
             return SimpleNamespace(success=False, x=None, status=4)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(allocation_module, "milp", solve)
+    monkeypatch.setattr(optimize, "milp", solve)
     result = allocate_integer_positions(
         pl.DataFrame({"asset_id": ["A", "B", "C"], "weight": [0.4, 0.35, 0.25]}),
         pl.DataFrame({"asset_id": ["A", "B", "C"], "price": [11.0, 7.0, 3.0]}),
@@ -199,7 +200,7 @@ def test_integer_allocation_does_not_retry_non_numerical_failure(
         calls += 1
         return SimpleNamespace(success=False, x=None, status=status)
 
-    monkeypatch.setattr(allocation_module, "milp", solve)
+    monkeypatch.setattr(optimize, "milp", solve)
     with pytest.raises(InputValidationError, match=f"status={status}"):
         allocate_integer_positions(
             pl.DataFrame({"asset_id": ["A"], "weight": [1.0]}),

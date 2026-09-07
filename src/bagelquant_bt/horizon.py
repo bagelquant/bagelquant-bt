@@ -17,7 +17,6 @@ from typing import Literal
 
 import numpy as np
 import polars as pl
-from scipy import stats
 
 from .config import BacktestConfig
 from .engine import (
@@ -799,7 +798,9 @@ def quantile_curve_structure(
         if complete:
             signal_order = np.arange(quantiles, 0, -1, dtype=float)
             return_values = np.asarray(values, dtype=float)
-            return_ranks = stats.rankdata(return_values, method="average")
+            from scipy.stats import rankdata
+
+            return_ranks = rankdata(return_values, method="average")
             linearity_slope = float(
                 np.cov(signal_order, return_values, ddof=0)[0, 1] / np.var(signal_order)
             )
@@ -1109,6 +1110,8 @@ def hac_mean_test(
         )
     standard_error = math.sqrt(long_run_variance / sample_size)
     t_value = (float(mean) - null_mean) / standard_error
+    from scipy import stats
+
     critical = float(stats.t.ppf(0.975, df=sample_size - 1))
     p_value = float(2.0 * stats.t.sf(abs(t_value), df=sample_size - 1))
     return HACMeanTest(

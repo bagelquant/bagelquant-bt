@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 from bagelquant_core import quantile_rank_information_coefficient
-from scipy import stats
 
 from ._quantiles import ordered_quantile_labels, quantile_number
 from .inputs import ASSET_ID, TIME
@@ -49,6 +48,8 @@ def one_sample_t_test(values: object, *, null_mean: float = 0.0) -> OneSampleTes
     standard_deviation = float(finite.std(ddof=1))
     if standard_deviation == 0.0:
         return OneSampleTest(mean, None, None, sample_size, "sample variance is zero")
+    from scipy import stats
+
     result = stats.ttest_1samp(finite, popmean=null_mean, alternative="two-sided")
     return OneSampleTest(
         mean,

@@ -11,7 +11,6 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from scipy.stats import rankdata
 
 from .horizon import centered_rank_book_weights, gross_one_tail_weights, hac_mean_test
 
@@ -26,6 +25,8 @@ def partial_rank_ic(
     Missing values use one complete-case cross-section. Collinear controls retain
     their common span; a target entirely in that span has undefined incremental IC.
     """
+    from scipy.stats import rankdata
+
     x, y = np.asarray(target, dtype=float), np.asarray(returns, dtype=float)
     if x.ndim != 1 or y.shape != x.shape:
         raise ValueError("target and returns must be equally sized vectors")
