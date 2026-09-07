@@ -393,6 +393,37 @@ def rolling_risk_profile(
     )
 
 
+def industry_exposure_strength(exposures: pl.DataFrame) -> pl.DataFrame:
+    """Return the L2 norm of the complete industry-beta vector on each date.
+
+    Callers select one return metric before invoking this function. Structural
+    zero betas are valid; missing or non-finite coordinates invalidate the date.
+    The norm measures exposure magnitude, not direction or variance contribution.
+    """
+    schema = {"time": pl.Date, "beta": pl.Float64}
+    if exposures.is_empty():
+        return pl.DataFrame(schema=schema)
+    industry = exposures.filter(pl.col("family") == "industry")
+    if industry.is_empty():
+        return pl.DataFrame(schema=schema)
+    if industry.select("time", "factor").unique().height != industry.height:
+        raise ValueError("industry exposure requires unique time/factor coordinates")
+    expected = industry["factor"].n_unique()
+    return (
+        industry.group_by("time")
+        .agg(
+            pl.when(
+                (pl.len() == expected)
+                & pl.col("beta").is_finite().fill_null(False).all()
+            )
+            .then(pl.col("beta").pow(2).sum().sqrt())
+            .otherwise(None)
+            .alias("beta")
+        )
+        .sort("time")
+    )
+
+
 def link_risk_contributions(
     returns: pl.DataFrame, exposures: pl.DataFrame
 ) -> pl.DataFrame:

@@ -139,6 +139,9 @@ wealth-linked return contributions. Callers supply numerical panels and explicit
 interval start/availability dates; the module never fetches market data or
 constructs an account. `link_risk_contributions` rebases valid segments and keeps
 linked contributions separate from independently compounded specific return.
+`industry_exposure_strength` returns the L2 norm of a complete industry-beta
+vector for one selected metric. Positive and negative betas do not cancel;
+missing or non-finite industry coordinates leave that date unavailable.
 
 ```bash
 uv run ruff check .

@@ -193,3 +193,26 @@ def test_explicit_calendar_freezes_market_wide_gap_without_early_recovery():
     assert result.filter(pl.col("available_date") <= days[2]).equals(before)
     resumed = risk_interval_returns(prices, calendar.filter(pl.col("time") >= days[2]))
     assert resumed["forward_return"][0] == pytest.approx(0.2)
+
+
+def test_industry_exposure_strength_preserves_offsets_and_rejects_missing():
+    from bagelquant_bt import industry_exposure_strength
+
+    days = [date(2024, 1, day) for day in range(1, 6)]
+    exposures = pl.DataFrame(
+        {
+            "time": [days[0]] * 2
+            + [days[1]] * 2
+            + [days[2]]
+            + [days[3]] * 2
+            + [days[4]] * 2,
+            "factor": ["a", "b", "a", "b", "a", "a", "b", "a", "b"],
+            "family": ["industry"] * 9,
+            "beta": [3.0, -4.0, 0.0, 0.0, 2.0, 1.0, None, 1.0, float("nan")],
+        }
+    )
+    result = industry_exposure_strength(exposures)
+    assert result["beta"].to_list() == [5.0, 0.0, None, None, None]
+    assert industry_exposure_strength(exposures.clear()).is_empty()
+    with pytest.raises(ValueError, match="unique"):
+        industry_exposure_strength(pl.concat([exposures, exposures.head(1)]))
