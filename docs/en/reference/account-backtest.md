@@ -30,6 +30,11 @@ frozen at its last observed mark and is omitted from that decision's immutable
 execution plan. A target asset still requires a finite decision-close price.
 The holding can be resized by a later decision after its close price recovers.
 
+When resuming `run_stateful_account_backtest`, pass previously frozen plans as
+`initial_target_position_plans` alongside the checkpoint. A plan decided before
+the checkpoint but due afterward executes on its original date and quantities,
+without invoking its decision callback again or resizing at the execution open.
+
 Fixed-notional mode injects or requests removal of cash to maintain the chosen
 notional. External flows change fund units, not unit NAV. A blocked withdrawal
 remains explicit and the engine permits neither negative cash nor implicit

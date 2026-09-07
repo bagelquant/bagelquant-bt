@@ -12,6 +12,10 @@ fixed-notional 外部流，计算整数目标股数，先执行可卖订单并�
 引擎不会用复权价格合成股数。Record-date 收盘持仓确定分红权益；ex-date 创建现金和股票
 应收；pay-date 释放现金；股票可用日释放红股。每个模拟交易日都必须具有完整公司行动覆盖。
 
+恢复 `run_stateful_account_backtest` 时，除 checkpoint 外，还应通过
+`initial_target_position_plans` 传入已冻结的计划。在 checkpoint 之前决定、之后才到执行日的
+计划会按原日期和原股数执行，不重复调用其决策回调，也不在执行日开盘重新确定股数。
+
 Fixed-notional 模式通过注入或申请取出现金维持 notional。外部资金流改变 fund units，不改变
 单位 NAV。受限提款保持显式；系统禁止负现金和隐含杠杆。Compounding 模式不产生外部流，
 使用当前 equity sizing。

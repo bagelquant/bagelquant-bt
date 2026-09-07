@@ -222,11 +222,17 @@ def run_stateful_account_backtest(
         else _validate_target_position_plans(initial_target_position_plans)
     )
     generated: list[pl.DataFrame] = []
-    empty_targets = pl.DataFrame(
-        schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
+    targets = (
+        pl.DataFrame(schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64})
+        if initial_plans is None
+        else initial_plans.select(
+            pl.col("execution_date").alias(TIME),
+            ASSET_ID,
+            pl.col("target_weight").alias("weight"),
+        )
     )
     account = _run_account_backtest(
-        empty_targets,
+        targets,
         market_prices,
         corporate_action_coverage=corporate_action_coverage,
         config=config,

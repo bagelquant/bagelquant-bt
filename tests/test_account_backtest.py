@@ -352,6 +352,66 @@ def test_stateful_account_resumes_checkpoint_and_keeps_prior_plans() -> None:
     ]
 
 
+def test_stateful_resume_executes_previously_frozen_future_plan() -> None:
+    """A plan sized before the checkpoint must execute without another callback."""
+    from polars.testing import assert_frame_equal
+
+    days = [date(2024, 1, day) for day in (2, 3, 4)]
+    prices = pl.DataFrame(
+        {"time": days, "asset_id": ["a"] * 3,
+         "open": [10.0, 8.0, 12.0], "close": [10.0, 8.0, 12.0]}
+    )
+    schedule = pl.DataFrame(
+        {"decision_date": days[:2], "execution_date": days[1:]}
+    )
+    config = AccountBacktestConfig(
+        capital_mode="compounding", initial_capital=1_000.0,
+        transaction_cost=_zero_cost(),
+    )
+
+    def target(context):
+        weight = 1.0 if context.decision_date == days[0] else 0.0
+        return pl.DataFrame({"asset_id": ["a"], "weight": [weight]})
+
+    full = run_stateful_account_backtest(
+        schedule, prices, target,
+        corporate_action_coverage=_coverage(*days), config=config,
+    )
+    prefix = run_stateful_account_backtest(
+        schedule.head(1), prices.head(1), target,
+        corporate_action_coverage=_coverage(days[0]), config=config,
+    )
+    calls = []
+
+    def resume_target(context):
+        calls.append(context.decision_date)
+        return target(context)
+
+    suffix = run_stateful_account_backtest(
+        schedule.tail(1), prices, resume_target,
+        corporate_action_coverage=_coverage(*days), config=config,
+        checkpoint=prefix.account.final_checkpoint,
+        initial_target_position_plans=prefix.target_position_plans,
+    )
+    assert calls == [days[1]]
+    # Day one's close freezes 100 shares. The next open cannot resize to 125.
+    assert suffix.account.fills.select("time", "side", "quantity").to_dicts() == [
+        {"time": days[1], "side": "buy", "quantity": 100},
+        {"time": days[2], "side": "sell", "quantity": 100},
+    ]
+    assert suffix.account.final_checkpoint.cash == pytest.approx(1_400.0)
+    assert_frame_equal(suffix.target_position_plans, full.target_position_plans)
+    assert_frame_equal(suffix.account.fills, full.account.fills)
+    assert_frame_equal(suffix.account.target_positions, full.account.target_positions)
+    assert_frame_equal(
+        pl.concat(
+            [prefix.account.account_value, suffix.account.account_value],
+            how="diagonal_relaxed",
+        ),
+        full.account.account_value,
+    )
+
+
 def test_t_plus_one_pending_sell_has_reason_and_retries_once_available() -> None:
     days = [date(2024, 1, day) for day in range(2, 6)]
     result = run_account_backtest(
