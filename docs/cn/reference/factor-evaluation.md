@@ -57,6 +57,11 @@ Signal，只准备一次市场、交易日历、Book、Tail 与 quantile 权重�
 `DailyPredictionDiagnostics(horizons, paths)`；两个独立入口继续保留相同 schema，供只请求
 单类诊断的场景使用。
 
+组合入口的可选 `progress(label, completed, total)` 回调会在原生运算开始前报告输入、
+权重、价格索引和收益准备阶段。每个预测窗口分别报告窗口 ID、标签生成与统计聚合，
+聚合结束后才增加已完成窗口数。统计推断、Book/分位路径、Tail 路径、可执行换手、
+lead-lag 路径和滚动 IC 也会报告当前阶段；这些回调不改变数值结果，也不额外保留标签窗口。
+
 ## IC 和 ICIR
 
 对每个信号期，`bagelquant-bt` 计算 Signal 与本次 execution price 到下一次

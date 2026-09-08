@@ -840,6 +840,7 @@ def test_unified_daily_diagnostics_match_the_independent_public_entries() -> Non
         autocorrelation_lags=(1, 2),
         rolling_observations=2,
     )
+    progress: list[tuple[str, int, int]] = []
     unified = run_daily_prediction_diagnostics(
         signals,
         prices,
@@ -850,7 +851,33 @@ def test_unified_daily_diagnostics_match_the_independent_public_entries() -> Non
         alpha_return_lags=(0, 1),
         autocorrelation_lags=(1, 2),
         rolling_observations=2,
+        progress=lambda label, completed, total: progress.append(
+            (label, completed, total)
+        ),
     )
+
+    # Long native operations announce their work before it starts. Counters
+    # advance only after the corresponding label window has been aggregated.
+    milestones = [
+        ("prepare_daily_inputs", 0, 1),
+        ("prepare_daily_weights", 0, 1),
+        ("prepare_daily_price_lookup", 0, 1),
+        ("prediction_labels: cumulative_1d", 0, 1),
+        ("prediction_statistics: cumulative_1d", 0, 1),
+        ("prediction_window: cumulative_1d", 1, 1),
+        ("prediction_inference", 0, 1),
+        ("prediction_horizons", 1, 1),
+        ("prepare_daily_returns", 0, 1),
+        ("book_quantile_paths", 0, 1),
+        ("tail_paths", 0, 1),
+        ("executed_turnover", 0, 1),
+        ("book_tail_paths", 1, 1),
+        ("book_lead_lag_paths", 0, 3),
+        ("alpha_return_lag_paths", 0, 4),
+        ("rolling_ic", 0, 1),
+    ]
+    positions = [progress.index(event) for event in milestones]
+    assert positions == sorted(positions)
 
     for field in independent_horizons.__dataclass_fields__:
         expected = getattr(independent_horizons, field)

@@ -1411,6 +1411,7 @@ def _run_prediction_horizon_diagnostics_prepared(
     annualization_sessions: int,
     factor_standardization: Literal["none", "cross_sectional_zscore"] = "none",
     signal_persistence: pl.DataFrame | None = None,
+    progress: DailyDiagnosticProgress | None = None,
 ) -> PredictionHorizonDiagnostics:
     """Aggregate window diagnostics from a caller-owned prepared context."""
 
@@ -1424,7 +1425,9 @@ def _run_prediction_horizon_diagnostics_prepared(
     quantile_return_frames: list[pl.DataFrame] = []
     factor_return_frames: list[pl.DataFrame] = []
     max_window_forward_rows = 0
-    for window in windows:
+    for completed, window in enumerate(windows):
+        if progress is not None:
+            progress(f"prediction_labels: {window.window_id}", completed, len(windows))
         forward, window_coverage = _session_window_forward_returns_from_frames(
             prepared.factor,
             prepared.market,
@@ -1435,6 +1438,10 @@ def _run_prediction_horizon_diagnostics_prepared(
         )
         max_window_forward_rows = max(max_window_forward_rows, forward.height)
         coverage_frames.append(window_coverage)
+        if progress is not None:
+            progress(
+                f"prediction_statistics: {window.window_id}", completed, len(windows)
+            )
         ic_frames.append(
             _restore_window_key_dtypes(
                 window_information_coefficients(prepared.factor, forward)
@@ -1464,6 +1471,12 @@ def _run_prediction_horizon_diagnostics_prepared(
                 )
             )
         )
+        if progress is not None:
+            progress(
+                f"prediction_window: {window.window_id}", completed + 1, len(windows)
+            )
+    if progress is not None:
+        progress("prediction_inference", 0, 1)
     coverage = pl.concat(coverage_frames, how="diagonal_relaxed").sort(
         ["evaluation_date", "window_id"]
     )
@@ -1689,6 +1702,8 @@ def run_daily_prediction_diagnostics(
     if annualization_sessions <= 0:
         raise ValueError("annualization_sessions must be positive")
     resolved_windows = _validate_windows(windows)
+    if progress is not None:
+        progress("prepare_daily_inputs", 0, 1)
     prepared = _prepare_daily_diagnostics(
         signals,
         prices,
@@ -1709,7 +1724,11 @@ def run_daily_prediction_diagnostics(
         horizons=persistence_lags,
         progress=progress,
     )
+    if progress is not None:
+        progress("prepare_daily_weights", 0, 1)
     prepared = _prepare_daily_weights(prepared, quantiles=quantiles)
+    if progress is not None:
+        progress("prepare_daily_price_lookup", 0, 1)
     prepared = _prepare_daily_price_lookup(prepared)
     horizons = _run_prediction_horizon_diagnostics_prepared(
         prepared,
@@ -1718,6 +1737,7 @@ def run_daily_prediction_diagnostics(
         annualization_sessions=annualization_sessions,
         factor_standardization=factor_standardization,
         signal_persistence=signal_autocorrelation,
+        progress=progress,
     )
     if progress is not None:
         progress("prediction_horizons", 1, 1)
@@ -1743,6 +1763,8 @@ def run_daily_prediction_diagnostics(
         price_lookup=None,
     )
     del prepared, signal_autocorrelation
+    if progress is not None:
+        progress("prepare_daily_returns", 0, 1)
     daily_forward_returns = _prepare_price_data(
         path_prepared.market,
         inputs_sorted=True,
@@ -1821,6 +1843,8 @@ def _run_daily_rank_path_diagnostics_prepared(
         for label, frame in (("book", book_weights), ("tail", tail_weights))
         if not frame.is_empty()
     }
+    if progress is not None:
+        progress("book_quantile_paths", 0, 1)
     book_daily_returns, quantile_returns, book_deltas = _research_book_quantile_returns(
         prepared_context.book,
         daily_forward_returns,
@@ -1830,6 +1854,8 @@ def _run_daily_rank_path_diagnostics_prepared(
         market_sessions=market_sessions,
         quantiles=quantiles,
     )
+    if progress is not None:
+        progress("tail_paths", 0, 1)
     tail_deltas = _requested_snapshot_weight_deltas(tail_weights)
     tail_daily_returns = _research_path_returns(
         tail_weights,
@@ -1838,6 +1864,8 @@ def _run_daily_rank_path_diagnostics_prepared(
         slippage_rates=resolved_slippage,
         weight_deltas=tail_deltas,
     )
+    if progress is not None:
+        progress("executed_turnover", 0, 1)
     executed_turnover = _sparse_executed_turnover(
         book_weights,
         market,
@@ -1904,6 +1932,8 @@ def _run_daily_rank_path_diagnostics_prepared(
             ic_frames,
             how="diagonal_relaxed",
         ).sort(["evaluation_date", "window_id"])
+    if progress is not None:
+        progress("rolling_ic", 0, 1)
     rolling_ic = rolling_window_information_coefficients(
         resolved_ic,
         observations=rolling_observations,
@@ -2561,6 +2591,8 @@ def _stream_lead_lag_returns(
     common = pl.DataFrame({TIME: common_dates}, schema={TIME: pl.Date})
     frames: list[pl.DataFrame] = []
     total = len(lead_lags)
+    if progress is not None:
+        progress("book_lead_lag_paths", 0, total)
     for completed, lag in enumerate(lead_lags, start=1):
         weights = _shifted_lead_lag_weights(
             book_weights,
@@ -2621,6 +2653,8 @@ def _stream_named_lead_lag_returns(
     frames: list[pl.DataFrame] = []
     total = len(lead_lags) * len(names)
     completed = 0
+    if progress is not None:
+        progress("alpha_return_lag_paths", 0, total)
     for lag in lead_lags:
         shifted = {
             name: _shifted_lead_lag_weights(

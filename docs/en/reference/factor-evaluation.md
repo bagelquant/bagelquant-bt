@@ -89,6 +89,14 @@ preparation. It streams each forward-label window to aggregates, calculates the
 horizon result. The two independent entry points retain the same schemas and
 remain suitable when only one diagnostic family is requested.
 
+The combined entry's optional `progress(label, completed, total)` callback
+announces input, weight, price and return preparation before native work starts.
+Each horizon reports its window ID while building labels and aggregating
+statistics, then advances the completed-window count. Inference, Book/quantile
+paths, Tail paths, executed turnover, lead-lag paths and rolling IC also report
+their current stage. These callbacks do not change numerical results or retain
+additional asset-label windows.
+
 ## IC and ICIR
 
 For each date, `bagelquant-bt` computes the cross-sectional correlation between
