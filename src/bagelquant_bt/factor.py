@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import polars as pl
@@ -485,6 +485,16 @@ def evaluate_factor_frame(
             return_provider=lag_return_provider,
             lags=FACTOR_LAGS,
         )
+    primary_config = config
+    if not include_synthetic_diagnostics and config.transaction_cost.min_fee:
+        # Daily prediction research is capital-free: its Net paths subtract
+        # proportional costs only.  The legacy primary TOP-N container is
+        # still populated for API compatibility, but must not reintroduce a
+        # fixed minimum commission or insolvency state.
+        primary_config = replace(
+            config,
+            transaction_cost=replace(config.transaction_cost, min_fee=0.0),
+        )
     primary_backtests = _backtest_weight_frames_with_forward_returns(
         {
             "top_n": top_n_weights,
@@ -492,7 +502,7 @@ def evaluate_factor_frame(
         },
         aligned_prices,
         forward_returns,
-        config=config,
+        config=primary_config,
         price_gaps=price_data.price_gaps,
         execution_availability=resolved_execution_availability,
         execution_availability_validated=True,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 from .exceptions import InputValidationError
 
 _BUDGET_TOLERANCE = 1e-7
+_LARGE_ALLOCATION_ASSET_THRESHOLD = 128
+_LARGE_ALLOCATION_LOT_WINDOW = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +169,15 @@ def _solve_lot_counts(
     from scipy.optimize import Bounds, LinearConstraint
 
     count = len(assets)
+    if count >= _LARGE_ALLOCATION_ASSET_THRESHOLD:
+        return _solve_large_lot_counts(
+            assets=assets,
+            lot_values=lot_values,
+            maximum_lot_counts=maximum_lot_counts,
+            minimum_values=minimum_values,
+            ideal_values=ideal_values,
+            remaining_budget=remaining_budget,
+        )
     bounds = Bounds(np.zeros(count), maximum_lot_counts)
     budget = LinearConstraint(
         lot_values.reshape(1, -1),
@@ -184,7 +196,6 @@ def _solve_lot_counts(
             + _solver_failure_detail(first)
         )
     maximum_deployment = float(lot_values @ np.rint(first.x))
-
     variable_count = count * 2
     objective = np.concatenate(
         (
@@ -240,6 +251,96 @@ def _solve_lot_counts(
         raise RuntimeError("whole-lot allocation exceeded its stock budget")
     if deployment < maximum_deployment - _BUDGET_TOLERANCE:
         raise RuntimeError("whole-lot allocation lost the first-stage deployment")
+    return result
+
+
+def _solve_large_lot_counts(
+    *,
+    assets: list[str],
+    lot_values: np.ndarray,
+    maximum_lot_counts: np.ndarray,
+    minimum_values: np.ndarray,
+    ideal_values: np.ndarray,
+    remaining_budget: float,
+) -> np.ndarray:
+    """Allocate a broad universe in bounded deterministic work.
+
+    Exact maximum deployment is a subset-sum MILP and has pathological
+    runtimes for daily universes.  Start close to the continuous target, then
+    consider at most four final lots per asset in tracking-error order.  The
+    result is maximal inside that bounded neighborhood: no remaining eligible
+    next lot fits the residual budget.
+    """
+
+    maximums = np.rint(maximum_lot_counts).astype(np.int64)
+    maximum_value = float(maximums.astype(float) @ lot_values)
+    if maximum_value <= remaining_budget + _BUDGET_TOLERANCE:
+        return maximums
+
+    target_increment_values = np.maximum(ideal_values - minimum_values, 0.0)
+    desired_counts = np.minimum(
+        target_increment_values / lot_values,
+        maximums.astype(float),
+    )
+    desired_value = float(desired_counts @ lot_values)
+    if desired_value > remaining_budget and desired_value > 0:
+        desired_counts *= remaining_budget / desired_value
+
+    base = np.maximum(
+        np.floor(desired_counts).astype(np.int64) - _LARGE_ALLOCATION_LOT_WINDOW,
+        0,
+    )
+    base = np.minimum(base, maximums)
+    base_cost = float(base.astype(float) @ lot_values)
+    if base_cost > remaining_budget + _BUDGET_TOLERANCE:
+        # Floating-point boundary protection.  Scaling down preserves bounded
+        # work while the heap below spends the released budget deterministically.
+        scale = max(0.0, remaining_budget / base_cost)
+        base = np.floor(base.astype(float) * scale).astype(np.int64)
+        base_cost = float(base.astype(float) @ lot_values)
+
+    result = base.copy()
+    cash = max(remaining_budget - base_cost, 0.0)
+    local_maximums = np.minimum(
+        maximums,
+        np.maximum(
+            np.ceil(desired_counts).astype(np.int64)
+            + _LARGE_ALLOCATION_LOT_WINDOW,
+            base,
+        ),
+    )
+    candidates: list[tuple[float, float, str, int]] = []
+
+    def push(index: int) -> None:
+        if result[index] >= local_maximums[index]:
+            return
+        before = minimum_values[index] + result[index] * lot_values[index]
+        after = before + lot_values[index]
+        improvement = abs(ideal_values[index] - before) - abs(
+            ideal_values[index] - after
+        )
+        heapq.heappush(
+            candidates,
+            (-float(improvement), -float(lot_values[index]), assets[index], index),
+        )
+
+    for index in range(len(assets)):
+        push(index)
+    while candidates:
+        _negative_improvement, _negative_cost, _asset_id, index = heapq.heappop(
+            candidates
+        )
+        cost = float(lot_values[index])
+        if cost <= cash + _BUDGET_TOLERANCE:
+            result[index] += 1
+            cash = max(cash - cost, 0.0)
+            push(index)
+
+    if np.any(result < 0) or np.any(result > maximums):
+        raise RuntimeError("whole-lot allocation returned invalid lot counts")
+    deployment = float(lot_values @ result)
+    if deployment > remaining_budget + _BUDGET_TOLERANCE:
+        raise RuntimeError("whole-lot allocation exceeded its stock budget")
     return result
 
 

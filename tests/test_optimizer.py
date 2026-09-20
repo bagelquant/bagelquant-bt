@@ -42,7 +42,7 @@ def test_optimizer_matches_hand_calculated_two_asset_solution() -> None:
         "value"
     ).to_list() == pytest.approx([0.6, 0.4], abs=1e-6)
     diagnostic = result.diagnostics.row(0, named=True)
-    assert diagnostic["solver"] in {"OSQP", "CLARABEL"}
+    assert diagnostic["solver"] == "analytic_capped_l1"
     assert diagnostic["constraint_violation"] <= 1e-7
     assert diagnostic["policy_hash"] == (
         "274aa6cdb81f0f0f5352c8ae2e690cff463c126bbcecefee33c18ede2eeb43c9"
@@ -97,30 +97,43 @@ def test_optimizer_fails_infeasible_cap_without_fallback_policy() -> None:
         ).build(_prediction({f"a{index:02d}": float(index) for index in range(24)}))
 
 
-def test_optimizer_projects_finite_solver_noise_before_strict_validation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_optimizer_matches_general_convex_solver_reference() -> None:
     import cvxpy as cp
+    import numpy as np
 
-    original_solve = cp.Problem.solve
-
-    def noisy_solve(problem, *args, **kwargs):
-        result = original_solve(problem, *args, **kwargs)
-        variable = problem.variables()[0]
-        variable._value = variable.value + 8e-7
-        return result
-
-    monkeypatch.setattr(cp.Problem, "solve", noisy_solve)
-    result = PredictionRegularizedOptimizerPolicy(
+    assets = [f"a{index:02d}" for index in range(40)]
+    scores = np.random.default_rng(42).normal(size=len(assets))
+    reference_values = np.random.default_rng(7).uniform(size=len(assets))
+    reference_values /= reference_values.sum()
+    day = date(2024, 1, 2)
+    reference = pl.DataFrame(
+        {"time": [day] * len(assets), "asset_id": assets, "weight": reference_values}
+    )
+    policy = PredictionRegularizedOptimizerPolicy(
         concentration_penalty=10.0,
-        turnover_penalty=0.0,
-        max_weight=1.0,
-    ).build(_prediction({"a": 2.0, "b": -2.0}))
+        turnover_penalty=0.1,
+        max_weight=0.04,
+    )
+    result = policy.build(
+        _prediction(dict(zip(assets, scores, strict=True))),
+        reference_weights=reference,
+    )
 
-    weights = result.weights.collect(dense=False).get_column("value")
-    assert weights.sum() == pytest.approx(1.0, abs=1e-12)
+    variable = cp.Variable(len(assets))
+    problem = cp.Problem(
+        cp.Maximize(
+            scores @ variable
+            - policy.concentration_penalty * cp.sum_squares(variable)
+            - policy.turnover_penalty * cp.norm1(variable - reference_values)
+        ),
+        [cp.sum(variable) == 1, variable >= 0, variable <= policy.max_weight],
+    )
+    problem.solve(solver="CLARABEL")
+
+    weights = result.weights.collect(dense=False).get_column("value").to_numpy()
+    assert weights == pytest.approx(variable.value, abs=1e-6)
     diagnostic = result.diagnostics.row(0, named=True)
-    assert diagnostic["raw_solver_constraint_violation"] > 1e-7
+    assert diagnostic["raw_solver_constraint_violation"] <= 1e-7
     assert diagnostic["constraint_violation"] <= 1e-7
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1060,41 +1061,16 @@ def _execute_rebalance(
     if config.capital_mode == "fixed_notional":
         withdrawal_flow = _pay_pending_withdrawal(state, session, flow_rows)
 
-    buy_plans: dict[str, int] = {}
-    while True:
-        candidates: list[tuple[float, str, float]] = []
-        for asset_id, target in desired.items():
-            if target is None:
-                continue
-            current = state["positions"].get(asset_id, 0) + buy_plans.get(asset_id, 0)
-            lot = lots.get(asset_id, config.default_buy_lot_size)
-            if current + lot > target:
-                continue
-            can_buy, _, _ = availability.get((session, asset_id), (True, True, ""))
-            open_price = prices.get(asset_id, {}).get("open")
-            if not can_buy or open_price is None:
-                continue
-            old_quantity = buy_plans.get(asset_id, 0)
-            new_quantity = old_quantity + lot
-            incremental_cash = _buy_cash_cost(
-                new_quantity, float(open_price), config
-            ) - _buy_cash_cost(old_quantity, float(open_price), config)
-            if incremental_cash > state["cash"] + 1e-9:
-                continue
-            unit_value = lot * float(open_price)
-            gap_value = (target - current) * float(open_price)
-            improvement = gap_value**2 - (gap_value - unit_value) ** 2
-            if improvement > 0:
-                candidates.append((improvement, asset_id, incremental_cash))
-        if not candidates:
-            break
-        _, selected, incremental_cash = max(
-            candidates, key=lambda value: (value[0], _reverse_asset_id(value[1]))
-        )
-        buy_plans[selected] = buy_plans.get(selected, 0) + lots.get(
-            selected, config.default_buy_lot_size
-        )
-        state["cash"] -= incremental_cash
+    buy_plans, state["cash"] = _plan_affordable_buys(
+        session=session,
+        desired=desired,
+        positions=state["positions"],
+        prices=prices,
+        availability=availability,
+        lots=lots,
+        config=config,
+        cash=state["cash"],
+    )
 
     # The planning loop reserved exact cash. Restore it before posting real fills.
     for asset_id, quantity in buy_plans.items():
@@ -1146,6 +1122,144 @@ def _execute_rebalance(
         ):
             pending[asset_id] = target
     return total_cost, withdrawal_flow, pending
+
+
+def _plan_affordable_buys(
+    *,
+    session: date,
+    desired: dict[str, int | None],
+    positions: dict[str, int],
+    prices: dict[str, dict[str, float | None]],
+    availability: dict[tuple[date, str], tuple[bool, bool, str]],
+    lots: dict[str, int],
+    config: AccountBacktestConfig,
+    cash: float,
+) -> tuple[dict[str, int], float]:
+    """Preserve lot-greedy ordering while batching its guaranteed prefix."""
+
+    candidates: dict[str, tuple[int, int, int, float, int]] = {}
+    for asset_id, target in desired.items():
+        if target is None:
+            continue
+        current = positions.get(asset_id, 0)
+        lot = lots.get(asset_id, config.default_buy_lot_size)
+        maximum_lots = max(0, (target - current) // lot)
+        can_buy, _, _ = availability.get((session, asset_id), (True, True, ""))
+        open_price = prices.get(asset_id, {}).get("open")
+        if maximum_lots and can_buy and open_price is not None:
+            candidates[asset_id] = (
+                target,
+                current,
+                lot,
+                float(open_price),
+                maximum_lots,
+            )
+    if not candidates:
+        return {}, cash
+
+    def improvement(item: tuple[int, int, int, float, int], index: int) -> float:
+        target, current, lot, price, _maximum_lots = item
+        gap_value = (target - current - index * lot) * price
+        unit_value = lot * price
+        return gap_value**2 - (gap_value - unit_value) ** 2
+
+    def count_above(
+        item: tuple[int, int, int, float, int], threshold: float
+    ) -> int:
+        _target, _current, lot, price, maximum_lots = item
+        first = improvement(item, 0)
+        decrement = 2.0 * (lot * price) ** 2
+        if first <= threshold:
+            return 0
+        count = min(
+            maximum_lots,
+            max(0, math.ceil((first - threshold) / decrement)),
+        )
+        while count and improvement(item, count - 1) <= threshold:
+            count -= 1
+        while count < maximum_lots and improvement(item, count) > threshold:
+            count += 1
+        return count
+
+    def planned_cost(counts: dict[str, int]) -> float:
+        return math.fsum(
+            _buy_cash_cost(counts[asset_id] * candidates[asset_id][2],
+                           candidates[asset_id][3], config)
+            for asset_id in sorted(counts)
+            if counts[asset_id]
+        )
+
+    maximum_incremental_cash = max(
+        max(
+            _buy_cash_cost(item[2], item[3], config),
+            _buy_cash_cost(item[4] * item[2], item[3], config)
+            - _buy_cash_cost((item[4] - 1) * item[2], item[3], config),
+        )
+        for item in candidates.values()
+    )
+    bulk_budget = max(0.0, cash - maximum_incremental_cash)
+    full_counts = {
+        asset_id: item[4] for asset_id, item in candidates.items()
+    }
+    if planned_cost(full_counts) <= bulk_budget + 1e-9:
+        bulk_counts = full_counts
+    elif bulk_budget <= 0:
+        bulk_counts = {asset_id: 0 for asset_id in candidates}
+    else:
+        lower = 0.0
+        upper = max(improvement(item, 0) for item in candidates.values())
+        bulk_counts: dict[str, int] = {}
+        for _ in range(80):
+            threshold = (lower + upper) / 2.0
+            current_counts = {
+                asset_id: count_above(item, threshold)
+                for asset_id, item in candidates.items()
+            }
+            if planned_cost(current_counts) > bulk_budget + 1e-9:
+                lower = threshold
+            else:
+                upper = threshold
+                bulk_counts = current_counts
+        if not bulk_counts:
+            bulk_counts = {asset_id: 0 for asset_id in candidates}
+
+    buy_plans = {
+        asset_id: count * candidates[asset_id][2]
+        for asset_id, count in bulk_counts.items()
+        if count
+    }
+    cash -= planned_cost(bulk_counts)
+    buy_candidates: list[tuple[float, str, float]] = []
+
+    def push_next_buy(asset_id: str) -> None:
+        target, current_position, lot, price, _maximum_lots = candidates[asset_id]
+        old_quantity = buy_plans.get(asset_id, 0)
+        current = current_position + old_quantity
+        if current + lot > target:
+            return
+        new_quantity = old_quantity + lot
+        incremental_cash = _buy_cash_cost(
+            new_quantity, price, config
+        ) - _buy_cash_cost(old_quantity, price, config)
+        unit_value = lot * price
+        gap_value = (target - current) * price
+        marginal_improvement = gap_value**2 - (gap_value - unit_value) ** 2
+        if marginal_improvement > 0:
+            heapq.heappush(
+                buy_candidates,
+                (-marginal_improvement, asset_id, incremental_cash),
+            )
+
+    for asset_id in candidates:
+        push_next_buy(asset_id)
+    while buy_candidates:
+        _, selected, incremental_cash = heapq.heappop(buy_candidates)
+        if incremental_cash > cash + 1e-9:
+            continue
+        buy_plans[selected] = buy_plans.get(selected, 0) + candidates[selected][2]
+        cash -= incremental_cash
+        push_next_buy(selected)
+    return buy_plans, cash
 
 
 def _apply_fill(
@@ -1757,10 +1871,6 @@ def _order_row(
         "reason": reason or None,
         "expires_at": session if expire_unfilled and requested > executable else None,
     }
-
-
-def _reverse_asset_id(value: str) -> tuple[int, ...]:
-    return tuple(-ord(character) for character in value)
 
 
 def _rows_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:

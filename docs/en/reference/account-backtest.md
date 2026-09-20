@@ -46,8 +46,11 @@ account equity, performance NAV, executable weights, target/implementation/cost
 drag, and a resumable checkpoint.
 
 Whole-lot sizing maximizes deployed stock notional before minimizing target
-deviation. A HiGHS numerical solver error triggers one retry of the identical
-model with presolve disabled. The retry keeps the objective, bounds, budget,
-and integrality constraints; it does not relax infeasibility or accept a
-partial solution. Rounded quantities must still satisfy the stock budget and
-the first-stage deployment floor.
+deviation. For broad cross-sections, it preallocates all but the final four lots
+around each continuous target and uses a deterministic, target-aligned heap to
+fill that bounded neighborhood; ordinary cross-sections retain the exact
+two-stage model. A HiGHS numerical solver error on the small-universe path
+triggers one retry of the identical model with presolve disabled. The retry
+keeps the objective, bounds, budget, and integrality constraints; it does not
+relax infeasibility or accept a partial solution. Rounded quantities must still
+satisfy the stock budget and the first-stage deployment floor.

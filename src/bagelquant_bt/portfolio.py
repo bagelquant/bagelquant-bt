@@ -16,6 +16,8 @@ from .engine import backtest_weight_frame
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_panel_frame
 
+PREDICTION_REGULARIZED_OPTIMIZER_VERSION = 2
+
 
 @dataclass(frozen=True, slots=True)
 class WeightBuild:
@@ -190,12 +192,6 @@ class PredictionRegularizedOptimizerPolicy:
             raise TypeError("weight policies require a PredictionPanel")
         predictions = prediction.collect(dense=True).rename({"value": "prediction"})
         references = _reference_weight_frame(reference_weights)
-        try:
-            import cvxpy as cp
-        except ImportError as exc:  # pragma: no cover - depends on optional extra
-            raise InputValidationError(
-                "prediction_regularized_optimizer requires bagelquant-bt[optimizer]"
-            ) from exc
 
         policy_hash = _optimizer_policy_hash(self)
         weight_rows: list[dict[str, Any]] = []
@@ -224,39 +220,14 @@ class PredictionRegularizedOptimizerPolicy:
                 evaluation_date=evaluation_date,
                 asset_ids=asset_ids,
             )
-            variable = cp.Variable(valid_count)
-            objective = cp.Maximize(
-                scores @ variable
-                - self.concentration_penalty * cp.sum_squares(variable)
-                - self.turnover_penalty * cp.norm1(variable - reference)
+            solution, iterations = _solve_prediction_regularized_weights(
+                scores,
+                reference,
+                concentration_penalty=self.concentration_penalty,
+                turnover_penalty=self.turnover_penalty,
+                max_weight=self.max_weight,
+                tolerance=self.constraint_tolerance,
             )
-            problem = cp.Problem(
-                objective,
-                [cp.sum(variable) == 1, variable >= 0, variable <= self.max_weight],
-            )
-            attempts: list[str] = []
-            solved_with: str | None = None
-            for solver in ("OSQP", "CLARABEL"):
-                try:
-                    problem.solve(solver=solver, warm_start=True, verbose=False)
-                except Exception as exc:  # solver failures must be auditable
-                    attempts.append(f"{solver}: {type(exc).__name__}: {exc}")
-                    continue
-                attempts.append(f"{solver}: {problem.status}")
-                if problem.status in {cp.OPTIMAL, cp.OPTIMAL_INACCURATE}:
-                    solved_with = solver
-                    break
-            if solved_with is None or variable.value is None:
-                raise InputValidationError(
-                    f"optimizer failed at {evaluation_date}; " + "; ".join(attempts)
-                )
-
-            solution = np.asarray(variable.value, dtype=float).reshape(-1)
-            if not np.isfinite(solution).all():
-                raise InputValidationError(
-                    "optimizer returned a non-finite solution at "
-                    f"{evaluation_date}"
-                )
             raw_violation = max(
                 abs(float(solution.sum()) - 1.0),
                 max(0.0, -float(solution.min())),
@@ -281,15 +252,19 @@ class PredictionRegularizedOptimizerPolicy:
                 }
                 for asset_id, weight in zip(asset_ids, solution, strict=True)
             )
-            stats = problem.solver_stats
+            objective = float(
+                scores @ solution
+                - self.concentration_penalty * np.square(solution).sum()
+                - self.turnover_penalty * np.abs(solution - reference).sum()
+            )
             diagnostics.append(
                 {
                     TIME: evaluation_date,
                     "policy_hash": policy_hash,
-                    "solver": solved_with,
-                    "solver_status": str(problem.status),
-                    "iterations": getattr(stats, "num_iters", None),
-                    "objective": float(problem.value),
+                    "solver": "analytic_capped_l1",
+                    "solver_status": "optimal",
+                    "iterations": iterations,
+                    "objective": objective,
                     "constraint_violation": violation,
                     "raw_solver_constraint_violation": raw_violation,
                 }
@@ -678,6 +653,53 @@ def _target_volatility_optimizer_policy_hash(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _solve_prediction_regularized_weights(
+    scores: np.ndarray,
+    reference: np.ndarray,
+    *,
+    concentration_penalty: float,
+    turnover_penalty: float,
+    max_weight: float,
+    tolerance: float,
+) -> tuple[np.ndarray, int]:
+    """Solve the separable capped-simplex objective through its scalar dual."""
+
+    values = np.asarray(scores, dtype=float).reshape(-1)
+    anchors = np.asarray(reference, dtype=float).reshape(-1)
+    if values.shape != anchors.shape or values.size == 0:
+        raise ValueError("scores and reference must be non-empty matching vectors")
+    if not np.isfinite(values).all() or not np.isfinite(anchors).all():
+        raise ValueError("scores and reference must be finite")
+    shrink = turnover_penalty / (2.0 * concentration_penalty)
+
+    def weights_for_dual(dual: float) -> np.ndarray:
+        centered = (values - dual) / (2.0 * concentration_penalty) - anchors
+        proximal = anchors + np.sign(centered) * np.maximum(
+            np.abs(centered) - shrink,
+            0.0,
+        )
+        return np.clip(proximal, 0.0, max_weight)
+
+    lower = float(
+        np.min(values - 2.0 * concentration_penalty * (max_weight + shrink))
+    )
+    upper = float(np.max(values + 2.0 * concentration_penalty * shrink))
+    solution = weights_for_dual((lower + upper) / 2.0)
+    iterations = 0
+    for iteration in range(1, 101):
+        iterations = iteration
+        dual = (lower + upper) / 2.0
+        solution = weights_for_dual(dual)
+        total = float(solution.sum())
+        if abs(total - 1.0) <= tolerance:
+            break
+        if total > 1.0:
+            lower = dual
+        else:
+            upper = dual
+    return solution, iterations
 
 
 def _project_capped_simplex(values: np.ndarray, cap: float) -> np.ndarray:

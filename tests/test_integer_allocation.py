@@ -96,6 +96,55 @@ def test_integer_allocation_is_row_order_independent() -> None:
     assert first.residual_cash == second.residual_cash
 
 
+def test_large_integer_allocation_uses_bounded_deterministic_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    count = 128
+    assets = [f"A{index:03d}" for index in range(count)]
+    weights = pl.DataFrame(
+        {"asset_id": assets, "weight": [1.0 / count] * count}
+    )
+    prices = pl.DataFrame(
+        {
+            "asset_id": assets,
+            "price": [float(10 + index % 17) for index in range(count)],
+        }
+    )
+    lots = pl.DataFrame(
+        {"asset_id": assets, "lot_size": [100] * count}
+    )
+    calls = 0
+
+    def solve(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("large allocation must not invoke the MILP solver")
+
+    monkeypatch.setattr(allocation_module, "_solve_milp", solve)
+    result = allocate_integer_positions(
+        weights,
+        prices,
+        total_notional=100_000_000.0,
+        lot_sizes=lots,
+    )
+
+    assert calls == 0
+    assert result.allocated_notional <= result.stock_budget
+    assert result.residual_cash >= 0
+    minimum_lot_value = min(
+        row["price"] * 100
+        for row in prices.iter_rows(named=True)
+        if (
+            result.positions.filter(pl.col("asset_id") == row["asset_id"]).item(
+                0, "target_quantity"
+            )
+            < 100
+            * int(np.ceil((1.0 / count * 100_000_000.0) / row["price"] / 100))
+        )
+    )
+    assert result.residual_cash < minimum_lot_value
+
+
 def test_integer_allocation_rejects_unfunded_minimum_positions() -> None:
     with pytest.raises(InputValidationError, match="minimum positions exceed"):
         allocate_integer_positions(

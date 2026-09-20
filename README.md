@@ -97,17 +97,22 @@ artifacts, access a provider, or construct an account.
 
 `PredictionRegularizedOptimizerPolicy` converts a Prediction plus explicit
 reference weights into target weights under long-only, fully-invested, and
-maximum-weight constraints. CVXPY is available through the `optimizer` extra;
-OSQP is attempted first and CLARABEL second, with strict failure if neither
-solver succeeds.
+maximum-weight constraints. Its separable quadratic-plus-L1 objective is solved
+exactly through a deterministic scalar dual search with a capped-simplex
+projection, so large daily cross-sections do not require rebuilding a general
+convex-program model for every evaluation date.
 
 `allocate_integer_positions` is the public deterministic bridge from one
 continuous target snapshot to whole-lot positions. It first maximizes deployed
 stock notional under the stock budget, then minimizes absolute notional
 deviation among maximum-deployment solutions with stable `asset_id`
-tie-breaking. Callers provide prices, lot sizes, minimum frozen quantities, and
-whether each asset may exceed its continuous target by one lot; infeasible
-inputs fail explicitly.
+tie-breaking for ordinary cross-sections. Broad cross-sections preallocate all
+but the final four lots around each continuous target, then use a deterministic,
+target-aligned heap to fill that bounded neighborhood. This avoids pathological
+subset-sum runtimes while keeping the result maximal inside the local
+neighborhood. Callers provide
+prices, lot sizes, minimum frozen quantities, and whether each asset may exceed
+its continuous target by one lot; infeasible inputs fail explicitly.
 
 The separate `run_account_backtest` engine sizes target weights into integer
 positions and simulates cash, T+1 availability, lot rules, sell-first funding,

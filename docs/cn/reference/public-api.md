@@ -44,7 +44,9 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
 `WeightPolicy` 接收 `ScheduledPrediction`，返回
 `WeightBuild(weights: Panel, skipped: DataFrame)`。独立的
 `allocate_integer_positions` 接口以显式价格、预算、整手大小和冻结最低数量，把一期连续目标转换为
-整数手数仓位；市场专属规则与实盘报单不属于本包边界。
+整数手数仓位；大截面会先预分配连续目标附近的基准仓位，再在最后四手的有界范围内按跟踪误差
+顺序用确定性堆补齐，避免资金部署问题退化成耗时不可控的子集和 MILP。小截面仍保留精确的两阶段
+MILP。市场专属规则与实盘报单不属于本包边界。
 
 `BacktestConfig.insolvency_action` 默认为 `"raise"`，保持严格失败语义。设为
 `"freeze_zero"` 后，资不抵债当日的有效费用封顶为可用财富，同时记录请求费用和未支付

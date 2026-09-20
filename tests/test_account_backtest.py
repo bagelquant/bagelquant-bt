@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import random
 from datetime import date, timedelta
 
 import polars as pl
 import pytest
 
+import bagelquant_bt.account as account_module
 from bagelquant_bt import (
     AccountBacktestConfig,
     InputValidationError,
@@ -224,6 +226,142 @@ def test_stateful_account_sizes_and_executes_all_decisions_in_one_pass() -> None
     assert buy["requested_quantity"] == 100
     assert buy["unfilled_quantity"] == 50
     assert buy["expires_at"] == days[1]
+
+
+def test_stateful_buy_planning_cost_calls_do_not_scale_with_target_lot_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    days = [date(2024, 9, 2), date(2024, 9, 3)]
+    assets = [f"a{index:02d}" for index in range(20)]
+    original = account_module._buy_cash_cost
+    calls = 0
+
+    def counted_buy_cash_cost(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(account_module, "_buy_cash_cost", counted_buy_cash_cost)
+    result = run_stateful_account_backtest(
+        pl.DataFrame(
+            {"decision_date": [days[0]], "execution_date": [days[1]]}
+        ),
+        pl.DataFrame(
+            {
+                "time": [day for day in days for _ in assets],
+                "asset_id": assets * len(days),
+                "open": [10.0] * (len(days) * len(assets)),
+                "close": [10.0] * (len(days) * len(assets)),
+            }
+        ),
+        lambda _context: pl.DataFrame(
+            {"asset_id": assets, "weight": [1.0 / len(assets)] * len(assets)}
+        ),
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame(
+            {"asset_id": assets, "buy_lot_size": [1] * len(assets)}
+        ),
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=4_000.0,
+            transaction_cost=_zero_cost(),
+        ),
+    )
+
+    assert result.target_position_plans.get_column("target_quantity").to_list() == [
+        20
+    ] * len(assets)
+    assert calls < 2_000
+
+
+def test_batched_buy_planning_matches_the_original_lot_greedy_order() -> None:
+    generator = random.Random(90210)
+    session = date(2024, 9, 3)
+
+    def reference(
+        desired,
+        positions,
+        prices,
+        lots,
+        config,
+        cash,
+    ):
+        plans = {}
+        while True:
+            candidates = []
+            for asset_id, target in desired.items():
+                current = positions.get(asset_id, 0) + plans.get(asset_id, 0)
+                lot = lots[asset_id]
+                if current + lot > target:
+                    continue
+                price = float(prices[asset_id]["open"])
+                old_quantity = plans.get(asset_id, 0)
+                incremental_cash = account_module._buy_cash_cost(
+                    old_quantity + lot, price, config
+                ) - account_module._buy_cash_cost(old_quantity, price, config)
+                if incremental_cash > cash + 1e-9:
+                    continue
+                unit_value = lot * price
+                gap_value = (target - current) * price
+                improvement = gap_value**2 - (gap_value - unit_value) ** 2
+                if improvement > 0:
+                    candidates.append((improvement, asset_id, incremental_cash))
+            if not candidates:
+                return plans, cash
+            _, selected, incremental_cash = max(
+                candidates,
+                key=lambda value: (
+                    value[0],
+                    tuple(-ord(character) for character in value[1]),
+                ),
+            )
+            plans[selected] = plans.get(selected, 0) + lots[selected]
+            cash -= incremental_cash
+
+    for _ in range(30):
+        assets = [f"a{index}" for index in range(6)]
+        positions = {asset_id: generator.randint(0, 10) for asset_id in assets}
+        lots = {asset_id: generator.randint(1, 5) for asset_id in assets}
+        desired = {
+            asset_id: positions[asset_id]
+            + lots[asset_id] * generator.randint(0, 20)
+            for asset_id in assets
+        }
+        prices = {
+            asset_id: {
+                "open": float(generator.randint(5, 80)),
+                "close": float(generator.randint(5, 80)),
+            }
+            for asset_id in assets
+        }
+        config = AccountBacktestConfig(
+            transaction_cost=TransactionCostConfig(
+                rate=generator.choice([0.0, 0.001]),
+                min_fee=generator.choice([0.0, 5.0]),
+                buy_slippage_rate=0.0005,
+                sell_slippage_rate=0.0005,
+                stamp_tax_rate=0.001,
+                transfer_fee_rate=0.00002,
+            )
+        )
+        cash = float(generator.randint(100, 5_000))
+
+        expected_plans, expected_cash = reference(
+            desired, positions, prices, lots, config, cash
+        )
+        actual_plans, actual_cash = account_module._plan_affordable_buys(
+            session=session,
+            desired=desired,
+            positions=positions,
+            prices=prices,
+            availability={},
+            lots=lots,
+            config=config,
+            cash=cash,
+        )
+
+        assert actual_plans == expected_plans
+        assert actual_cash == pytest.approx(expected_cash, abs=1e-8)
 
 
 def test_stateful_account_freezes_unpriced_holding_outside_decision_plan() -> None:

@@ -126,6 +126,7 @@ from .policy import (
     standardize_policies,
 )
 from .portfolio import (
+    PREDICTION_REGULARIZED_OPTIMIZER_VERSION,
     EqualWeightPolicy,
     FloatMarketCapWeightPolicy,
     PredictionRegularizedOptimizerPolicy,
@@ -185,6 +186,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "PREDICTION_REGULARIZED_OPTIMIZER_VERSION",
     "RESULT_SECTIONS",
     "RESULT_SECTION_VERSION",
     "SIGNAL_PERSISTENCE_HORIZONS",
