@@ -22,7 +22,7 @@ from bagelquant_bt.window import compute_window_tables
 
 
 def test_result_section_version_is_public() -> None:
-    assert PORTFOLIO_PATH_VERSION == 3
+    assert PORTFOLIO_PATH_VERSION == 4
     assert RESULT_SECTION_VERSION == 13
 
 
@@ -70,7 +70,7 @@ def _identity() -> PortfolioPathIdentity:
     return PortfolioPathIdentity(
         alpha_revision="alpha-v1",
         universe="u",
-        policy_combo="combo-v2",
+        pipeline="pipeline-v1",
     )
 
 

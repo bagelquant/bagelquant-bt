@@ -106,6 +106,33 @@ portfolios, lag analysis, IC decay, benchmarks, coverage, and missing price
 keys. `FactorEvaluationResult` remains the internal result class name for the
 statistical implementation; operator-facing APIs use Prediction terminology.
 
+## Exposure-constrained optimization
+
+`PredictionExposureConstrainedOptimizerPolicy(concentration_penalty,
+turnover_penalty, max_weight, exposure_bounds={}, max_turnover=None)` is a
+separate long-only, fully-invested policy. Each mapping entry is an
+`ExposureBounds(lower=None, upper=None)` with at least one finite boundary.
+`build(prediction, reference_weights=..., exposures=...)` requires point-in-time
+stock exposure columns keyed by `(time, asset_id)`. An industry coordinate can
+be a caller-supplied zero/one dummy. BT does not infer factor names or read data.
+
+The objective is `prediction @ w - concentration_penalty * sum(w**2) -
+turnover_penalty * turnover`. Turnover is `sum(abs(w - reference))` plus all
+reference mass outside the finite Prediction cross-section, without a one-half
+factor. The initial fully-invested allocation needs a turnover budget of one.
+Bounds apply to requested target weights, not later realized fills.
+
+Install `bagelquant-bt[optimizer]`. CVXPY/CLARABEL loads only when solving;
+missing/nonfinite exposures, infeasibility and inaccurate/failing solves are
+errors with the evaluation date. No automatic relaxation or fallback occurs.
+`WeightBuild.diagnostics` contains solver status, prediction scale, reward and
+penalty contributions, turnover, forced-exit turnover and exposure/slack columns.
+The original analytic optimizer remains unchanged.
+
+Portfolio Path identity v4 requires `PortfolioPathIdentity.pipeline` instead of
+the removed Combo field. Callers supply a frozen pipeline identity; previous v3
+path identities are not adopted.
+
 ## Exceptions
 
 - `BagelQuantBacktestError`: base package error.

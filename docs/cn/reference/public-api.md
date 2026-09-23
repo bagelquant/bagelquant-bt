@@ -57,6 +57,27 @@ quantile 路径会提供 `is_bankrupt` 与 `bankruptcy_event` 标记。
 `PredictionEvaluationResult` 包含 Signal、execution-to-execution forward returns、
 Pearson/Spearman IC、分位数、spread、TOP N、lag、IC decay 与基准结果。
 
+## 暴露约束优化
+
+`PredictionExposureConstrainedOptimizerPolicy(concentration_penalty,
+turnover_penalty, max_weight, exposure_bounds={}, max_turnover=None)` 是独立的
+仅多头、全投资约束优化器。每个暴露列对应一个 `ExposureBounds(lower=None, upper=None)`，
+至少提供一个有限边界。调用 `build(prediction, reference_weights=..., exposures=...)`，
+传入以 `(time, asset_id)` 为键的 PIT 个股暴露；行业可使用调用方明确构造的 0/1 列。
+BT 不推断具体因子名称，也不读取市场数据。
+
+目标函数为预测收益减集中度平方惩罚与 L1 换手惩罚。换手使用完整权重变动绝对值之和，
+包含有限 Prediction 截面之外参考持仓的强制退出，不除以二；初始全投资需要换手预算一。
+约束针对目标权重，不代表整手和成交阻塞后的实际仓位始终满足约束。
+
+安装 `bagelquant-bt[optimizer]`；CVXPY/CLARABEL 仅求解时加载。暴露缺失/非有限、约束
+不可行或求解失败/不精确均携日期报错，不放宽边界、不退回等权。
+`WeightBuild.diagnostics` 返回预测尺度、目标函数分项、换手、强制退出、求解状态以及
+逐项暴露和上下界余量。原解析优化器数值行为保持不变。
+
+Portfolio Path identity v4 使用必填 `PortfolioPathIdentity.pipeline`，删除原 Combo 字段。
+调用方传入冻结链路身份；旧 v3 路径缓存不得自动采用。
+
 ## 异常
 
 - `BagelQuantBacktestError`：包级基础异常。

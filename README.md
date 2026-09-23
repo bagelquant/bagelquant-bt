@@ -102,6 +102,13 @@ exactly through a deterministic scalar dual search with a capped-simplex
 projection, so large daily cross-sections do not require rebuilding a general
 convex-program model for every evaluation date.
 
+`PredictionExposureConstrainedOptimizerPolicy` is a separate policy for explicit
+absolute exposure bounds and an optional full-L1 turnover cap. Supply a
+`(time, asset_id, <exposure columns>)` frame and `ExposureBounds` for each selected
+coordinate. Forced exits count toward turnover; missing exposures and infeasible
+constraints fail explicitly. CVXPY/CLARABEL load lazily from the `optimizer` extra.
+The original analytic optimizer is unchanged.
+
 `allocate_integer_positions` is the public deterministic bridge from one
 continuous target snapshot to whole-lot positions. It first maximizes deployed
 stock notional under the stock budget, then minimizes absolute notional

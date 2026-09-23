@@ -21,7 +21,7 @@ from .results import BacktestResult
 from .returns import _prepare_price_data
 from .window import compute_window_tables
 
-PORTFOLIO_PATH_VERSION = 3
+PORTFOLIO_PATH_VERSION = 4
 RESULT_SECTION_VERSION = 13
 RESULT_SECTIONS = (
     "summary",
@@ -48,7 +48,7 @@ class PortfolioPathIdentity:
 
     alpha_revision: str
     universe: str
-    policy_combo: str
+    pipeline: str
     parameters_hash: str = ""
     market_data_hash: str = ""
     engine_version: int = PORTFOLIO_PATH_VERSION
@@ -57,7 +57,7 @@ class PortfolioPathIdentity:
         for label, value in (
             ("alpha_revision", self.alpha_revision),
             ("universe", self.universe),
-            ("policy_combo", self.policy_combo),
+            ("pipeline", self.pipeline),
         ):
             if not value.strip():
                 raise ValueError(f"portfolio path {label} must not be blank")
@@ -67,7 +67,7 @@ class PortfolioPathIdentity:
         payload = {
             "alpha_revision": self.alpha_revision,
             "universe": self.universe,
-            "policy_combo": self.policy_combo,
+            "pipeline": self.pipeline,
             "parameters_hash": self.parameters_hash,
             "market_data_hash": self.market_data_hash,
             "engine_version": self.engine_version,

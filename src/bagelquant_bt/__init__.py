@@ -32,6 +32,11 @@ from .exceptions import (
     BagelQuantBacktestError,
     InputValidationError,
 )
+from .exposure_optimizer import (
+    PREDICTION_EXPOSURE_CONSTRAINED_OPTIMIZER_VERSION,
+    ExposureBounds,
+    PredictionExposureConstrainedOptimizerPolicy,
+)
 from .factor import (
     PreparedFactorMarketData,
     factor_ic_decay_series,
@@ -186,6 +191,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "PREDICTION_EXPOSURE_CONSTRAINED_OPTIMIZER_VERSION",
     "PREDICTION_REGULARIZED_OPTIMIZER_VERSION",
     "RESULT_SECTIONS",
     "RESULT_SECTION_VERSION",
@@ -210,6 +216,7 @@ __all__ = [
     "EvaluationAnchor",
     "EvaluationFrequency",
     "ExecutionPolicy",
+    "ExposureBounds",
     "FactorEvaluationResult",
     "FamaMacBethOLSComposition",
     "FloatMarketCapWeightPolicy",
@@ -227,6 +234,7 @@ __all__ = [
     "PortfolioPathIdentity",
     "PortfolioStateCheckpoint",
     "PredictionEvaluationResult",
+    "PredictionExposureConstrainedOptimizerPolicy",
     "PredictionHorizonDiagnostics",
     "PredictionRegularizedOptimizerPolicy",
     "PredictionRegularizedTargetVolatilityPolicy",
