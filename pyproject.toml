@@ -1,13 +1,13 @@
 [project]
 name = "bagelquant-bt"
-version = "0.9.3"
-description = "Typed prediction composition, evaluation, and backtesting for BagelQuant"
+version = "0.10.1"
+description = "Saved-value evaluation and account backtesting for BagelQuant"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = { text = "Apache-2.0" }
 authors = [{ name = "BagelQuant" }]
 dependencies = [
-    "bagelquant-core>=0.8.0,<0.9",
+    "bagelquant-core>=0.9.1,<0.10",
     "numpy>=2.4.0",
     "plotly>=6.0.0",
     "polars>=1.35.0",
@@ -16,9 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 optimizer = [
-    "clarabel>=0.11.0",
-    "cvxpy>=1.7.0",
-    "osqp>=1.0.0",
+    "bagelquant-core[optimizer]>=0.9.1,<0.10",
 ]
 
 [tool.uv.sources]

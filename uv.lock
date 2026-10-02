@@ -4,7 +4,7 @@ requires-python = "==3.13.*"
 
 [[package]]
 name = "bagelquant-bt"
-version = "0.9.3"
+version = "0.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "bagelquant-core" },
@@ -16,9 +16,7 @@ dependencies = [
 
 [package.optional-dependencies]
 optimizer = [
-    { name = "clarabel" },
-    { name = "cvxpy" },
-    { name = "osqp" },
+    { name = "bagelquant-core", extra = ["optimizer"] },
 ]
 
 [package.dev-dependencies]
@@ -30,10 +28,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bagelquant-core", editable = "../bagelquant-core" },
-    { name = "clarabel", marker = "extra == 'optimizer'", specifier = ">=0.11.0" },
-    { name = "cvxpy", marker = "extra == 'optimizer'", specifier = ">=1.7.0" },
+    { name = "bagelquant-core", extras = ["optimizer"], marker = "extra == 'optimizer'", editable = "../bagelquant-core" },
     { name = "numpy", specifier = ">=2.4.0" },
-    { name = "osqp", marker = "extra == 'optimizer'", specifier = ">=1.0.0" },
     { name = "plotly", specifier = ">=6.0.0" },
     { name = "polars", specifier = ">=1.35.0" },
     { name = "scipy", specifier = ">=1.16.0" },
@@ -48,18 +44,28 @@ dev = [
 
 [[package]]
 name = "bagelquant-core"
-version = "0.8.0"
+version = "0.9.1"
 source = { editable = "../bagelquant-core" }
 dependencies = [
     { name = "numpy" },
     { name = "polars" },
 ]
 
+[package.optional-dependencies]
+optimizer = [
+    { name = "clarabel" },
+    { name = "cvxpy" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "clarabel", marker = "extra == 'optimizer'", specifier = ">=0.10,<1" },
+    { name = "cvxpy", marker = "extra == 'optimizer'", specifier = ">=1.6,<2" },
+    { name = "lightgbm", marker = "extra == 'ml'", specifier = ">=4.6,<5" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "polars", specifier = ">=1.35.0" },
 ]
+provides-extras = ["optimizer", "ml"]
 
 [package.metadata.requires-dev]
 dev = [

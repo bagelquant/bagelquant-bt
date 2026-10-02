@@ -1,51 +1,31 @@
 # 架构与设计
 
-`bagelquant-bt` 是强类型 Signal 优先的评估包。
+## 保存值与评估
+
+BT 消费完整保存的 Alpha / Prediction 和 Portfolio 目标权重。值计算、选股、通用
+优化与训练属于 Core；BT 负责诊断、账户模拟、统计和 Plotly。评估不构建上游值。
 
 ```text
-AlphaValue Panel + prices + policies
-    |
-    v
-PredictionComposer -> PredictionPanel
-    |
-    v
-schedule -> execution -> portfolio weights
-    |
-    v
-收益、换手、成本、IC、分位数
-    |
-    v
-可视化辅助函数
+保存的 Prediction + 显式市场数据 → 预测诊断 / 指标 / 图表
+保存的权重 + 调仓状态 + 市场数据 → 账户模拟 → 收益 / 持仓 / 成交 / 图表
 ```
 
-## 设计哲学
+## 诊断章节
 
-- Alpha 定义和市场数据读取位于回测包之外。
-- 公开回测边界严格要求 `PredictionPanel`。
-- 交易成本必须显式且可复现。
-- 返回结构化结果对象，而不是只打印报告。
-- 可视化层只消费结果对象。
+run_daily_prediction_sections 共享准备好的信号、日历、排名与价格上下文，仅执行所选
+章节所需组件。逐次聚合一个标签窗口，保存数值原语与统计，不保存完整巨型未来收益矩阵。
+增量标签计算复用有效前缀，重新处理跨边界窗口及新成熟标签；自相关重算新成熟历史配对。
 
-## 结构
+## 账户模拟
 
-- `inputs`：frame 校验、对齐和数值检查。
-- `returns`：资产收益和累计收益工具。
-- `costs`：换手和交易成本计算。
-- `pipeline`：Signal 组合和严格公开回测编排。
-- `signal`：AlphaPolicy 与 ExecutionPolicy。
-- `portfolio`：`ScheduledPrediction` 到 weights 的政策。
-- `allocation`：通用、确定性的连续目标权重到整数手数仓位分配。
-- `engine`：包内 weights 模拟。
-- `factor`：IC、分位数和 top-N Signal 评估。
-- `performance`：汇总指标。
-- `results`：供下游检查的 dataclass。
-- `visualization`：绘图辅助函数。
+evaluate_portfolio_targets 消费明确的 rebalance / hold / unavailable 决策。
+目标零权重明确退出；hold 不生成新指令；unavailable 保留原因。账户支持整手、现金、
+成本、可用数量、T+1、交易阻断、公司行为和待执行指令。规则由调用方提供，不从股票代码
+猜测交易所。模拟权重可因成交限制偏离目标，二者分别保存。
 
-## 数据边界
+## 状态与包边界
 
-AlphaValue 和 weights 是普通 core `Panel`；组合后的 prediction 是
-`PredictionPanel`；`ScheduledPrediction` 额外保存 schedule 与日期 lineage。价格 frame
-保存用于计算收益的数值价格。
-
-包依赖 `bagelquant-core` 的 Panel 与 composer 契约，但不导入
-`bagelquant-data` 或 `bagelquant-workbench` 应用代码。
+账户 checkpoint 保存持仓、现金、待执行和公司行为状态。续算前由调用方验证信号、
+目标、价格、约束、公司行为和设置的历史前缀。失败不覆盖有效旧结果。
+旧政策数值适配仅供冻结月频行为；通用权重优化实现委托 Core。
+BT 仅依赖 Core，不导入 Data 或 Workbench。数据、定义、章节持久化与 UI 属于调用方。

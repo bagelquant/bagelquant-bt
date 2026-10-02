@@ -7,50 +7,22 @@ Importing the public package does not load SciPy's optimizer or statistical
 runtime. These dependencies load only when their numerical operations are
 called, keeping read-only application workers inexpensive to start.
 
-The public investment flow is:
-
-```text
-AlphaValue Panel -> AlphaPolicy -> StandardizePolicy -> PredictionComposer
--> PredictionPanel -> ExecutionPolicy -> WeightPolicy -> Weights Panel
-```
-
-Public backtests require a core `PredictionPanel`. Ordinary panels, raw DataFrames,
-and direct weights cannot enter the backtest API. Prices remain explicit
-long-form Polars data with `time`, `asset_id`, and `price`.
-
-```python
-from bagelquant_core import IdentityPredictionComposer, Panel
-from bagelquant_bt import (
-    BacktestConfig,
-    MissingSnapshotAction,
-    EvaluationAnchor,
-    AlphaPolicy,
-    compose_prediction,
-    run_prediction_backtest,
-)
-
-alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
-policy = AlphaPolicy(
-    id="month_end",
-    frequency="monthly",
-    anchor=EvaluationAnchor.LAST_TRADING_DAY,
-    missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
-)
-signal = compose_prediction(
-    {"quality": alpha_value},
-    IdentityPredictionComposer(),
-    calendar,
-    policy,
-    standardize_policy="z_score",
-)
-result = run_prediction_backtest(
-    signal,
-    prices,
-    calendar,
-    policy,
-    config=BacktestConfig(initial_capital=1_000_000),
-)
-```
+The primary application contract consumes saved Prediction values and saved
+Portfolio targets. Core owns numerical processing, model fitting and optimization;
+BT owns account simulation and selective evaluation. `evaluate_portfolio_targets`
+accepts explicit complete targets plus `rebalance`, `hold` or `unavailable`
+decisions. It handles lots, cash, costs, execution blocks and corporate actions,
+and returns target/filled holdings separately with a causal account checkpoint.
+Its calendar includes known execution sessions beyond the price cutoff. Retain
+future `target_position_plans` and pass them as `initial_target_position_plans`
+with a checkpoint; historical decisions are not sized again. Unknown future
+execution dates are an explicit input error. `prepare_account_market_data` prepares
+read-only price and execution-block lookups for independent stress accounts while their state remains
+separate.
+`run_daily_prediction_sections` evaluates selected numerical groups, persists
+reusable primitives and continues verified prefixes on append. Evaluation never
+produces or trains an upstream value. The frozen monthly adapter uses the
+retained typed scheduling primitives for its immutable bagel-001 calculation.
 
 `run_prediction_evaluation` computes execution-to-execution IC, quantiles,
 spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`.
@@ -84,7 +56,9 @@ one asset-label window at a time, and reuses one `1..120` autocorrelation pass.
 The two narrower entry points remain available for independent analysis.
 `AlphaPolicy` owns only evaluation-date alignment. `StandardizePolicy` is the
 independent cross-sectional preprocessing contract (`none`, `z_score`, or
-`percentile_rank`). Prediction composition returns the composer's raw
+`percentile_rank`). Z-score reduction sorts each cross-section by asset and uses
+a fixed per-date kernel, so an unchanged historical prefix is byte-identical
+across Arrow chunk layouts and future-horizon extensions. Prediction composition returns the composer's raw
 `PredictionPanel`; callers may explicitly apply Core Transformers before the
 Weight Policy boundary.
 

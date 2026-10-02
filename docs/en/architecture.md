@@ -1,55 +1,39 @@
-# Architecture And Design
+# Architecture and design
 
-`bagelquant-bt` is a typed-signal evaluation package.
+## Saved values and evaluation
+
+BT consumes complete saved Alpha/Prediction values and Portfolio targets.
+Value calculation, selection, generic optimization and training belong to Core;
+BT owns diagnostics, account simulation, statistics and Plotly. Evaluation never
+builds upstream values.
 
 ```text
-AlphaValue Panel + prices + policies
-    |
-    v
-PredictionComposer -> PredictionPanel
-    |
-    v
-schedule -> execution -> portfolio weights
-    |
-    v
-returns, turnover, costs, IC, quantiles
-    |
-    v
-visualization helpers
+Saved Prediction + explicit market inputs → diagnostics / metrics / figures
+Saved weights + rebalance state + market inputs → account → returns / holdings / fills / figures
 ```
 
-## Philosophy
+## Diagnostic chapters
 
-- Keep Alpha definitions and data retrieval outside the backtester.
-- Require `PredictionPanel` at the public backtest boundary.
-- Make transaction costs explicit and reproducible.
-- Return structured result objects instead of printing reports.
-- Keep visualization as a thin layer over result objects.
-- Keep exchange-specific execution rules caller-authored and opt-in. The core
-  consumes a generic availability table and never guesses a market from codes.
-- Build only the universe equal-weight benchmark internally; capitalization
-  and index benchmarks remain caller-provided data.
+run_daily_prediction_sections shares prepared signals, calendars, ranks and
+prices and executes only required components. It aggregates one label window
+at a time and saves numerical primitives/statistics rather than huge future-
+return matrices. Incremental labels reuse verified prefixes and revisit cross-
+boundary windows, newly mature labels and historical autocorrelation pairs.
 
-## Structure
+## Account simulation
 
-- `inputs`: frame validation, alignment, and numeric checks.
-- `returns`: asset returns and cumulative return utilities.
-- `costs`: turnover and transaction-cost calculations.
-- `pipeline`: signal composition and strict public backtest orchestration.
-- `signal`: signal-date selection and execution scheduling.
-- `portfolio`: `ScheduledPrediction` to weights policies.
-- `allocation`: generic deterministic target weights to integer-lot positions.
-- `engine`: package-private weight simulation.
-- `factor`: information coefficient, quantile, and top-N signal evaluation.
-- `performance`: summary metrics.
-- `results`: dataclasses for downstream inspection.
-- `visualization`: plotting helpers.
+evaluate_portfolio_targets consumes explicit rebalance/hold/unavailable decisions.
+Target zeros exit positions; hold issues no new target; unavailable retains its
+reason. Accounts support integer lots, cash, costs, available quantities, T+1,
+blocks, corporate actions and pending execution. Rules are caller-provided and
+never guessed from stock codes. Filled holdings may differ from targets; both
+are stored separately.
 
-## Data Boundary
+## State and package boundaries
 
-`AlphaValue` and weights are ordinary core `Panel` values. Composed predictions
-are `PredictionPanel`; scheduling adds explicit date lineage in `ScheduledPrediction`.
-Price frames contain numeric prices used to compute returns.
-
-The package depends on `bagelquant-core` for Panel and composer contracts. It
-does not import `bagelquant-data` or investment-domain application code.
+Account checkpoints retain positions, cash, pending execution and corporate-
+action state. The caller proves causal prefixes of predictions, targets, prices,
+constraints, actions and settings before continuation. Failure leaves valid old
+results intact. Legacy policy adapters preserve frozen monthly behavior and
+delegate generic weight optimization to Core. BT depends only on Core; it imports
+neither Data nor Workbench. Callers own data, definitions, persistence and UI.

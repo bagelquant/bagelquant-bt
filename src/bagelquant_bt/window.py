@@ -671,6 +671,15 @@ def _lag_period_returns(
     ).sort(["lag", TIME])
 
 
+def return_statistics(
+    frame: pl.DataFrame, *, annualization: int
+) -> dict[str, float | None]:
+    """Summarize saved gross/net return primitives without an account replay."""
+    if annualization <= 0:
+        raise ValueError("annualization must be positive")
+    return _paired_return_metrics(frame, annualization)
+
+
 def _paired_return_metrics(
     frame: pl.DataFrame, annualization: int
 ) -> dict[str, float | None]:

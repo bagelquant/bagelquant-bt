@@ -6,7 +6,7 @@ import hashlib
 import heapq
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any, Literal
 
@@ -66,6 +66,7 @@ class AccountStateCheckpoint:
     stock_receivables: pl.DataFrame
     latest_target: pl.DataFrame
     pending_target_positions: pl.DataFrame
+    target_revision_time: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,9 +113,41 @@ class StatefulAccountBacktestResult:
 AccountTargetProvider = Callable[[AccountDecisionContext], pl.DataFrame]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedAccountMarketData:
+    """Validated read-only market lookup shared by independent accounts.
+
+    Use ``prepare_account_market_data`` to construct it. It contains no cash,
+    holdings, orders, capital assumptions or account checkpoints.
+    """
+
+    _sessions: tuple[date, ...]
+    _prices_by_date: dict[date, dict[str, dict[str, float | None]]]
+    _execution_availability: (
+        dict[tuple[date, str], tuple[bool, bool, str]] | None
+    ) = None
+
+
+def prepare_account_market_data(
+    market_prices: pl.DataFrame, *, execution_availability: pl.DataFrame | None = None,
+) -> PreparedAccountMarketData:
+    """Prepare read-only prices and execution blocks once for multiple accounts.
+
+    Supply execution availability here or at the account boundary, never both.
+    All account capital, holdings, orders and checkpoint state stay separate.
+    """
+    prices = _validate_market_prices(market_prices)
+    return PreparedAccountMarketData(
+        tuple(prices.get_column(TIME).unique().sort().to_list()),
+        _price_lookup(prices),
+        None if execution_availability is None
+        else _availability_lookup(execution_availability),
+    )
+
+
 def run_account_backtest(
     target_weights: pl.DataFrame,
-    market_prices: pl.DataFrame,
+    market_prices: pl.DataFrame | PreparedAccountMarketData,
     *,
     corporate_action_coverage: pl.DataFrame,
     config: AccountBacktestConfig | None = None,
@@ -149,7 +182,7 @@ def run_account_backtest(
 
 def run_planned_account_backtest(
     target_position_plans: pl.DataFrame,
-    market_prices: pl.DataFrame,
+    market_prices: pl.DataFrame | PreparedAccountMarketData,
     *,
     corporate_action_coverage: pl.DataFrame,
     config: AccountBacktestConfig | None = None,
@@ -192,7 +225,7 @@ def run_planned_account_backtest(
 
 def run_stateful_account_backtest(
     decision_schedule: pl.DataFrame,
-    market_prices: pl.DataFrame,
+    market_prices: pl.DataFrame | PreparedAccountMarketData,
     target_provider: AccountTargetProvider,
     *,
     corporate_action_coverage: pl.DataFrame,
@@ -204,6 +237,9 @@ def run_stateful_account_backtest(
     initial_cash: float | None = None,
     checkpoint: AccountStateCheckpoint | None = None,
     initial_target_position_plans: pl.DataFrame | None = None,
+    historical_positions: pl.DataFrame | None = None,
+    historical_sessions: pl.DataFrame | None = None,
+    minimum_trade_notional: float = 0.0,
 ) -> StatefulAccountBacktestResult:
     """Generate decision-close quantities and execute them in one stateful pass.
 
@@ -212,9 +248,18 @@ def run_stateful_account_backtest(
     at that close.  The returned ``asset_id, weight`` snapshot is converted to
     immutable whole-lot quantities immediately and executed on the declared
     future session without sizing again at its open.
+
+    Positive ``minimum_trade_notional`` retains current quantities when a
+    non-exit adjustment is smaller than that amount at the decision close.
+    Complete exits bypass the filter. This is a planning threshold, not a
+    minimum realized fill: opening gaps, lots and cash can still reduce fills.
     """
 
     schedule = _validate_decision_schedule(decision_schedule)
+    if not math.isfinite(minimum_trade_notional) or minimum_trade_notional < 0:
+        raise InputValidationError(
+            "minimum_trade_notional must be finite and nonnegative"
+        )
     if not callable(target_provider):
         raise InputValidationError("target_provider must be callable")
     initial_plans = (
@@ -232,6 +277,13 @@ def run_stateful_account_backtest(
             pl.col("target_weight").alias("weight"),
         )
     )
+    if checkpoint is not None and corporate_actions is not None:
+        checkpoint = complete_checkpoint_entitlements(
+            checkpoint,
+            corporate_actions,
+            historical_positions=historical_positions,
+            historical_sessions=historical_sessions,
+        )
     account = _run_account_backtest(
         targets,
         market_prices,
@@ -247,12 +299,13 @@ def run_stateful_account_backtest(
         decision_schedule=schedule,
         target_provider=target_provider,
         generated_plans=generated,
+        minimum_trade_notional=minimum_trade_notional,
     )
     frames = ([] if initial_plans is None else [initial_plans]) + generated
     plans = (
-        _validate_target_position_plans(
-            pl.concat(frames, how="vertical")
-        ).sort("decision_date", ASSET_ID)
+        _validate_target_position_plans(pl.concat(frames, how="vertical")).sort(
+            "decision_date", ASSET_ID
+        )
         if frames
         else _empty_target_position_plans()
     )
@@ -264,7 +317,7 @@ def run_stateful_account_backtest(
 
 def _run_account_backtest(
     target_weights: pl.DataFrame,
-    market_prices: pl.DataFrame,
+    market_prices: pl.DataFrame | PreparedAccountMarketData,
     *,
     corporate_action_coverage: pl.DataFrame,
     config: AccountBacktestConfig | None,
@@ -278,11 +331,15 @@ def _run_account_backtest(
     decision_schedule: pl.DataFrame | None = None,
     target_provider: AccountTargetProvider | None = None,
     generated_plans: list[pl.DataFrame] | None = None,
+    minimum_trade_notional: float = 0.0,
 ) -> AccountBacktestResult:
     resolved_config = config or AccountBacktestConfig()
-    prices = _validate_market_prices(market_prices)
+    prepared = (
+        market_prices if isinstance(market_prices, PreparedAccountMarketData)
+        else prepare_account_market_data(market_prices)
+    )
     targets = _validate_target_weights(target_weights)
-    full_calendar = prices.get_column(TIME).unique().sort().to_list()
+    full_calendar = list(prepared._sessions)
     calendar = full_calendar
     if checkpoint is not None:
         calendar = [value for value in calendar if value > checkpoint.time]
@@ -293,14 +350,21 @@ def _run_account_backtest(
     if not calendar and not checkpoint_decision:
         raise InputValidationError("account backtest has no market sessions to run")
     _validate_corporate_action_coverage(corporate_action_coverage, calendar)
-    availability = _availability_lookup(execution_availability)
+    if prepared._execution_availability is not None:
+        if execution_availability is not None:
+            raise InputValidationError(
+                "prepared market data already includes execution availability"
+            )
+        availability = prepared._execution_availability
+    else:
+        availability = _availability_lookup(execution_availability)
     lots = _lot_size_lookup(lot_sizes, resolved_config.default_buy_lot_size)
     actions = _validate_corporate_actions(corporate_actions)
     actions_by_record = _group_actions(actions, "record_date")
     actions_by_ex = _group_actions(actions, "ex_date")
     actions_by_pay = _group_actions(actions, "cash_pay_date")
     actions_by_list = _group_actions(actions, "share_available_date")
-    prices_by_date = _price_lookup(prices)
+    prices_by_date = prepared._prices_by_date
     targets_by_date = _target_lookup(targets)
     plans_by_date = _target_position_plan_lookup(target_position_plans)
 
@@ -343,6 +407,7 @@ def _run_account_backtest(
             config=resolved_config,
             lots=lots,
             target_provider=target_provider,
+            minimum_trade_notional=minimum_trade_notional,
         )
         generated_plans.append(plan)
         if not plan.is_empty():
@@ -497,15 +562,55 @@ def _run_account_backtest(
         target_weights=_rows_frame(rows["target_weights"]),
         target_positions=_rows_frame(rows["target_positions"]),
         orders=_rows_frame(rows["orders"]),
-        fills=_rows_frame(rows["fills"]),
-        positions=_rows_frame(rows["positions"]),
+        fills=_rows_frame(
+            rows["fills"],
+            empty_schema={
+                TIME: pl.Date,
+                "order_id": pl.String,
+                ASSET_ID: pl.String,
+                "side": pl.String,
+                "quantity": pl.Int64,
+                **{
+                    name: pl.Float64
+                    for name in (
+                        "open_price",
+                        "fill_price",
+                        "notional",
+                        "commission",
+                        "stamp_tax",
+                        "transfer_fee",
+                        "slippage_cost",
+                        "cash_change",
+                    )
+                },
+            },
+        ),
+        positions=_rows_frame(
+            rows["positions"],
+            empty_schema={
+                TIME: pl.Date,
+                ASSET_ID: pl.String,
+                "quantity": pl.Int64,
+                "available_quantity": pl.Int64,
+                "mark_price": pl.Float64,
+                "market_value": pl.Float64,
+            },
+        ),
         cash=_rows_frame(rows["cash"]),
         receivables=_rows_frame(rows["receivables"]),
         external_flows=_rows_frame(rows["external_flows"]),
         pending_withdrawals=_rows_frame(rows["pending_withdrawals"]),
         account_value=_rows_frame(rows["account_value"]),
         performance=_rows_frame(rows["performance"]),
-        executable_weights=_rows_frame(rows["executable_weights"]),
+        executable_weights=_rows_frame(
+            rows["executable_weights"],
+            empty_schema={
+                TIME: pl.Date,
+                ASSET_ID: pl.String,
+                "weight": pl.Float64,
+                "actual_weight": pl.Float64,
+            },
+        ),
         attribution=_rows_frame(rows["attribution"]),
         final_checkpoint=checkpoint_result,
     )
@@ -692,12 +797,11 @@ def _build_stateful_decision_plan(
     config: AccountBacktestConfig,
     lots: dict[str, int],
     target_provider: AccountTargetProvider,
+    minimum_trade_notional: float = 0.0,
 ) -> pl.DataFrame:
     equity = _state_equity(state)
     sizing_notional = (
-        config.fixed_notional
-        if config.capital_mode == "fixed_notional"
-        else equity
+        config.fixed_notional if config.capital_mode == "fixed_notional" else equity
     )
     if sizing_notional <= 0:
         raise InputValidationError("decision sizing notional must be positive")
@@ -716,8 +820,7 @@ def _build_stateful_decision_plan(
         {
             TIME: decision_date,
             ASSET_ID: asset_id,
-            "weight": quantity * state["marks"].get(asset_id, 0.0)
-            / sizing_notional,
+            "weight": quantity * state["marks"].get(asset_id, 0.0) / sizing_notional,
         }
         for asset_id, quantity in sorted(state["positions"].items())
         if quantity
@@ -795,6 +898,15 @@ def _build_stateful_decision_plan(
         str(row[ASSET_ID]): float(row["weight"])
         for row in target_snapshot.iter_rows(named=True)
     }
+    if minimum_trade_notional > 0:
+        for asset_id in required_assets:
+            current = int(state["positions"].get(asset_id, 0))
+            change = abs(allocated.get(asset_id, 0) - current)
+            if (
+                weights.get(asset_id, 0.0) > 0
+                and change * price_by_asset[asset_id] < minimum_trade_notional
+            ):
+                allocated[asset_id] = current
     return pl.DataFrame(
         [
             {
@@ -909,6 +1021,7 @@ def _restore_state(
         marks = {
             row[ASSET_ID]: float(row["last_mark"])
             for row in checkpoint.positions.iter_rows(named=True)
+            if row["last_mark"] is not None
         }
         return {
             "cash": checkpoint.cash,
@@ -936,7 +1049,7 @@ def _restore_state(
                 )
                 for row in checkpoint.pending_target_positions.iter_rows(named=True)
             },
-            "target_revision_time": checkpoint.time,
+            "target_revision_time": checkpoint.target_revision_time or checkpoint.time,
         }
     cash = config.initial_capital if initial_cash is None else float(initial_cash)
     if not math.isfinite(cash) or cash < 0:
@@ -1625,7 +1738,6 @@ def _checkpoint(session: date, state: dict[str, Any]) -> AccountStateCheckpoint:
             "last_mark": state["marks"].get(asset_id),
         }
         for asset_id, quantity in sorted(state["positions"].items())
-        if quantity
     ]
     entitlement_rows = [
         {"action_id": action_id, "quantity": quantity}
@@ -1651,6 +1763,7 @@ def _checkpoint(session: date, state: dict[str, Any]) -> AccountStateCheckpoint:
         stock_receivables=_rows_frame(state["stock_receivables"]),
         latest_target=_rows_frame(target_rows),
         pending_target_positions=_rows_frame(pending_target_rows),
+        target_revision_time=state["target_revision_time"],
     )
 
 
@@ -1873,11 +1986,11 @@ def _order_row(
     }
 
 
-def _rows_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+def _rows_frame(rows: list[dict[str, Any]], *, empty_schema=None) -> pl.DataFrame:
     return (
         pl.DataFrame(rows, infer_schema_length=None)
         if rows
-        else pl.DataFrame()
+        else pl.DataFrame(schema=empty_schema)
     )
 
 
@@ -1892,3 +2005,60 @@ __all__ = [
     "run_planned_account_backtest",
     "run_stateful_account_backtest",
 ]
+
+
+def complete_checkpoint_entitlements(
+    checkpoint, actions, *, historical_positions=None, historical_sessions=None
+):
+    """Recover record-date quantities for newly matured corporate-action facts.
+
+    Sparse held positions and the complete historical session inventory are
+    required when an action was not yet present in the checkpoint's input.
+    Current holdings cannot stand in for holdings on a past record date.
+    """
+    actions = _validate_corporate_actions(actions)
+    known = (
+        set(checkpoint.entitlements.get_column("action_id").to_list())
+        if "action_id" in checkpoint.entitlements.columns
+        else set()
+    )
+    missing = actions.filter(
+        (pl.col("record_date") <= checkpoint.time)
+        & ~pl.col("action_id").is_in(sorted(known))
+    )
+    if missing.is_empty():
+        return checkpoint
+    if historical_positions is None or historical_sessions is None:
+        raise InputValidationError(
+            "checkpoint requires verified record-date position history "
+            "for newly matured corporate actions"
+        )
+    sessions = set(historical_sessions.get_column(TIME).to_list())
+    if checkpoint.time not in sessions:
+        raise InputValidationError(
+            "verified account history must include the checkpoint session"
+        )
+    rows = []
+    for action in missing.iter_rows(named=True):
+        if action["record_date"] not in sessions:
+            # Match full simulation: dates before account creation or without
+            # an account session never registered a share entitlement.
+            rows.append({"action_id": action["action_id"], "quantity": 0})
+            continue
+        holding = historical_positions.filter(
+            (pl.col(TIME) == action["record_date"])
+            & (pl.col(ASSET_ID) == action[ASSET_ID])
+        )
+        rows.append(
+            {
+                "action_id": action["action_id"],
+                "quantity": int(holding["quantity"][0]) if holding.height else 0,
+            }
+        )
+    added = pl.DataFrame(rows, schema={"action_id": pl.String, "quantity": pl.Int64})
+    entitlements = (
+        added
+        if checkpoint.entitlements.is_empty()
+        else pl.concat([checkpoint.entitlements, added], how="vertical_relaxed")
+    )
+    return replace(checkpoint, entitlements=entitlements.sort("action_id"))

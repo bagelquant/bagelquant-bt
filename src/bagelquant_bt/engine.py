@@ -638,47 +638,120 @@ def _sparse_executed_turnover(
     *,
     execution_availability: pl.DataFrame | None,
     retry_blocked: bool,
-) -> pl.DataFrame:
-    """Calculate executed turnover without constructing an account path."""
-
+    checkpoint: pl.DataFrame | None = None,
+    return_checkpoint: bool = False,
+):
+    """Calculate executed turnover from a verified causal weight checkpoint."""
+    empty = pl.DataFrame(schema={TIME: pl.Date, "turnover": pl.Float64})
     if weights.is_empty():
-        return pl.DataFrame(schema={TIME: pl.Date, "turnover": pl.Float64})
+        return (empty, checkpoint) if return_checkpoint else empty
+    initial_targets = initial_executed = checkpoint_time = None
+    if checkpoint is not None and not checkpoint.is_empty():
+        checkpoint_time = checkpoint[TIME][0]
+        initial_targets = checkpoint.select(
+            ASSET_ID, pl.col("target_weight").alias("weight")
+        )
+        initial_executed = checkpoint.select(
+            ASSET_ID, pl.col("executed_weight").alias("weight")
+        )
+        weights = weights.filter(pl.col(TIME) > checkpoint_time)
+        prices = prices.filter(pl.col(TIME) >= checkpoint_time)
+        forward_returns = forward_returns.filter(pl.col(TIME) > checkpoint_time)
+        if execution_availability is not None:
+            execution_availability = execution_availability.filter(
+                pl.col(TIME) > checkpoint_time
+            )
+        if weights.is_empty() or forward_returns.is_empty():
+            return (empty, checkpoint) if return_checkpoint else empty
     context = _prepare_sparse_market_context(
         prices,
         forward_returns,
         execution_availability,
         include_return_matrix=False,
     )
-    targets = _batch_portfolio_targets({"research": weights}, context)["research"]
+    targets = _batch_portfolio_targets(
+        {"research": weights},
+        context,
+        initial_target_weights=initial_targets,
+        checkpoint_time=checkpoint_time,
+    )["research"]
     state = _resolve_sparse_portfolio_state_from_targets(
         targets.target_events,
         targets.seed_targets,
         execution_availability,
         execution_event_keys=context.execution_event_keys,
         retry_blocked=retry_blocked,
-        first_time=weights.get_column(TIME).min(),
+        first_time=weights[TIME].min(),
         unexecuted_weight_keys=targets.unexecuted_weight_keys,
+        initial_target_weights=initial_targets,
+        initial_executed_weights=initial_executed,
     )
     deltas = _sparse_weight_deltas(
-        state.executable_events,
-        initial_weights=None,
+        state.executable_events, initial_weights=initial_executed
     )
-    first_time = weights.get_column(TIME).min()
     timeline = (
         context.return_sessions.select(TIME)
-        .filter(pl.col(TIME) >= first_time)
+        .filter(pl.col(TIME) >= weights[TIME].min())
         .sort(TIME)
     )
-    return (
+    turnover = (
         timeline.join(_turnover_from_weight_deltas(deltas), on=TIME, how="left")
         .with_columns(pl.col("turnover").fill_null(0.0))
         .sort(TIME)
     )
+    if not return_checkpoint:
+        return turnover
+    end = timeline[TIME].max()
+    if end is None:
+        return turnover, checkpoint
+    assets = context.market_assets.select(ASSET_ID)
+
+    def last_weights(events, initial, name):
+        current = (
+            events.filter(pl.col(TIME) <= end)
+            .sort(TIME)
+            .group_by(ASSET_ID)
+            .last()
+            .select(ASSET_ID, pl.col("weight").alias(name))
+        )
+        if initial is not None:
+            current = (
+                initial.select(ASSET_ID, pl.col("weight").alias(name))
+                .join(
+                    current, on=ASSET_ID, how="full", coalesce=True, suffix="_current"
+                )
+                .with_columns(pl.coalesce(f"{name}_current", name).alias(name))
+                .select(ASSET_ID, name)
+            )
+        return current
+
+    saved = (
+        assets.join(
+            last_weights(state.target_events, initial_targets, "target_weight"),
+            on=ASSET_ID,
+            how="left",
+        )
+        .join(
+            last_weights(state.executable_events, initial_executed, "executed_weight"),
+            on=ASSET_ID,
+            how="left",
+        )
+        .with_columns(
+            pl.col("target_weight", "executed_weight").fill_null(0.0),
+            pl.lit(end).alias(TIME),
+        )
+        .select(TIME, ASSET_ID, "target_weight", "executed_weight")
+        .sort(ASSET_ID)
+    )
+    return turnover, saved
 
 
 def _batch_portfolio_targets(
     weight_frames: Mapping[str, pl.DataFrame],
     market_context: _SparseMarketContext,
+    *,
+    initial_target_weights: pl.DataFrame | None = None,
+    checkpoint_time: object = None,
 ) -> dict[str, _SparsePortfolioTargets]:
     """Build target changes and first tradable states for all portfolios."""
 
@@ -710,10 +783,7 @@ def _batch_portfolio_targets(
             asset_weights.get_column(TIME).cast(pl.Int32).to_numpy(),
         )
         weight_assets = (
-            asset_weights.get_column(ASSET_ID)
-            .cast(asset_enum)
-            .to_physical()
-            .to_numpy()
+            asset_weights.get_column(ASSET_ID).cast(asset_enum).to_physical().to_numpy()
         )
         tradable_mask = observed[weight_sessions, weight_assets]
         tradable_actual = asset_weights.filter(pl.Series(tradable_mask))
@@ -731,6 +801,14 @@ def _batch_portfolio_targets(
         ordered_weight_assets = weight_assets[weight_order]
         ordered_weight_values = weight_values[weight_order]
         retained_weights = np.zeros(market_assets.height, dtype=np.float64)
+        if initial_target_weights is not None:
+            retained_weights = (
+                market_assets.select(ASSET_ID)
+                .join(initial_target_weights, on=ASSET_ID, how="left")["weight"]
+                .fill_null(0.0)
+                .to_numpy()
+                .copy()
+            )
         desired_weights = np.zeros_like(retained_weights)
         missing_sessions: list[np.ndarray] = []
         missing_assets: list[np.ndarray] = []
@@ -810,20 +888,40 @@ def _batch_portfolio_targets(
                     ASSET_ID: asset_values.gather(
                         pl.Series(exit_assets.astype(np.uint32))
                     ),
-                    "weight": pl.Series(
-                        np.zeros(len(exit_sessions)), dtype=pl.Float64
-                    ),
-                    "_actual": pl.Series(
-                        np.zeros(len(exit_sessions), dtype=np.bool_)
-                    ),
+                    "weight": pl.Series(np.zeros(len(exit_sessions)), dtype=pl.Float64),
+                    "_actual": pl.Series(np.zeros(len(exit_sessions), dtype=np.bool_)),
                 }
             )
         else:
-            exits = tradable_actual.head(0).select(
-                TIME, ASSET_ID, "weight"
-            ).with_columns(
-                pl.lit(False).alias("_actual"),
+            exits = (
+                tradable_actual.head(0)
+                .select(TIME, ASSET_ID, "weight")
+                .with_columns(
+                    pl.lit(False).alias("_actual"),
+                )
             )
+        if initial_target_weights is not None:
+            # Exit a pre-existing target at its first observed new snapshot;
+            # missing-price snapshots retain it exactly as a complete run does.
+            has_observation = snapshot_observed.any(axis=0)
+            first_observed = snapshot_observed.argmax(axis=0)
+            seeded_assets = np.flatnonzero(has_observation)
+            seeded_exits = pl.DataFrame(
+                {
+                    TIME: pl.Series(
+                        market_ordinals[
+                            snapshot_sessions[first_observed[has_observation]]
+                        ],
+                        dtype=pl.Int32,
+                    ).cast(pl.Date),
+                    ASSET_ID: asset_values.gather(
+                        pl.Series(seeded_assets.astype(np.uint32))
+                    ),
+                    "weight": pl.Series(np.zeros(len(seeded_assets)), dtype=pl.Float64),
+                    "_actual": pl.Series(np.zeros(len(seeded_assets), dtype=np.bool_)),
+                }
+            )
+            exits = pl.concat([exits, seeded_exits])
         candidate_states = pl.concat(
             [
                 exits,
@@ -843,6 +941,15 @@ def _batch_portfolio_targets(
             )
             .sort([ASSET_ID, TIME])
         )
+        if initial_target_weights is not None:
+            target_states = pl.concat(
+                [
+                    initial_target_weights.with_columns(
+                        pl.lit(checkpoint_time).cast(pl.Date).alias(TIME)
+                    ).select(TIME, ASSET_ID, "weight"),
+                    target_states,
+                ]
+            ).sort([ASSET_ID, TIME])
         target_events = (
             target_states.with_columns(
                 pl.col("weight")
@@ -869,9 +976,7 @@ def _batch_portfolio_targets(
                     ASSET_ID: asset_values.gather(
                         pl.Series(seed_assets.astype(np.uint32))
                     ),
-                    "weight": pl.Series(
-                        np.zeros(len(seed_sessions)), dtype=pl.Float64
-                    ),
+                    "weight": pl.Series(np.zeros(len(seed_sessions)), dtype=pl.Float64),
                 }
             )
             .join(
@@ -886,6 +991,11 @@ def _batch_portfolio_targets(
             .select(TIME, ASSET_ID, "weight")
             .sort([TIME, ASSET_ID])
         )
+        if initial_target_weights is not None:
+            target_events = target_events.filter(pl.col(TIME) > checkpoint_time)
+            seed_targets = initial_target_weights.with_columns(
+                pl.lit(checkpoint_time).cast(pl.Date).alias(TIME)
+            ).select(TIME, ASSET_ID, "weight")
         results[label] = _SparsePortfolioTargets(
             target_events,
             seed_targets,
@@ -903,10 +1013,12 @@ def _resolve_sparse_portfolio_state_from_targets(
     retry_blocked: bool,
     first_time: object,
     unexecuted_weight_keys: pl.DataFrame,
+    initial_target_weights: pl.DataFrame | None = None,
+    initial_executed_weights: pl.DataFrame | None = None,
 ) -> _SparsePortfolioState:
     if seed_targets.is_empty():
         raise InputValidationError("at least two overlapping price times are required")
-    if target_events.is_empty():
+    if target_events.is_empty() and initial_target_weights is None:
         _, blocks, _ = _apply_execution_availability(
             target_events,
             None,
@@ -922,15 +1034,21 @@ def _resolve_sparse_portfolio_state_from_targets(
             unexecuted_weight_keys=unexecuted_weight_keys,
         )
     sparse_desired = _sparse_execution_desired_weights(
-        target_events,
+        target_events
+        if initial_target_weights is None
+        else pl.concat([seed_targets, target_events]).sort([TIME, ASSET_ID]),
         execution_event_keys,
     )
+    if initial_target_weights is not None:
+        sparse_desired = sparse_desired.filter(pl.col(TIME) >= first_time)
     executable_events, blocks, event_count = _apply_execution_availability(
         sparse_desired,
         execution_availability,
         retry_blocked=retry_blocked,
         availability_validated=True,
         target_events=target_events,
+        initial_target_weights=initial_target_weights,
+        initial_executed_weights=initial_executed_weights,
     )
     target_frame_events = (
         pl.concat([seed_targets, target_events])
@@ -941,7 +1059,9 @@ def _resolve_sparse_portfolio_state_from_targets(
     executable_frame_events = (
         pl.concat(
             [
-                seed_targets.with_columns(pl.lit(0.0).alias("weight")),
+                seed_targets.with_columns(pl.lit(0.0).alias("weight"))
+                if initial_executed_weights is None
+                else executable_events.head(0),
                 executable_events,
             ]
         )
@@ -994,9 +1114,7 @@ def _calculate_sparse_portfolio_batch(
     event_assets = events.get_column("_asset_index").to_numpy()
     event_weights = events.get_column("weight").to_numpy()
     event_slippage_rates = events.get_column("_slippage_rate").to_numpy()
-    event_slippage_fallbacks = events.get_column(
-        "_slippage_fallback"
-    ).to_numpy()
+    event_slippage_fallbacks = events.get_column("_slippage_fallback").to_numpy()
 
     periods = session_lookup.height
     holdings = np.zeros((portfolio_count, asset_lookup.height), dtype=np.float64)

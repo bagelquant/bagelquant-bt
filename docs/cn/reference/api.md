@@ -16,7 +16,8 @@ compose_prediction(
 ```
 
 `alpha_values` 用稳定 alias 映射到普通 core `Panel`；`AlphaPolicy` 只对齐评估日期，
-独立的 `StandardizePolicy` 再执行 `none`、`z_score` 或 `percentile_rank`。结果是 Composer 的原始强类型 `PredictionPanel`。BT 不执行固定的
+独立的 `StandardizePolicy` 再执行 `none`、`z_score` 或 `percentile_rank`。z-score
+按固定资产顺序逐日归约，因此追加未来区间或改变 Arrow 分块不会改变历史字节。结果是 Composer 的原始强类型 `PredictionPanel`。BT 不执行固定的
 post-composer normalization。IC weighted、OLS 与 GLS 必须提供价格，以构造无前视的
 execution-to-next-execution 标签。
 

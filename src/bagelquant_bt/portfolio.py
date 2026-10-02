@@ -11,12 +11,18 @@ from typing import Any
 import numpy as np
 import polars as pl
 from bagelquant_core import Panel, PredictionPanel
+from bagelquant_core.optimization import (
+    project_capped_simplex as _project_capped_simplex,
+)
+from bagelquant_core.optimization import (
+    solve_regularized_weights as _solve_prediction_regularized_weights,
+)
 
 from .engine import backtest_weight_frame
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_panel_frame
 
-PREDICTION_REGULARIZED_OPTIMIZER_VERSION = 2
+PREDICTION_REGULARIZED_OPTIMIZER_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -653,69 +659,3 @@ def _target_volatility_optimizer_policy_hash(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _solve_prediction_regularized_weights(
-    scores: np.ndarray,
-    reference: np.ndarray,
-    *,
-    concentration_penalty: float,
-    turnover_penalty: float,
-    max_weight: float,
-    tolerance: float,
-) -> tuple[np.ndarray, int]:
-    """Solve the separable capped-simplex objective through its scalar dual."""
-
-    values = np.asarray(scores, dtype=float).reshape(-1)
-    anchors = np.asarray(reference, dtype=float).reshape(-1)
-    if values.shape != anchors.shape or values.size == 0:
-        raise ValueError("scores and reference must be non-empty matching vectors")
-    if not np.isfinite(values).all() or not np.isfinite(anchors).all():
-        raise ValueError("scores and reference must be finite")
-    shrink = turnover_penalty / (2.0 * concentration_penalty)
-
-    def weights_for_dual(dual: float) -> np.ndarray:
-        centered = (values - dual) / (2.0 * concentration_penalty) - anchors
-        proximal = anchors + np.sign(centered) * np.maximum(
-            np.abs(centered) - shrink,
-            0.0,
-        )
-        return np.clip(proximal, 0.0, max_weight)
-
-    lower = float(
-        np.min(values - 2.0 * concentration_penalty * (max_weight + shrink))
-    )
-    upper = float(np.max(values + 2.0 * concentration_penalty * shrink))
-    solution = weights_for_dual((lower + upper) / 2.0)
-    iterations = 0
-    for iteration in range(1, 101):
-        iterations = iteration
-        dual = (lower + upper) / 2.0
-        solution = weights_for_dual(dual)
-        total = float(solution.sum())
-        if abs(total - 1.0) <= tolerance:
-            break
-        if total > 1.0:
-            lower = dual
-        else:
-            upper = dual
-    return solution, iterations
-
-
-def _project_capped_simplex(values: np.ndarray, cap: float) -> np.ndarray:
-    """Remove solver noise while preserving the simplex and upper bound."""
-
-    if abs(values.size * cap - 1.0) <= 1e-12:
-        return np.full(values.size, cap, dtype=float)
-    lower = float(values.min() - cap)
-    upper = float(values.max())
-    for _ in range(100):
-        midpoint = (lower + upper) / 2.0
-        projected = np.clip(values - midpoint, 0.0, cap)
-        if projected.sum() > 1.0:
-            lower = midpoint
-        else:
-            upper = midpoint
-    projected = np.clip(values - (lower + upper) / 2.0, 0.0, cap)
-    projected /= projected.sum()
-    return projected

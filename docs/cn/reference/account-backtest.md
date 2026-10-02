@@ -15,6 +15,16 @@ fixed-notional 外部流，计算整数目标股数，先执行可卖订单并�
 恢复 `run_stateful_account_backtest` 时，除 checkpoint 外，还应通过
 `initial_target_position_plans` 传入已冻结的计划。在 checkpoint 之前决定、之后才到执行日的
 计划会按原日期和原股数执行，不重复调用其决策回调，也不在执行日开盘重新确定股数。
+保存目标的 `evaluate_portfolio_targets` 使用相同规则：日历须包含已知的未来执行日期，
+价格仍截止模拟截止日。保存返回的未来计划并在续算时传入；无法安排决策的截断日历
+会明确报错。`prepare_account_market_data` 为多个独立压力账户共用已校验的价格及可交易性查询
+结构，其中不包含账户状态。
+
+检查点保留零股数坐标和原目标修订日期，使后续退出与待成交订单的审计身份和连续
+回测一致。追加公司行为的权益登记日在检查点之前时，必须传入已验证的
+`historical_positions` 和 `historical_sessions`，按登记日收盘持仓补齐权益，不使用
+当前持仓代替。完整历史账户交易日清单之外的登记日不产生账户权益；所需历史交易日
+缺少持仓记录时明确失败。
 
 Fixed-notional 模式通过注入或申请取出现金维持 notional。外部资金流改变 fund units，不改变
 单位 NAV。受限提款保持显式；系统禁止负现金和隐含杠杆。Compounding 模式不产生外部流，

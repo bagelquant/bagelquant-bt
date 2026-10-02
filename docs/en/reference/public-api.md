@@ -1,6 +1,6 @@
 # Public API
 
-The stable public API is exported from `bagelquant_bt`. Version 0.3 accepts
+The stable public API is exported from `bagelquant_bt`. Version 0.9.4 accepts
 strongly typed predictions only; ordinary `Panel`, raw DataFrames, and direct
 weights are not public backtest inputs.
 
@@ -39,6 +39,10 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
   `gross_one_tail_weights`, `hac_mean_test`, and
   `non_overlapping_cohort_statistics` expose the corresponding deterministic
   primitives.
+- `standardize_alpha_values(frame, method)` applies the public deterministic
+  cross-sectional preprocessing kernel. Z-scores use fixed asset order and
+  per-date reductions, so future extensions and physical chunking cannot alter
+  an unchanged historical prefix.
 - `quantile_rank_information_coefficients(quantile_returns, *, periods=None)`
   derives the monotonic rank IC from stored q1-to-qN gross returns. Optional
   `time`/`next_time` periods compound daily returns into one observation per
@@ -63,8 +67,16 @@ receives `PredictionPanel` and returns
 `WeightBuild(weights: Panel, skipped: DataFrame)`. The standalone
 `allocate_integer_positions` helper converts one continuous target snapshot to
 whole-lot positions with explicit prices, budgets, lot sizes, and frozen
-minimums; market-specific rules and live
-order submission are outside the package boundary.
+minimums. Snapshots with at least 16 assets use the bounded deterministic
+projection near the continuous target, avoiding pathological subset-sum MILP
+runtimes in daily Top 50/100 portfolios. This preserves budgets, whole lots,
+minimum positions and per-asset ceilings; deployment is locally maximal rather
+than globally optimal. Smaller snapshots retain the exact two-stage MILP.
+Market-specific rules and live order submission are outside the package boundary.
+
+Regularized optimizer v3 refines the scalar dual before projecting positive
+coordinates onto the capped simplex. Exact zero weights remain zero, so solver
+roundoff cannot turn an excluded asset into a one-lot purchase.
 
 ## Configuration
 
@@ -132,6 +144,16 @@ The original analytic optimizer remains unchanged.
 Portfolio Path identity v4 requires `PortfolioPathIdentity.pipeline` instead of
 the removed Combo field. Callers supply a frozen pipeline identity; previous v3
 path identities are not adopted.
+
+## Minimum planned adjustments
+
+`run_stateful_account_backtest(..., minimum_trade_notional=0.0)` optionally
+filters small whole-lot adjustments at the decision close. Non-exit changes
+below the threshold keep current quantities; zero/missing target weights still
+exit completely. The default preserves prior planning behavior. Opening gaps,
+cash and lot constraints may produce smaller fills. Callers must include this
+setting in their result/checkpoint identities. Empty fills, positions and
+executable weights retain typed schemas for cash-only paths.
 
 ## Exceptions
 

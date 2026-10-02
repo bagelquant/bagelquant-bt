@@ -1787,6 +1787,303 @@ def run_daily_prediction_diagnostics(
     return DailyPredictionDiagnostics(horizons=horizons, paths=paths)
 
 
+def run_daily_prediction_sections(
+    signals: ScheduledPrediction,
+    prices: pl.DataFrame,
+    *,
+    config: BacktestConfig,
+    components: Sequence[str],
+    calendar: pl.DataFrame | None = None,
+    execution_availability: pl.DataFrame | None = None,
+    slippage_rates: pl.DataFrame | None = None,
+    prediction_frame: pl.DataFrame | None = None,
+    progress: DailyDiagnosticProgress | None = None,
+    prior_frames: Mapping[str, pl.DataFrame] | None = None,
+    prior_through: date | None = None,
+) -> tuple[dict[str, pl.DataFrame], PredictionHorizonDiagnostics | None]:
+    """Evaluate selected numerical groups from one prepared saved prediction.
+
+    Groups expose evaluation dependencies rather than application chapters.
+    Persistence alone does not prepare weights, forward labels or paths. Path
+    groups do not calculate horizon statistics unless explicitly requested.
+    """
+    selected = frozenset(components)
+    allowed = {
+        "horizons",
+        "book_tail",
+        "quantiles",
+        "turnover",
+        "lead_lag",
+        "alpha_return",
+        "persistence",
+        "rolling_ic",
+    }
+    if not selected or selected - allowed:
+        raise ValueError(
+            f"unknown or empty diagnostic components: {sorted(selected - allowed)}"
+        )
+    prepared = _prepare_daily_diagnostics(
+        signals,
+        prices,
+        calendar=calendar,
+        quantiles=config.quantiles,
+        prediction_frame=prediction_frame,
+    )
+    incremental_context = None
+    boundary = None
+    if (
+        prior_frames is not None
+        and prior_through is not None
+        and prior_through in prepared.sessions
+    ):
+        position = prepared.sessions.index(prior_through)
+        # Revisit every label that can become mature at the old boundary, and
+        # retain a further 120 sessions for backward rank persistence.
+        boundary = prepared.sessions[max(0, position - 121)]
+        warm = prepared.sessions[max(0, position - 242)]
+        incremental_context = replace(
+            prepared, factor=prepared.factor.filter(pl.col("evaluation_date") >= warm)
+        )
+    frames: dict[str, pl.DataFrame] = {}
+    prior = prior_frames or {}
+    persistence = None
+    prior_persistence = prior.get(
+        "daily_signal_autocorrelation", prior.get("horizon_signal_persistence")
+    )
+    if selected & {"horizons", "persistence"}:
+        reuse_persistence = (
+            incremental_context is not None and prior_persistence is not None
+        )
+        persistence_context = incremental_context if reuse_persistence else prepared
+        persistence, _ = signal_rank_persistence(
+            persistence_context.factor,
+            calendar=prepared.calendar,
+            horizons=DAILY_SUMMARY_AUTOCORRELATION_LAGS,
+            progress=progress,
+        )
+        if reuse_persistence:
+            persistence = pl.concat(
+                [
+                    prior_persistence.filter(pl.col("evaluation_date") < boundary),
+                    persistence.filter(pl.col("evaluation_date") >= boundary),
+                ]
+            ).sort(["evaluation_date", "horizon_sessions"])
+        if "persistence" in selected:
+            frames["daily_signal_autocorrelation"] = persistence
+    horizons = None
+    if selected & {"horizons", "rolling_ic"}:
+        reusable_horizons = incremental_context is not None and all(
+            f"horizon_{name}" in prior
+            for name in (
+                "coverage",
+                "ic",
+                "book_returns",
+                "tail_returns",
+                "quantile_forward_returns",
+                "factor_returns",
+            )
+        )
+        horizon_context = (
+            replace(
+                incremental_context,
+                factor=incremental_context.factor.filter(
+                    pl.col("evaluation_date") >= boundary
+                ),
+            )
+            if reusable_horizons
+            else prepared
+        )
+        horizon_context = _prepare_daily_price_lookup(
+            _prepare_daily_weights(horizon_context, quantiles=config.quantiles)
+        )
+        horizons = _run_prediction_horizon_diagnostics_prepared(
+            horizon_context,
+            windows=DAILY_SESSION_WINDOWS,
+            quantiles=config.quantiles,
+            annualization_sessions=config.annualization,
+            factor_standardization="cross_sectional_zscore",
+            signal_persistence=persistence,
+            progress=progress,
+        )
+        if reusable_horizons:
+            horizons = _merge_horizon_prefix(
+                horizons,
+                prior,
+                boundary,
+                annualization=config.annualization,
+                quantiles=config.quantiles,
+            )
+        frames.update(
+            {
+                f"horizon_{name}": getattr(horizons, name)
+                for name in horizons.__dataclass_fields__
+                if isinstance(getattr(horizons, name), pl.DataFrame)
+            }
+        )
+    names = {
+        "book_tail": ("book_daily_returns", "tail_daily_returns"),
+        "quantiles": ("quantile_returns",),
+        "lead_lag": ("book_lead_lag_returns",),
+        "alpha_return": ("alpha_return_lag_returns",),
+        "rolling_ic": ("rolling_ic",),
+    }
+    aliases = {
+        "book_daily_returns": "daily_book_returns",
+        "tail_daily_returns": "daily_tail_returns",
+    }
+    path_components = selected - {"horizons", "persistence", "turnover"}
+    reusable = {
+        component
+        for component in path_components
+        if incremental_context is not None
+        and all(
+            aliases.get(name, f"daily_{name}") in prior for name in names[component]
+        )
+    }
+    if "rolling_ic" in reusable:
+        # This small aggregate consumes the complete merged IC history.
+        reusable.remove("rolling_ic")
+    weighted_contexts = {}
+    forward_returns = None
+
+    def weighted(use_suffix):
+        if use_suffix not in weighted_contexts:
+            weighted_contexts[use_suffix] = _prepare_daily_weights(
+                incremental_context if use_suffix else prepared,
+                quantiles=config.quantiles,
+            )
+        return weighted_contexts[use_suffix]
+
+    if path_components or "turnover" in selected:
+        forward_returns = _prepare_price_data(
+            prepared.market, inputs_sorted=True
+        ).forward_returns
+    for use_suffix, components_now in (
+        (True, reusable),
+        (False, path_components - reusable),
+    ):
+        if not components_now:
+            continue
+        paths = _run_daily_rank_path_diagnostics_prepared(
+            weighted(
+                use_suffix
+                or (
+                    incremental_context is not None and components_now == {"rolling_ic"}
+                )
+            ),
+            daily_forward_returns=forward_returns,
+            quantiles=config.quantiles,
+            config=config,
+            execution_availability=None,
+            slippage_rates=slippage_rates,
+            horizon_ic=None if horizons is None else horizons.ic,
+            lead_lags=DAILY_BOOK_LEAD_LAGS,
+            alpha_return_lags=DAILY_ALPHA_RETURN_LAGS,
+            autocorrelation_lags=DAILY_SUMMARY_AUTOCORRELATION_LAGS,
+            rolling_observations=DAILY_ROLLING_IC_OBSERVATIONS,
+            progress=progress,
+            signal_autocorrelation=persistence,
+            components=frozenset(components_now),
+        )
+        for component in components_now:
+            for name in names[component]:
+                key = aliases.get(name, f"daily_{name}")
+                current = getattr(paths, name)
+                if use_suffix:
+                    current = pl.concat(
+                        [
+                            prior[key].filter(pl.col(TIME) < boundary),
+                            current.filter(pl.col(TIME) >= boundary),
+                        ],
+                        how="vertical_relaxed",
+                    )
+                    if name == "book_lead_lag_returns":
+                        current = current.sort(["lag", TIME])
+                    elif name == "alpha_return_lag_returns":
+                        current = current.sort(["path_kind", "lag", TIME])
+                frames[key] = current
+    if "turnover" in selected:
+        checkpoint = (
+            prior.get("daily_turnover_checkpoint")
+            if incremental_context is not None and "daily_book_turnover" in prior
+            else None
+        )
+        use_suffix = checkpoint is not None and not checkpoint.is_empty()
+        book_weights = _path_weight_frame(
+            weighted(use_suffix).book, column="book_weight"
+        )
+        executed, checkpoint_out = _sparse_executed_turnover(
+            book_weights,
+            prepared.market,
+            forward_returns,
+            execution_availability=execution_availability,
+            retry_blocked=config.retry_blocked_orders,
+            checkpoint=checkpoint,
+            return_checkpoint=True,
+        )
+        current = _daily_turnover_frame(
+            book_weights,
+            executed,
+            requested_deltas=_requested_snapshot_weight_deltas(book_weights),
+        )
+        if use_suffix:
+            through = checkpoint[TIME][0]
+            current = pl.concat(
+                [
+                    prior["daily_book_turnover"].filter(pl.col(TIME) <= through),
+                    current.filter(pl.col(TIME) > through).with_columns(
+                        pl.lit(False).alias("is_initial_rebalance")
+                    ),
+                ],
+                how="vertical_relaxed",
+            )
+        frames["daily_book_turnover"] = current
+        if checkpoint_out is not None:
+            frames["daily_turnover_checkpoint"] = checkpoint_out
+    return frames, horizons
+
+
+def _merge_horizon_prefix(current, prior, boundary, *, annualization, quantiles):
+    """Rebuild aggregates from saved per-date primitives, without old labels."""
+    dated = {}
+    for name in (
+        "coverage",
+        "ic",
+        "book_returns",
+        "tail_returns",
+        "quantile_forward_returns",
+        "factor_returns",
+    ):
+        frame = getattr(current, name)
+        dated[name] = pl.concat(
+            [
+                prior[f"horizon_{name}"].filter(pl.col("evaluation_date") < boundary),
+                frame.filter(pl.col("evaluation_date") >= boundary),
+            ],
+            how="vertical_relaxed",
+        ).sort(["evaluation_date", "window_id"])
+    structure = quantile_curve_structure(
+        dated["quantile_forward_returns"], quantiles=quantiles
+    )
+    return PredictionHorizonDiagnostics(
+        **dated,
+        quantile_structure=structure,
+        signal_persistence=current.signal_persistence,
+        signal_persistence_summary=current.signal_persistence_summary,
+        ic_summary=summarize_window_ic(
+            dated["ic"], annualization_sessions=annualization
+        ),
+        statistical_inference=build_statistical_inference(
+            ic=dated["ic"],
+            book_returns=dated["book_returns"],
+            tail_returns=dated["tail_returns"],
+            quantile_structure=structure,
+            factor_returns=dated["factor_returns"],
+        ),
+        max_window_forward_rows=current.max_window_forward_rows,
+    )
+
+
 def _run_daily_rank_path_diagnostics_prepared(
     prepared_context: _PreparedDailyDiagnostics,
     *,
@@ -1802,6 +2099,7 @@ def _run_daily_rank_path_diagnostics_prepared(
     rolling_observations: int,
     progress: DailyDiagnosticProgress | None,
     signal_autocorrelation: pl.DataFrame | None = None,
+    components: frozenset[str] | None = None,
 ) -> DailyRankPathDiagnostics:
     """Run daily Book/Tail paths and the inputs needed by daily summaries.
 
@@ -1812,6 +2110,17 @@ def _run_daily_rank_path_diagnostics_prepared(
     factor returns and never construct a capital account.
     """
 
+    selected = components or frozenset(
+        {
+            "book_tail",
+            "quantiles",
+            "turnover",
+            "lead_lag",
+            "alpha_return",
+            "persistence",
+            "rolling_ic",
+        }
+    )
     resolved_lags = _validate_lead_lags(lead_lags)
     resolved_alpha_return_lags = _validate_lead_lags(alpha_return_lags)
     resolved_autocorrelation_lags = _validate_positive_lags(
@@ -1845,70 +2154,98 @@ def _run_daily_rank_path_diagnostics_prepared(
     }
     if progress is not None:
         progress("book_quantile_paths", 0, 1)
-    book_daily_returns, quantile_returns, book_deltas = _research_book_quantile_returns(
-        prepared_context.book,
-        daily_forward_returns,
-        weights=book_weights,
-        config=config,
-        slippage_rates=resolved_slippage,
-        market_sessions=market_sessions,
-        quantiles=quantiles,
-    )
+    book_deltas = _requested_snapshot_weight_deltas(book_weights)
+    book_daily_returns = pl.DataFrame(schema=_daily_return_schema())
+    quantile_returns = pl.DataFrame(schema=_daily_quantile_return_schema())
+    if selected & {"book_tail", "quantiles"}:
+        book_daily_returns, quantile_returns, book_deltas = (
+            _research_book_quantile_returns(
+                prepared_context.book,
+                daily_forward_returns,
+                weights=book_weights,
+                config=config,
+                slippage_rates=resolved_slippage,
+                market_sessions=market_sessions,
+                quantiles=quantiles,
+            )
+        )
     if progress is not None:
         progress("tail_paths", 0, 1)
     tail_deltas = _requested_snapshot_weight_deltas(tail_weights)
-    tail_daily_returns = _research_path_returns(
-        tail_weights,
-        daily_forward_returns,
-        config=config,
-        slippage_rates=resolved_slippage,
-        weight_deltas=tail_deltas,
+    tail_daily_returns = (
+        _research_path_returns(
+            tail_weights,
+            daily_forward_returns,
+            config=config,
+            slippage_rates=resolved_slippage,
+            weight_deltas=tail_deltas,
+        )
+        if "book_tail" in selected
+        else pl.DataFrame(schema=_daily_return_schema())
     )
     if progress is not None:
         progress("executed_turnover", 0, 1)
-    executed_turnover = _sparse_executed_turnover(
-        book_weights,
-        market,
-        daily_forward_returns,
-        execution_availability=resolved_availability,
-        retry_blocked=config.retry_blocked_orders,
+    executed_turnover = (
+        _sparse_executed_turnover(
+            book_weights,
+            market,
+            daily_forward_returns,
+            execution_availability=resolved_availability,
+            retry_blocked=config.retry_blocked_orders,
+        )
+        if "turnover" in selected
+        else None
     )
     if progress is not None:
         progress("book_tail_paths", 1, 1)
-    book_turnover = _daily_turnover_frame(
-        book_weights,
-        executed_turnover,
-        requested_deltas=book_deltas,
+    book_turnover = (
+        _daily_turnover_frame(
+            book_weights,
+            executed_turnover,
+            requested_deltas=book_deltas,
+        )
+        if "turnover" in selected
+        else pl.DataFrame()
     )
-    lead_lag_returns = _stream_lead_lag_returns(
-        book_weights,
-        daily_forward_returns,
-        config=config,
-        slippage_rates=resolved_slippage,
-        sessions=market_sessions,
-        lead_lags=resolved_lags,
-        common_dates=common_lead_lag_dates,
-        progress=progress,
-        base_weight_deltas=book_deltas,
+    lead_lag_returns = (
+        _stream_lead_lag_returns(
+            book_weights,
+            daily_forward_returns,
+            config=config,
+            slippage_rates=resolved_slippage,
+            sessions=market_sessions,
+            lead_lags=resolved_lags,
+            common_dates=common_lead_lag_dates,
+            progress=progress,
+            base_weight_deltas=book_deltas,
+        )
+        if "lead_lag" in selected
+        else pl.DataFrame()
     )
     alpha_return_common_dates = _common_named_lead_lag_dates(
         base_weights,
         sessions=market_sessions,
         lead_lags=resolved_alpha_return_lags,
     )
-    alpha_return_lag_returns = _stream_named_lead_lag_returns(
-        base_weights,
-        daily_forward_returns,
-        config=config,
-        slippage_rates=resolved_slippage,
-        sessions=market_sessions,
-        lead_lags=resolved_alpha_return_lags,
-        common_dates=alpha_return_common_dates,
-        progress=progress,
-        base_weight_deltas={"book": book_deltas, "tail": tail_deltas},
+    alpha_return_lag_returns = (
+        _stream_named_lead_lag_returns(
+            base_weights,
+            daily_forward_returns,
+            config=config,
+            slippage_rates=resolved_slippage,
+            sessions=market_sessions,
+            lead_lags=resolved_alpha_return_lags,
+            common_dates=alpha_return_common_dates,
+            progress=progress,
+            base_weight_deltas={"book": book_deltas, "tail": tail_deltas},
+        )
+        if "alpha_return" in selected
+        else pl.DataFrame()
     )
 
-    if signal_autocorrelation is None:
+    if "persistence" not in selected:
+        autocorrelation = pl.DataFrame()
+    elif signal_autocorrelation is None:
         autocorrelation, _ = signal_rank_persistence(
             factor,
             calendar=prepared_context.calendar,
@@ -1918,7 +2255,7 @@ def _run_daily_rank_path_diagnostics_prepared(
     else:
         autocorrelation = signal_autocorrelation
     resolved_ic = horizon_ic
-    if resolved_ic is None:
+    if resolved_ic is None and "rolling_ic" in selected:
         ic_frames = []
         for window in DAILY_SESSION_WINDOWS:
             forward, _ = _session_window_forward_returns_from_frames(
@@ -1934,9 +2271,13 @@ def _run_daily_rank_path_diagnostics_prepared(
         ).sort(["evaluation_date", "window_id"])
     if progress is not None:
         progress("rolling_ic", 0, 1)
-    rolling_ic = rolling_window_information_coefficients(
-        resolved_ic,
-        observations=rolling_observations,
+    rolling_ic = (
+        rolling_window_information_coefficients(
+            resolved_ic,
+            observations=rolling_observations,
+        )
+        if "rolling_ic" in selected
+        else pl.DataFrame()
     )
 
     return DailyRankPathDiagnostics(

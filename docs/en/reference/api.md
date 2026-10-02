@@ -17,7 +17,9 @@ compose_prediction(
 
 `alpha_values` maps stable aliases to ordinary core `Panel` values. `AlphaPolicy`
 aligns evaluation-date snapshots; the independent `StandardizePolicy` then
-applies `none`, `z_score`, or `percentile_rank`. The result is the Composer's raw typed `PredictionPanel`; BT
+applies `none`, `z_score`, or `percentile_rank`. Z-score standardization uses a
+fixed asset order and per-date reduction, preserving exact historical bytes when
+the future horizon or Arrow chunk layout changes. The result is the Composer's raw typed `PredictionPanel`; BT
 does not apply a fixed post-composer normalization. IC-weighted, OLS, and GLS
 composers require prices so the package can construct
 execution-to-next-execution labels without look-ahead.

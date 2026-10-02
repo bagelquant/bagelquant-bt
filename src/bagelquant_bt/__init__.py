@@ -6,7 +6,9 @@ from .account import (
     AccountDecisionContext,
     AccountStateCheckpoint,
     AccountTargetProvider,
+    PreparedAccountMarketData,
     StatefulAccountBacktestResult,
+    prepare_account_market_data,
     run_account_backtest,
     run_planned_account_backtest,
     run_stateful_account_backtest,
@@ -78,6 +80,7 @@ from .horizon import (
     quantile_curve_structure,
     rolling_window_information_coefficients,
     run_daily_prediction_diagnostics,
+    run_daily_prediction_sections,
     run_daily_rank_path_diagnostics,
     run_prediction_horizon_diagnostics,
     session_window_forward_returns,
@@ -112,6 +115,7 @@ from .pipeline import (
     run_prediction_backtest,
 )
 from .policy import (
+    ALPHA_STANDARDIZATION_KERNEL_VERSION,
     AlphaPolicy,
     AlphaPolicyResult,
     AlphaStandardization,
@@ -128,6 +132,7 @@ from .policy import (
     resolve_alpha_policy,
     resolve_execution_policy,
     resolve_standardize_policy,
+    standardize_alpha_values,
     standardize_policies,
 )
 from .portfolio import (
@@ -144,6 +149,13 @@ from .reporting import (
     prediction_evaluation_report_figures,
     summary_report,
     summary_report_with_factor_figures,
+)
+from .research_comparison import account_fill_turnover, common_prediction_ic
+from .research_statistics import (
+    capacity_participation,
+    common_sample_comparison,
+    deflated_sharpe,
+    library_endpoint_tests,
 )
 from .results import (
     BacktestResult,
@@ -170,6 +182,10 @@ from .statistics import (
     one_sample_t_test,
     quantile_rank_information_coefficients,
 )
+from .target_evaluation import (
+    evaluate_portfolio_targets,
+    implementation_stress_scenarios,
+)
 from .validation import (
     HorizonIcValidation,
     MonthlyIcObservation,
@@ -184,6 +200,7 @@ from .validation import (
 )
 
 __all__ = [
+    "ALPHA_STANDARDIZATION_KERNEL_VERSION",
     "DAILY_ALPHA_RETURN_LAGS",
     "DAILY_BOOK_LEAD_LAGS",
     "DAILY_BUCKET_WINDOWS",
@@ -238,6 +255,7 @@ __all__ = [
     "PredictionHorizonDiagnostics",
     "PredictionRegularizedOptimizerPolicy",
     "PredictionRegularizedTargetVolatilityPolicy",
+    "PreparedAccountMarketData",
     "PreparedFactorMarketData",
     "ReportFigure",
     "ResultSection",
@@ -256,13 +274,17 @@ __all__ = [
     "ValidationObjective",
     "ValidationScore",
     "WeightBuild",
+    "account_fill_turnover",
     "allocate_integer_positions",
     "alpha_policies",
     "benchmark_performance",
     "benjamini_hochberg",
     "build_statistical_inference",
     "build_universe_benchmark_returns",
+    "capacity_participation",
     "centered_rank_book_weights",
+    "common_prediction_ic",
+    "common_sample_comparison",
     "compare_portfolio_paths",
     "compare_portfolio_to_benchmarks",
     "compose_prediction",
@@ -270,6 +292,8 @@ __all__ = [
     "compose_processed_prediction",
     "compute_result_section",
     "cross_sectional_factor_returns",
+    "deflated_sharpe",
+    "evaluate_portfolio_targets",
     "execution_policies",
     "factor_ic_decay_series",
     "factor_return_correlation",
@@ -277,10 +301,12 @@ __all__ = [
     "gross_one_tail_weights",
     "hac_mean_test",
     "holdings_factor_exposure",
+    "implementation_stress_scenarios",
     "implied_signal_half_life",
     "incremental_ic_summary",
     "industry_exposure_strength",
     "information_coefficients",
+    "library_endpoint_tests",
     "link_risk_contributions",
     "materialize_factor_diagnostics",
     "materialize_portfolio_path",
@@ -292,6 +318,7 @@ __all__ = [
     "portfolio_path_from_backtest",
     "prediction_evaluation_report_figures",
     "prediction_forward_returns",
+    "prepare_account_market_data",
     "prepare_factor_market_data",
     "prepare_price_data",
     "quantile_curve_structure",
@@ -308,6 +335,7 @@ __all__ = [
     "run_actual_performance_path",
     "run_continuous_target_path",
     "run_daily_prediction_diagnostics",
+    "run_daily_prediction_sections",
     "run_daily_rank_path_diagnostics",
     "run_planned_account_backtest",
     "run_prediction_backtest",
@@ -321,6 +349,7 @@ __all__ = [
     "select_top_n_stable",
     "session_window_forward_returns",
     "signal_rank_persistence",
+    "standardize_alpha_values",
     "standardize_policies",
     "standardize_risk_descriptor",
     "summarize_portfolio_path_returns",

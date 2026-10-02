@@ -6,5 +6,6 @@
 - [公开 API](public-api.md)
 - [交易成本](transaction-costs.md)
 - [Signal 评估](factor-evaluation.md)
+- [研究检验与比较](research-statistics.md)
 - [成交约束与 Benchmark](execution-and-benchmarks.md)
 - [内部实现](internals.md)

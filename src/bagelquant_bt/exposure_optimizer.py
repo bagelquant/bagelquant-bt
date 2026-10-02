@@ -255,53 +255,21 @@ class PredictionExposureConstrainedOptimizerPolicy:
         )
 
     def _solve(self, scores, reference, forced_exit, valid, bounds, evaluation_date):
+        from bagelquant_core.optimization import solve_exposure_weights
+
         try:
-            import cvxpy as cp
-        except ImportError as error:
-            raise InputValidationError(
-                "exposure optimization requires bagelquant-bt[optimizer] "
-                "(CVXPY/CLARABEL)"
-            ) from error
-        weights = cp.Variable(len(scores), nonneg=True)
-        turnover = cp.norm1(weights - reference) + forced_exit
-        constraints = [cp.sum(weights) == 1.0, weights <= self.max_weight]
-        if self.max_turnover is not None:
-            constraints.append(turnover <= self.max_turnover)
-        for key, bound in bounds.items():
-            exposure = valid[key].to_numpy() @ weights
-            if bound.lower is not None:
-                constraints.append(exposure >= bound.lower)
-            if bound.upper is not None:
-                constraints.append(exposure <= bound.upper)
-        problem = cp.Problem(
-            cp.Maximize(
-                scores @ weights
-                - self.concentration_penalty * cp.sum_squares(weights)
-                - self.turnover_penalty * turnover
-            ),
-            constraints,
-        )
-        try:
-            problem.solve(
-                solver="CLARABEL",
-                tol_gap_abs=min(1e-9, self.constraint_tolerance / 10),
-                tol_gap_rel=min(1e-9, self.constraint_tolerance / 10),
-                tol_feas=min(1e-9, self.constraint_tolerance / 10),
-                max_iter=200,
+            return solve_exposure_weights(
+                scores,
+                reference,
+                forced_exit,
+                valid,
+                bounds,
+                evaluation_date,
+                max_weight=self.max_weight,
+                max_turnover=self.max_turnover,
+                concentration_penalty=self.concentration_penalty,
+                turnover_penalty=self.turnover_penalty,
+                constraint_tolerance=self.constraint_tolerance,
             )
-        except cp.error.SolverError as error:
-            raise InputValidationError(
-                f"exposure optimizer solver failed at {evaluation_date}: {error}"
-            ) from error
-        if problem.status != cp.OPTIMAL or weights.value is None:
-            raise InputValidationError(
-                f"exposure optimizer failed at {evaluation_date}: {problem.status}"
-            )
-        solution = np.asarray(weights.value, dtype=float)
-        if not np.isfinite(solution).all():
-            raise InputValidationError(
-                f"exposure optimizer returned nonfinite weights at {evaluation_date}"
-            )
-        # CVXPY's nonnegative variable may contain negative numerical noise.
-        # Never project/renormalize: that could violate an exposure constraint.
-        return np.maximum(solution, 0.0), problem.status, problem.solver_stats.num_iters
+        except ValueError as error:
+            raise InputValidationError(str(error)) from error

@@ -10,11 +10,14 @@ from datetime import date
 from enum import StrEnum
 from typing import Literal
 
+import numpy as np
 import polars as pl
 from bagelquant_core import Domain, Panel, PredictionPanel
 
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME
+
+ALPHA_STANDARDIZATION_KERNEL_VERSION = 1
 
 
 class EvaluationFrequency(StrEnum):
@@ -115,14 +118,17 @@ class ExecutionPolicy:
             output["execution_policy_id"] = self.id
             output["execution_date"] = (
                 sessions[execution_position]
-                if execution_position is not None
-                and execution_position < len(sessions)
+                if execution_position is not None and execution_position < len(sessions)
                 else None
             )
             rows.append(output)
-        return pl.DataFrame(rows) if rows else rebalance_dates.with_columns(
-            pl.lit(self.id, dtype=pl.String).alias("execution_policy_id"),
-            pl.lit(None, dtype=pl.Date).alias("execution_date"),
+        return (
+            pl.DataFrame(rows)
+            if rows
+            else rebalance_dates.with_columns(
+                pl.lit(self.id, dtype=pl.String).alias("execution_policy_id"),
+                pl.lit(None, dtype=pl.Date).alias("execution_date"),
+            )
         )
 
     def schedule_prediction(
@@ -385,23 +391,7 @@ class StandardizePolicy:
         processed: dict[str, Panel] = {}
         for name, alpha in aligned.alpha_values.items():
             frame = alpha.collect(dense=False)
-            value = pl.col("value").fill_nan(None)
-            finite = pl.when(value.is_finite()).then(value).otherwise(None)
-            if self.method == AlphaStandardization.NONE:
-                expression = finite
-            elif self.method == AlphaStandardization.Z_SCORE:
-                deviation = finite.std(ddof=1).over(TIME)
-                expression = pl.when(
-                    deviation.is_not_null() & (deviation > 0)
-                ).then((finite - finite.mean().over(TIME)) / deviation)
-            else:
-                count = finite.count().over(TIME)
-                expression = pl.when(count > 0).then(
-                    finite.rank("average").over(TIME) / count
-                )
-            standardized = frame.with_columns(expression.alias("value")).drop_nulls(
-                "value"
-            )
+            standardized = standardize_alpha_values(frame, self.method)
             processed[name] = Panel.from_domain(
                 standardized,
                 alpha.domain,
@@ -410,6 +400,9 @@ class StandardizePolicy:
                     **alpha.metadata,
                     "standardize_policy": self.id,
                     "standardization": self.method.value,
+                    "standardization_kernel_version": (
+                        ALPHA_STANDARDIZATION_KERNEL_VERSION
+                    ),
                 },
             )
         return AlphaPolicyResult(
@@ -418,6 +411,66 @@ class StandardizePolicy:
             alignments=aligned.alignments,
             standardize_policy_id=self.id,
         )
+
+
+def standardize_alpha_values(
+    frame: pl.DataFrame,
+    method: AlphaStandardization | str,
+) -> pl.DataFrame:
+    """Apply a deterministic cross-sectional Alpha standardization.
+
+    Z-scores use one contiguous NumPy reduction per date after sorting by asset.
+    This keeps an unchanged historical cross-section bit-identical when a caller
+    changes the future horizon or the input's Arrow chunk layout.
+    """
+
+    resolved = AlphaStandardization(method)
+    ordered = frame.sort(TIME, ASSET_ID).rechunk()
+    value = pl.col("value").fill_nan(None)
+    finite = pl.when(value.is_finite()).then(value).otherwise(None)
+    if resolved == AlphaStandardization.NONE:
+        standardized = ordered.with_columns(finite.alias("value"))
+    elif resolved == AlphaStandardization.PERCENTILE_RANK:
+        count = finite.count().over(TIME)
+        expression = pl.when(count > 0).then(finite.rank("average").over(TIME) / count)
+        standardized = ordered.with_columns(expression.alias("value"))
+    else:
+        standardized = ordered.with_columns(
+            _deterministic_cross_sectional_zscore(ordered).alias("value")
+        )
+    return standardized.drop_nulls("value").sort(TIME, ASSET_ID)
+
+
+def _deterministic_cross_sectional_zscore(frame: pl.DataFrame) -> pl.Series:
+    if frame.is_empty():
+        return pl.Series("value", [], dtype=pl.Float64)
+
+    values = frame.get_column("value").cast(pl.Float64).to_numpy()
+    times = frame.get_column(TIME).to_numpy()
+    output = np.full(values.shape, np.nan, dtype=np.float64)
+    boundaries = np.flatnonzero(times[1:] != times[:-1]) + 1
+    starts = np.concatenate((np.array([0], dtype=np.int64), boundaries))
+    ends = np.concatenate((boundaries, np.array([len(values)], dtype=np.int64)))
+
+    for start, end in zip(starts, ends, strict=True):
+        group = values[start:end]
+        valid = np.isfinite(group)
+        count = int(np.count_nonzero(valid))
+        if count < 2:
+            continue
+        finite_values = np.ascontiguousarray(group[valid], dtype=np.float64)
+        with np.errstate(over="ignore", invalid="ignore"):
+            mean = float(np.sum(finite_values, dtype=np.float64) / count)
+            centered = finite_values - mean
+            squared_deviations = np.square(centered)
+            variance = float(np.sum(squared_deviations, dtype=np.float64) / (count - 1))
+            deviation = float(np.sqrt(variance))
+        if not np.isfinite(deviation) or deviation <= 0.0:
+            continue
+        section = output[start:end]
+        section[valid] = centered / deviation
+
+    return pl.Series("value", output).fill_nan(None)
 
 
 _CANONICAL_EXECUTION_POLICIES = {
@@ -637,15 +690,14 @@ def _observations(sessions: list[date], policy: AlphaPolicy) -> list[date]:
             anchor = anchor.replace(
                 day=anchor.day - (anchor.weekday() - int(policy.weekday)) % 7
             )
-            match = next(
-                (value for value in reversed(values) if value <= anchor), None
-            )
+            match = next((value for value in reversed(values) if value <= anchor), None)
             if match is not None:
                 result.append(match)
     return result
 
 
 __all__ = [
+    "ALPHA_STANDARDIZATION_KERNEL_VERSION",
     "AlphaPolicy",
     "AlphaPolicyResult",
     "AlphaStandardization",
@@ -662,5 +714,6 @@ __all__ = [
     "resolve_alpha_policy",
     "resolve_execution_policy",
     "resolve_standardize_policy",
+    "standardize_alpha_values",
     "standardize_policies",
 ]

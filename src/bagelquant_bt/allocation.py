@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 from .exceptions import InputValidationError
 
 _BUDGET_TOLERANCE = 1e-7
-_LARGE_ALLOCATION_ASSET_THRESHOLD = 128
+_LARGE_ALLOCATION_ASSET_THRESHOLD = 16
 _LARGE_ALLOCATION_LOT_WINDOW = 4
 
 
@@ -42,11 +42,11 @@ def allocate_integer_positions(
 ) -> IntegerTargetAllocation:
     """Allocate a target snapshot into deterministic integer-lot positions.
 
-    The solver first maximizes deployed stock notional without exceeding the
-    target stock budget. Among equally deployed solutions it minimizes the
-    absolute notional deviation from the continuous target. Existing minimum
-    quantities may be arbitrary integers; any incremental quantity uses the
-    declared lot size.
+    Below 16 assets, the solver maximizes deployed stock notional, then minimizes
+    absolute target deviation among equally deployed solutions. Larger snapshots
+    use a bounded deterministic projection near the continuous target: deployment
+    is locally maximal, not globally optimal. Both paths respect the stock budget
+    and frozen minimum quantities; increments use the declared lot size.
     """
 
     if not math.isfinite(total_notional) or total_notional <= 0:
@@ -266,7 +266,7 @@ def _solve_large_lot_counts(
     """Allocate a broad universe in bounded deterministic work.
 
     Exact maximum deployment is a subset-sum MILP and has pathological
-    runtimes for daily universes.  Start close to the continuous target, then
+    runtimes even for daily Top 50/100 portfolios. Start close to the target, then
     consider at most four final lots per asset in tracking-error order.  The
     result is maximal inside that bounded neighborhood: no remaining eligible
     next lot fits the residual budget.

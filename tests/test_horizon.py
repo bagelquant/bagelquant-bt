@@ -890,6 +890,86 @@ def test_unified_daily_diagnostics_match_the_independent_public_entries() -> Non
         assert getattr(unified.paths, field).equals(getattr(independent_paths, field))
 
 
+def test_selected_persistence_does_not_run_weights_labels_or_paths(monkeypatch) -> None:
+    import bagelquant_bt.horizon as kernel
+
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(8)]
+    assets = [f"a{index}" for index in range(10)]
+    signals = _daily_scheduled_prediction(sessions, assets)
+    prices = pl.DataFrame(
+        {
+            "time": [day for day in sessions for _ in assets],
+            "asset_id": assets * len(sessions),
+            "price": [100.0] * (len(sessions) * len(assets)),
+        }
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unrequested evaluation group executed")
+
+    monkeypatch.setattr(kernel, "_prepare_daily_weights", forbidden)
+    monkeypatch.setattr(
+        kernel, "_run_prediction_horizon_diagnostics_prepared", forbidden
+    )
+    monkeypatch.setattr(kernel, "_run_daily_rank_path_diagnostics_prepared", forbidden)
+    frames, horizons = kernel.run_daily_prediction_sections(
+        signals,
+        prices,
+        config=BacktestConfig(initial_capital=500000.0, quantiles=10),
+        components=["persistence"],
+    )
+    assert set(frames) == {"daily_signal_autocorrelation"}
+    assert horizons is None
+    assert frames["daily_signal_autocorrelation"][
+        "horizon_sessions"
+    ].unique().sort().to_list() == list(range(1, 7))
+
+
+def test_selected_path_groups_preserve_existing_mathematics(monkeypatch) -> None:
+    import bagelquant_bt.horizon as kernel
+
+    sessions = [date(2024, 1, 1) + timedelta(days=offset) for offset in range(12)]
+    assets = [f"a{index}" for index in range(10)]
+    signals = _daily_scheduled_prediction(
+        sessions, assets, reverse_every_other_day=True
+    )
+    prices = pl.DataFrame(
+        {
+            "time": [day for day in sessions for _ in assets],
+            "asset_id": assets * len(sessions),
+            "price": [
+                100.0 + day * index
+                for day in range(len(sessions))
+                for index in range(10)
+            ],
+        }
+    )
+    config = BacktestConfig(initial_capital=500000.0, quantiles=10)
+    expected = kernel.run_daily_rank_path_diagnostics(signals, prices, config=config)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unrequested horizon statistics executed")
+
+    monkeypatch.setattr(
+        kernel, "_run_prediction_horizon_diagnostics_prepared", forbidden
+    )
+    frames, horizons = kernel.run_daily_prediction_sections(
+        signals,
+        prices,
+        config=config,
+        components=["book_tail", "turnover", "quantiles", "alpha_return"],
+    )
+    assert horizons is None
+    assert frames["daily_book_returns"].equals(expected.book_daily_returns)
+    assert frames["daily_tail_returns"].equals(expected.tail_daily_returns)
+    assert frames["daily_quantile_returns"].equals(expected.quantile_returns)
+    assert frames["daily_book_turnover"].equals(expected.book_turnover)
+    assert frames["daily_alpha_return_lag_returns"].equals(
+        expected.alpha_return_lag_returns
+    )
+    assert "daily_book_lead_lag_returns" not in frames
+
+
 def test_unified_daily_diagnostics_handles_no_following_session() -> None:
     evaluation = date(2024, 1, 1)
     execution = date(2024, 1, 2)

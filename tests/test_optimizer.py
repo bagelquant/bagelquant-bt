@@ -97,12 +97,46 @@ def test_optimizer_fails_infeasible_cap_without_fallback_policy() -> None:
         ).build(_prediction({f"a{index:02d}": float(index) for index in range(24)}))
 
 
-def test_optimizer_matches_general_convex_solver_reference() -> None:
+def test_sparse_daily_scores_do_not_create_roundoff_lot_purchases() -> None:
+    import numpy as np
+
+    from bagelquant_bt import allocate_integer_positions
+
+    rng = np.random.default_rng(2)
+    assets = [f"a{index:03d}" for index in range(500)]
+    scores = rng.normal(0, 0.0004, len(assets))
+    prices = rng.uniform(3, 80, len(assets))
+    result = PredictionRegularizedOptimizerPolicy(
+        concentration_penalty=0.003, turnover_penalty=0.0005, max_weight=0.04,
+    ).build(_prediction(dict(zip(assets, scores, strict=True))))
+    weights = result.weights.collect(dense=False)
+    excluded = [asset for asset, score in zip(assets, scores, strict=True) if score < 0]
+    # There is more than enough capacity in stocks with scores above 0.0004;
+    # negative-score stocks cannot enter this small-concentration optimum.
+    assert int((scores > 0.0004).sum()) * 0.04 > 1
+    assert weights.filter(pl.col("asset_id").is_in(excluded))["value"].sum() == 0
+    assert weights["value"].sum() == pytest.approx(1, abs=1e-12)
+    assert weights["value"].max() <= 0.04 + 1e-12
+    allocated = allocate_integer_positions(
+        weights.select("asset_id", pl.col("value").alias("weight")),
+        pl.DataFrame({"asset_id": assets, "price": prices}),
+        total_notional=500_000,
+        lot_sizes=pl.DataFrame({"asset_id": assets, "lot_size": [100] * len(assets)}),
+    )
+    assert allocated.positions.filter(pl.col("asset_id").is_in(excluded)).is_empty()
+
+
+@pytest.mark.parametrize("concentration,turnover,score_scale", [
+    (10.0, 0.1, 1.0), (0.003, 0.0005, 0.0004),
+])
+def test_optimizer_matches_general_convex_solver_reference(
+    concentration: float, turnover: float, score_scale: float,
+) -> None:
     import cvxpy as cp
     import numpy as np
 
     assets = [f"a{index:02d}" for index in range(40)]
-    scores = np.random.default_rng(42).normal(size=len(assets))
+    scores = np.random.default_rng(42).normal(size=len(assets)) * score_scale
     reference_values = np.random.default_rng(7).uniform(size=len(assets))
     reference_values /= reference_values.sum()
     day = date(2024, 1, 2)
@@ -110,8 +144,8 @@ def test_optimizer_matches_general_convex_solver_reference() -> None:
         {"time": [day] * len(assets), "asset_id": assets, "weight": reference_values}
     )
     policy = PredictionRegularizedOptimizerPolicy(
-        concentration_penalty=10.0,
-        turnover_penalty=0.1,
+        concentration_penalty=concentration,
+        turnover_penalty=turnover,
         max_weight=0.04,
     )
     result = policy.build(
@@ -122,9 +156,11 @@ def test_optimizer_matches_general_convex_solver_reference() -> None:
     variable = cp.Variable(len(assets))
     problem = cp.Problem(
         cp.Maximize(
-            scores @ variable
-            - policy.concentration_penalty * cp.sum_squares(variable)
-            - policy.turnover_penalty * cp.norm1(variable - reference_values)
+            (
+                scores @ variable
+                - policy.concentration_penalty * cp.sum_squares(variable)
+                - policy.turnover_penalty * cp.norm1(variable - reference_values)
+            ) / score_scale
         ),
         [cp.sum(variable) == 1, variable >= 0, variable <= policy.max_weight],
     )

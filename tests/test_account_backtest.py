@@ -32,6 +32,124 @@ def _zero_cost() -> TransactionCostConfig:
     )
 
 
+def test_minimum_adjustment_saves_fees_but_allows_full_exit_and_causal_resume():
+    from dataclasses import replace
+
+    from polars.testing import assert_frame_equal
+
+    days = [date(2024, 1, 2) + timedelta(days=i) for i in range(5)]
+    prices = pl.DataFrame(
+        {"time": days, "asset_id": ["a"] * 5, "open": [10.0] * 5, "close": [10.0] * 5}
+    )
+    schedule = pl.DataFrame({"decision_date": days[:4], "execution_date": days[1:]})
+    weights = dict(zip(days, [0.5, 0.51, 0.49, 0.0, 0.0], strict=True))
+
+    def provider(context):
+        return pl.DataFrame(
+            {"asset_id": ["a"], "weight": [weights[context.decision_date]]}
+        )
+
+    kwargs = dict(
+        corporate_action_coverage=_coverage(*days),
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [1]}),
+        config=AccountBacktestConfig(
+            capital_mode="fixed_notional",
+            initial_capital=10000,
+            fixed_notional=10000,
+            transaction_cost=replace(_zero_cost(), min_fee=5),
+        ),
+    )
+    base = run_stateful_account_backtest(schedule, prices, provider, **kwargs)
+    filtered = run_stateful_account_backtest(
+        schedule, prices, provider, minimum_trade_notional=200, **kwargs
+    )
+    assert base.account.fills.height == 4
+    assert filtered.account.fills.height == 2
+    assert filtered.account.fills["commission"].sum() == 10
+    assert filtered.account.fills["side"].to_list() == ["buy", "sell"]
+    assert filtered.account.fills["quantity"].to_list() == [500, 500]
+    prefix = run_stateful_account_backtest(
+        schedule.head(2), prices.head(3), provider, minimum_trade_notional=200, **kwargs
+    )
+    resumed = run_stateful_account_backtest(
+        schedule.tail(2),
+        prices,
+        provider,
+        checkpoint=prefix.account.final_checkpoint,
+        initial_target_position_plans=prefix.target_position_plans,
+        minimum_trade_notional=200,
+        **kwargs,
+    )
+    assert_frame_equal(resumed.target_position_plans, filtered.target_position_plans)
+    assert_frame_equal(
+        pl.concat([prefix.account.fills, resumed.account.fills]), filtered.account.fills
+    )
+    # A future opening gap affects execution but cannot alter the frozen plan.
+    gap = prices.with_columns(
+        pl.when(pl.col("time") == days[-1])
+        .then(20.0)
+        .otherwise(pl.col("open"))
+        .alias("open")
+    )
+    changed = run_stateful_account_backtest(
+        schedule, gap, provider, minimum_trade_notional=200, **kwargs
+    )
+    assert_frame_equal(changed.target_position_plans, filtered.target_position_plans)
+
+
+@pytest.mark.parametrize("minimum", [-1.0, float("nan"), float("inf")])
+def test_minimum_adjustment_rejects_invalid_amount(minimum):
+    with pytest.raises(InputValidationError, match="minimum_trade_notional"):
+        run_stateful_account_backtest(
+            pl.DataFrame(
+                {
+                    "decision_date": [date(2024, 1, 2)],
+                    "execution_date": [date(2024, 1, 3)],
+                }
+            ),
+            pl.DataFrame(),
+            lambda context: pl.DataFrame(),
+            corporate_action_coverage=pl.DataFrame(),
+            minimum_trade_notional=minimum,
+        )
+
+
+def test_minimum_adjustment_allows_small_full_exit_and_blocks_tiny_new_position():
+    days = [date(2024, 1, 2), date(2024, 1, 3)]
+    result = run_stateful_account_backtest(
+        pl.DataFrame({"decision_date": days[:1], "execution_date": days[1:]}),
+        pl.DataFrame(
+            {
+                "time": [d for d in days for _ in range(2)],
+                "asset_id": ["a", "b"] * 2,
+                "open": [10.0] * 4,
+                "close": [10.0] * 4,
+            }
+        ),
+        lambda context: pl.DataFrame({"asset_id": ["b"], "weight": [0.5]}),
+        corporate_action_coverage=_coverage(*days),
+        initial_positions=pl.DataFrame(
+            {
+                "asset_id": ["a"],
+                "quantity": [50],
+                "available_quantity": [50],
+                "last_mark": [10.0],
+            }
+        ),
+        initial_cash=500.0,
+        config=AccountBacktestConfig(
+            capital_mode="compounding",
+            initial_capital=1000,
+            transaction_cost=_zero_cost(),
+        ),
+        minimum_trade_notional=1000,
+    )
+    assert result.account.fills.select("asset_id", "side", "notional").to_dicts() == [
+        {"asset_id": "a", "side": "sell", "notional": 500.0}
+    ]
+    assert result.account.account_value["cash"][-1] == 1000.0
+
+
 def test_account_buys_and_sells_whole_lots_with_t_plus_one() -> None:
     days = [date(2024, 1, day) for day in range(2, 5)]
     prices = pl.DataFrame(
@@ -911,3 +1029,181 @@ def test_checkpoint_resume_matches_full_account_values() -> None:
         .select("time", "equity", "nav")
         .to_dicts()
     )
+
+
+def test_resume_retains_exited_coordinates_and_newly_matured_record_date_entitlements():
+    from polars.testing import assert_frame_equal
+
+    days = [date(2024, 1, 2) + timedelta(days=i) for i in range(6)]
+    prices = pl.DataFrame(
+        [
+            {"time": day, "asset_id": asset, "open": 10.0, "close": 10.0}
+            for day in days
+            for asset in ["a", "b"]
+        ]
+    )
+    schedule = pl.DataFrame(
+        {
+            "decision_date": [days[0], days[1], days[4]],
+            "execution_date": [days[1], days[2], days[5]],
+        }
+    )
+
+    def target(context):
+        return pl.DataFrame(
+            {
+                "asset_id": ["a" if context.decision_date == days[0] else "b"],
+                "weight": [1.0],
+            }
+        )
+
+    actions = pl.DataFrame(
+        {
+            "action_id": ["late"],
+            "asset_id": ["b"],
+            "is_implemented": [True],
+            "record_date": [days[2]],
+            "ex_date": [days[3]],
+            "cash_pay_date": [days[4]],
+            "share_available_date": [None],
+            "cash_dividend_per_share": [1.0],
+            "stock_dividend_per_share": [0.0],
+        },
+        schema={
+            "action_id": pl.String,
+            "asset_id": pl.String,
+            "is_implemented": pl.Boolean,
+            "record_date": pl.Date,
+            "ex_date": pl.Date,
+            "cash_pay_date": pl.Date,
+            "share_available_date": pl.Date,
+            "cash_dividend_per_share": pl.Float64,
+            "stock_dividend_per_share": pl.Float64,
+        },
+    )
+    config = AccountBacktestConfig(
+        capital_mode="compounding",
+        initial_capital=1000.0,
+        transaction_cost=_zero_cost(),
+    )
+    full = run_stateful_account_backtest(
+        schedule,
+        prices,
+        target,
+        corporate_action_coverage=_coverage(*days),
+        config=config,
+        corporate_actions=actions,
+    )
+    prefix = run_stateful_account_backtest(
+        schedule.head(2),
+        prices.filter(pl.col("time") <= days[2]),
+        target,
+        corporate_action_coverage=_coverage(*days[:3]),
+        config=config,
+    )
+    assert (
+        prefix.account.final_checkpoint.positions.filter(pl.col("asset_id") == "a")[
+            "quantity"
+        ][0]
+        == 0
+    )
+    with pytest.raises(InputValidationError, match="record-date position history"):
+        run_stateful_account_backtest(
+            schedule.tail(1),
+            prices,
+            target,
+            corporate_action_coverage=_coverage(*days),
+            config=config,
+            corporate_actions=actions,
+            checkpoint=prefix.account.final_checkpoint,
+        )
+    suffix = run_stateful_account_backtest(
+        schedule.tail(1),
+        prices,
+        target,
+        corporate_action_coverage=_coverage(*days),
+        config=config,
+        corporate_actions=actions,
+        checkpoint=prefix.account.final_checkpoint,
+        historical_positions=prefix.account.positions,
+        historical_sessions=prefix.account.account_value,
+    )
+    for name in [
+        "account_value",
+        "fills",
+        "orders",
+        "target_weights",
+        "target_positions",
+        "receivables",
+    ]:
+        assert_frame_equal(
+            pl.concat(
+                [getattr(prefix.account, name), getattr(suffix.account, name)],
+                how="diagonal_relaxed",
+            ),
+            getattr(full.account, name),
+        )
+    for name in [
+        "positions",
+        "entitlements",
+        "latest_target",
+        "pending_target_positions",
+    ]:
+        assert_frame_equal(
+            getattr(suffix.account.final_checkpoint, name),
+            getattr(full.account.final_checkpoint, name),
+        )
+
+
+def test_checkpoint_keeps_original_target_revision_when_a_blocked_order_retries():
+    from polars.testing import assert_frame_equal
+
+    days = [date(2024, 1, 2) + timedelta(days=i) for i in range(4)]
+    prices = pl.DataFrame(
+        {"time": days, "asset_id": ["a"] * 4, "open": [10.0] * 4, "close": [10.0] * 4}
+    )
+    blocked = pl.DataFrame(
+        {
+            "time": days,
+            "asset_id": ["a"] * 4,
+            "can_buy": [False, False, False, True],
+            "can_sell": [True] * 4,
+            "reason": ["blocked"] * 3 + [None],
+        }
+    )
+    config = AccountBacktestConfig(
+        capital_mode="compounding",
+        initial_capital=1000.0,
+        transaction_cost=_zero_cost(),
+    )
+    targets = pl.DataFrame({"time":[days[1]],"asset_id":["a"],"weight":[1.]})
+    full = run_account_backtest(
+        targets,
+        prices,
+        corporate_action_coverage=_coverage(*days),
+        execution_availability=blocked,
+        config=config,
+    )
+    prefix = run_account_backtest(
+        targets,
+        prices.head(3),
+        corporate_action_coverage=_coverage(*days[:3]),
+        execution_availability=blocked,
+        config=config,
+    )
+    assert prefix.final_checkpoint.target_revision_time == days[1]
+    suffix = run_account_backtest(
+        targets,
+        prices,
+        corporate_action_coverage=_coverage(*days),
+        execution_availability=blocked,
+        config=config,
+        checkpoint=prefix.final_checkpoint,
+    )
+    assert_frame_equal(
+        pl.concat(
+            [prefix.orders, suffix.orders], how="diagonal_relaxed"
+        ),
+        full.orders,
+    )
+    assert_frame_equal(suffix.fills, full.fills)

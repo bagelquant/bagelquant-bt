@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -17,6 +17,7 @@ from bagelquant_bt import (
     resolve_execution_policy,
     resolve_standardize_policy,
     run_prediction_evaluation,
+    standardize_alpha_values,
 )
 from bagelquant_bt.engine import run_weight_backtest
 from bagelquant_bt.exceptions import InputValidationError
@@ -106,12 +107,12 @@ def test_execution_policy_marks_rebalance_without_future_session() -> None:
     calendar = _calendar().filter(pl.col("time") <= date(2024, 2, 9))
 
     values = pl.DataFrame(
-            {
-                "time": [date(2024, 2, 9)],
-                "asset_id": ["a"],
-                "prediction": [1.0],
-            }
-        )
+        {
+            "time": [date(2024, 2, 9)],
+            "asset_id": ["a"],
+            "prediction": [1.0],
+        }
+    )
     selection = resolve_execution_policy("next_open").schedule_prediction(
         _signal_panel(values, calendar), calendar
     )
@@ -138,9 +139,11 @@ def test_daily_policy_uses_exact_open_dates_and_next_session_execution() -> None
         name="alpha",
     )
     processed = resolve_alpha_policy("daily").apply({"alpha": alpha}, calendar)
-    prediction = IdentityPredictionComposer().compose(
-        processed.alpha_values["alpha"], name="prediction"
-    ).compute()
+    prediction = (
+        IdentityPredictionComposer()
+        .compose(processed.alpha_values["alpha"], name="prediction")
+        .compute()
+    )
 
     scheduled = resolve_execution_policy("next_open").schedule_prediction(
         prediction, calendar
@@ -159,9 +162,7 @@ def test_daily_policy_uses_exact_open_dates_and_next_session_execution() -> None
 
 def test_alpha_policy_preserves_all_monthly_schedule_variants() -> None:
     calendar = pl.DataFrame(
-        {
-            "time": pl.date_range(date(2024, 1, 1), date(2024, 2, 5), "1d", eager=True)
-        }
+        {"time": pl.date_range(date(2024, 1, 1), date(2024, 2, 5), "1d", eager=True)}
     ).with_columns((pl.col("time").dt.weekday() <= 5).cast(pl.Int8).alias("is_open"))
 
     mid = resolve_alpha_policy("monthly_mid").schedule(calendar)
@@ -201,9 +202,7 @@ def test_alpha_policy_aligns_evaluation_date_before_standardization() -> None:
         date(2024, 1, 31),
         date(2024, 1, 31),
     ]
-    assert result.get_column("value").to_list() == pytest.approx(
-        [-2**-0.5, 2**-0.5]
-    )
+    assert result.get_column("value").to_list() == pytest.approx([-(2**-0.5), 2**-0.5])
     assert applied.alignments.to_dicts() == [
         {
             "alpha_name": "alpha",
@@ -211,6 +210,38 @@ def test_alpha_policy_aligns_evaluation_date_before_standardization() -> None:
             "evaluation_date": date(2024, 1, 31),
         }
     ]
+
+
+def test_z_score_history_is_exact_across_chunking_and_future_extension() -> None:
+    assets = [f"asset-{index:04d}" for index in range(503)]
+    days = [date(2020, 1, 1) + timedelta(days=index) for index in range(257)]
+
+    def rows(selected_days: list[date]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "time": [day for day in selected_days for _ in assets],
+                "asset_id": assets * len(selected_days),
+                "value": [
+                    (-1.0 if asset_index % 2 else 1.0)
+                    * 10.0 ** ((asset_index % 12) - 6)
+                    + day_index * 1e-11
+                    for day_index, _day in enumerate(selected_days)
+                    for asset_index in range(len(assets))
+                ],
+            }
+        )
+
+    history_parts = [rows(days[:41]), rows(days[41:93]), rows(days[93:128])]
+    history = pl.concat(history_parts, rechunk=False)
+    extended = pl.concat([*history_parts, rows(days[128:])], rechunk=False)
+
+    short = standardize_alpha_values(history, "z_score")
+    long_prefix = standardize_alpha_values(extended, "z_score").filter(
+        pl.col("time") <= days[127]
+    )
+
+    assert history.get_column("value").n_chunks() > 1
+    assert_frame_equal(short, long_prefix, check_exact=True)
 
 
 def test_month_end_uses_latest_previous_snapshot_only_within_month() -> None:
@@ -228,9 +259,12 @@ def test_month_end_uses_latest_previous_snapshot_only_within_month() -> None:
         _signal_panel(predictions, calendar).domain,
         name="alpha",
     )
-    processed = resolve_alpha_policy("month_end").apply(
-        {"alpha": alpha}, calendar
-    ).alpha_values["alpha"].collect(dense=False)
+    processed = (
+        resolve_alpha_policy("month_end")
+        .apply({"alpha": alpha}, calendar)
+        .alpha_values["alpha"]
+        .collect(dense=False)
+    )
     january = processed.filter(pl.col("time") == date(2024, 1, 31))
 
     assert set(january["asset_id"]) == {
@@ -255,9 +289,12 @@ def test_month_end_skips_period_without_any_snapshot() -> None:
         _signal_panel(predictions, calendar).domain,
         name="alpha",
     )
-    processed = resolve_alpha_policy("month_end").apply(
-        {"alpha": alpha}, calendar
-    ).alpha_values["alpha"].collect(dense=False)
+    processed = (
+        resolve_alpha_policy("month_end")
+        .apply({"alpha": alpha}, calendar)
+        .alpha_values["alpha"]
+        .collect(dense=False)
+    )
 
     assert date(2024, 2, 29) not in processed.get_column("time")
 
@@ -330,9 +367,9 @@ def test_signal_evaluation_uses_next_signal_horizon_and_daily_holding() -> None:
         date(2024, 1, 2),
         date(2024, 1, 3),
     ]
-    assert result.quantile_returns.filter(
-        pl.col("quantile") == "q1"
-    )["return"].to_list() == [
+    assert result.quantile_returns.filter(pl.col("quantile") == "q1")[
+        "return"
+    ].to_list() == [
         pytest.approx(0.1),
         pytest.approx(0.0909090909090908),
         pytest.approx(0.0),
@@ -353,17 +390,17 @@ def test_portfolio_policies_use_explicit_market_inputs() -> None:
     )
 
     scheduled = _scheduled_signal(signals)
-    weights = FloatMarketCapWeightPolicy(2).build(
-        scheduled.prediction, market_caps=caps
-    ).weights.collect(dense=False)
+    weights = (
+        FloatMarketCapWeightPolicy(2)
+        .build(scheduled.prediction, market_caps=caps)
+        .weights.collect(dense=False)
+    )
 
     assert weights["value"].to_list() == [pytest.approx(0.25), pytest.approx(0.75)]
     with pytest.raises(InputValidationError, match="requires market_caps"):
         FloatMarketCapWeightPolicy(2).build(scheduled)
 
-    invalid_caps = caps.with_columns(
-        pl.Series("float_market_cap", [-1.0, 1.0])
-    )
+    invalid_caps = caps.with_columns(pl.Series("float_market_cap", [-1.0, 1.0]))
     with pytest.raises(
         InputValidationError,
         match="float market caps must be finite and positive",

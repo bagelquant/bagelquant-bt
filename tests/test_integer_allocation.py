@@ -96,10 +96,10 @@ def test_integer_allocation_is_row_order_independent() -> None:
     assert first.residual_cash == second.residual_cash
 
 
+@pytest.mark.parametrize("count", [16, 32, 50, 100, 128])
 def test_large_integer_allocation_uses_bounded_deterministic_projection(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, count: int,
 ) -> None:
-    count = 128
     assets = [f"A{index:03d}" for index in range(count)]
     weights = pl.DataFrame(
         {"asset_id": assets, "weight": [1.0 / count] * count}
@@ -143,6 +143,15 @@ def test_large_integer_allocation_uses_bounded_deterministic_projection(
         )
     )
     assert result.residual_cash < minimum_lot_value
+    reordered = allocate_integer_positions(
+        weights.reverse(), prices.reverse(), total_notional=100_000_000.0,
+        lot_sizes=lots.reverse(),
+    )
+    assert reordered.positions.equals(result.positions)
+    assert (result.positions["target_quantity"] % 100 == 0).all()
+    assert (
+        result.positions["notional_deviation"] <= result.positions["price"] * 100
+    ).all()
 
 
 def test_integer_allocation_rejects_unfunded_minimum_positions() -> None:

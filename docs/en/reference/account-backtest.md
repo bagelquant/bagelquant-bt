@@ -34,6 +34,20 @@ When resuming `run_stateful_account_backtest`, pass previously frozen plans as
 `initial_target_position_plans` alongside the checkpoint. A plan decided before
 the checkpoint but due afterward executes on its original date and quantities,
 without invoking its decision callback again or resizing at the execution open.
+The saved-target `evaluate_portfolio_targets` entry point applies the same rule:
+its calendar must include known future execution dates, while price coverage
+stops at the simulation cutoff. Persist the returned future plans and supply
+them on continuation. A truncated calendar that cannot schedule a decision is
+rejected. `prepare_account_market_data` supplies validated prices and execution blocks to all
+independent scenarios; it contains no account state.
+
+Checkpoints retain zero-quantity coordinates and the original target revision
+date, so later exits and pending-order audit identities match a continuous run.
+If an appended corporate action has a record date before the checkpoint, pass
+the verified prior `historical_positions` and `historical_sessions`. The engine
+recovers entitlement from that record-date close, never current holdings. A
+record date outside the complete prior account-session inventory has no account
+entitlement. Missing history for a required prior session fails explicitly.
 
 Fixed-notional mode injects or requests removal of cash to maintain the chosen
 notional. External flows change fund units, not unit NAV. A blocked withdrawal

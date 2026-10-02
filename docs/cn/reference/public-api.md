@@ -1,6 +1,6 @@
 # 公开 API
 
-稳定 API 从 `bagelquant_bt` 导出。0.2 只接受强类型 Signal；普通 `Panel`、
+稳定 API 从 `bagelquant_bt` 导出。0.9.4 只接受强类型 Prediction；普通 `Panel`、
 裸 DataFrame 和直接 weights 均不能进入公开回测入口。
 
 ## 入口函数
@@ -29,6 +29,8 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
 - `session_window_forward_returns`、`centered_rank_book_weights`、
   `gross_one_tail_weights`、`hac_mean_test` 与
   `non_overlapping_cohort_statistics` 公开对应的确定性 primitive。
+- `standardize_alpha_values(frame, method)` 公开确定性横截面预处理内核；z-score
+  使用固定资产顺序与逐日归约，追加未来区间或改变物理分块不会修改既有历史前缀。
 - `quantile_rank_information_coefficients(quantile_returns, *, periods=None)`：从 q1 到
   qN 的 gross 组收益生成单调性 rank IC；可选的 `time`/`next_time` periods 会先把逐日
   收益压缩为每个完整 execution 区间一个观测。
@@ -44,9 +46,12 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
 `WeightPolicy` 接收 `ScheduledPrediction`，返回
 `WeightBuild(weights: Panel, skipped: DataFrame)`。独立的
 `allocate_integer_positions` 接口以显式价格、预算、整手大小和冻结最低数量，把一期连续目标转换为
-整数手数仓位；大截面会先预分配连续目标附近的基准仓位，再在最后四手的有界范围内按跟踪误差
+整数手数仓位；至少 16 只资产的截面会先预分配连续目标附近的基准仓位，再在最后四手的有界范围内按跟踪误差
 顺序用确定性堆补齐，避免资金部署问题退化成耗时不可控的子集和 MILP。小截面仍保留精确的两阶段
-MILP。市场专属规则与实盘报单不属于本包边界。
+MILP。Top 50/100 日频组合也使用有界分配；预算、整手、持仓下限和单股上限仍受约束，资金部署为局部最大而非全局最优。市场专属规则与实盘报单不属于本包边界。
+
+正则化 optimizer v3 先细化标量对偶，再仅对正权重坐标投影。精确零权重保持零，
+避免求解舍入误差把本应排除的资产变成一手买入。
 
 `BacktestConfig.insolvency_action` 默认为 `"raise"`，保持严格失败语义。设为
 `"freeze_zero"` 后，资不抵债当日的有效费用封顶为可用财富，同时记录请求费用和未支付
@@ -77,6 +82,14 @@ BT 不推断具体因子名称，也不读取市场数据。
 
 Portfolio Path identity v4 使用必填 `PortfolioPathIdentity.pipeline`，删除原 Combo 字段。
 调用方传入冻结链路身份；旧 v3 路径缓存不得自动采用。
+
+## 计划调仓金额下限
+
+`run_stateful_account_backtest(..., minimum_trade_notional=0.0)` 可按决策日
+收盘价过滤小额整手调整。非完整退出且不足门槛时保留现有股数；目标为零或缺失
+仍完整退出。默认行为不变，开盘跳空、现金和整手限制仍可能产生更小成交。
+调用方须将该参数纳入结果和检查点身份。空成交、持仓和实际权重表保留类型结构，
+支持全现金路径。
 
 ## 异常
 
