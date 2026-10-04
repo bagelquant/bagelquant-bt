@@ -1,5 +1,29 @@
 # BT development rules
 
+## Staged refactor target
+
+The sequence is AI workflow, Data, Core, BT, Workbench, then a new database and
+service restart. Step 1 records the design only; it changes no code, public API,
+schema, numerical behavior, artifacts, database or running service. Later stages
+may redesign incompatible APIs and remove obsolete code without compatibility
+shims; real data, frozen evidence and operational actions retain their own
+authorization boundaries. Concrete replacement APIs belong to their code stages.
+
+BT owns scheduling, accounts/backtests, evaluation/statistics and the public
+APIs for persisting, querying and reusing its account/evaluation artifacts and
+checkpoints. Core owns generic numerical/training/optimization mechanics and
+graph/numerical artifacts. Data owns neutral dataset, version, PIT and frozen-input
+APIs. Workbench retains China declarations, authored definitions, app metadata,
+governance, tasks/orchestration and Web/GUI; its metadata references backend
+receipts. Target Workbench neither implements reusable engines nor accesses
+backend private APIs, artifact files or backend database tables directly.
+
+The dependency graph remains Data/Core independent, BT depending only on Core,
+and Workbench consuming all three. Market rules remain explicit caller inputs;
+BT never imports application/provider state. Current saved-result persistence
+and version bindings are partly in Workbench. The account/evaluation topic rules
+preserve current behavior until stages 4 and 5 transfer those mechanics.
+
 ## Preparation and boundaries
 
 - Inspect `git status --short --branch` including untracked changes before editing;
@@ -9,8 +33,8 @@
   casing, line endings, permissions, shell syntax and environment conventions on
   Windows/macOS. Use `pathlib`; never persist developer-specific absolute paths.
 - BT depends on Core, never Data or Workbench. Keep generic numerical primitives
-  in Core, account/evaluation mathematics here and application/market policy
-  downstream. Declare necessary dependencies in the owning manifest.
+  in Core, account/evaluation mathematics and artifact APIs here, and application/
+  China market declarations downstream. Declare dependencies in the owner manifest.
 
 ## Implementation
 

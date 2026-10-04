@@ -1,10 +1,16 @@
 # Saved-value evaluation, statistical evidence and stress
 
+These constraints describe the current numerical/API baseline. The
+[staged target](development.md#staged-refactor-target) moves reusable evaluation
+artifact storage, publication and reuse into BT APIs; application governance and
+submission authorization remain downstream. Step 1 does not implement that move.
+
 ## Diagnostics and saved inputs
 
 - Evaluate complete saved roots/targets with explicit market inputs and selected
   components only. Never build values, train upstream, call providers or make
-  passive reads submit computations. Callers own persistence and authorization.
+  passive reads submit computations. Callers currently persist returned results;
+  in the target BT owns its result persistence API and callers own authorization.
 - Share diagnostic weights, prepared market inputs and numerical primitives.
   Stream bounded label windows instead of retaining wide full-history matrices.
   Continue only verified causal prefixes; current freshness and historical

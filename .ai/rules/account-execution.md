@@ -1,18 +1,25 @@
 # Typed contracts, targets and account execution
 
+These are current API/numerical constraints. The
+[staged target](development.md#staged-refactor-target) assigns reusable account
+artifact storage and checkpoint persistence to BT; the present Workbench bindings
+below remain baseline facts until the owning refactor stages implement that API.
+
 ## Boundaries and scheduling
 
-- Depend on Core Panel/Signal contracts; never import Data/Workbench or assume
+- Depend on Core Panel/Prediction contracts; never import Data/Workbench or assume
   China/application-specific behavior in generic APIs. BT owns simulation and
   evaluation, not upstream value production or training.
-- Preserve the public Signal backtest boundary: `compose_signal` constructs
-  `SignalPanel`; public signal backtests never accept plain Panels, raw frames
-  or direct weights. The distinct saved-target account API consumes explicit
-  complete targets plus rebalance/hold/unavailable decisions.
+- `run_prediction_backtest` requires `PredictionPanel`, never a plain Panel,
+  raw frame or direct weights. `ExecutionPolicy.schedule_prediction` produces
+  `ScheduledPrediction` for prediction diagnostics/evaluation. The separate
+  saved-target account APIs accept explicit target frames; in particular,
+  `evaluate_portfolio_targets` consumes complete saved targets plus
+  rebalance/hold/unavailable decisions. Do not conflate these input contracts.
 - `compose_prediction` and `compose_processed_prediction` return the Composer's
   raw typed `PredictionPanel`. Do not add fixed/implicit normalization;
   callers explicitly express post-composer transformations.
-- Prices use `(time, asset_id, price)`; Signal/weights use Core's
+- Prices use `(time, asset_id, price)`; Prediction/weights use Core's
   `(time, asset_id, value)`. Align snapshots to exact observed price keys.
   Executed weights at `time=t` earn the next market-session close-to-close return.
 - Keep signal selection, execution schedule, portfolio policy, returns, costs,
@@ -55,7 +62,9 @@
   Consumers prepare it lazily only for accounts that need computation.
 - Keep frozen evaluation kernel versions; unavailable historical kernels require
   a new forward validation batch, never rewritten immutable registrations/evidence.
-  Workbench owns account-kernel and Portfolio decision/checkpoint version bindings.
+  Currently Workbench holds account-kernel and Portfolio decision/checkpoint
+  version bindings; target BT owns account artifact/checkpoint mechanics while
+  Workbench retains application bindings to the backend receipts.
 - Flush account output rows in bounded columnar batches; preserve complete
   public schemas and causal date order. Share prepared inputs under the total
   resource budget; operational limits never change numerical identity.
