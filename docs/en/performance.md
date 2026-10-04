@@ -94,3 +94,25 @@ reloading artifacts, and calculating materialization hashes in
 `bagelquant-workbench`
 can still dominate an end-to-end production run and should be optimized in
 that application rather than in this package.
+
+The runner also supports configurable `daily-sections`, `account` and
+`account-stress` cases, for example:
+
+```bash
+uv run python examples/benchmark_efficiency.py --case daily-sections --assets 250 --sessions 300 --runs 3
+uv run python examples/benchmark_efficiency.py --case account-stress --assets 250 --sessions 300 --runs 3
+```
+
+`daily-sections` measures the chapter-selective entry used by Workbench and
+reports actual `rank_preparations`. Horizons, paths and turnover share prepared
+rank weights; verified append evaluations slice the same cross-sectional weights
+to the narrower horizon boundary while retaining the path warm-up interval.
+Newly selected chapters still calculate their complete missing history.
+
+`account-stress` prepares market lookups once and releases each independent
+scenario's full result before running the next. Whole-share output rows become
+columnar chunks every 8,192 rows per table, retaining exact row order, schemas
+and checkpoint semantics. This bounds temporary Python row objects, not the
+size of the complete public DataFrame results. Time within one causal account
+remains sequential; concurrent independent accounts require a bounded caller
+budget rather than Python threads multiplying those state-machine loops.

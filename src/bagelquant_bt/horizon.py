@@ -1354,6 +1354,19 @@ def _prepare_daily_weights(
     )
 
 
+def _slice_daily_weights(
+    prepared: _PreparedDailyDiagnostics, start: date | None,
+) -> _PreparedDailyDiagnostics:
+    """Keep the same cross-sectional weights over a narrower date interval."""
+    keep = pl.lit(False) if start is None else pl.col("evaluation_date") >= start
+    return replace(
+        prepared,
+        factor=prepared.factor.filter(keep),
+        book=None if prepared.book is None else prepared.book.filter(keep),
+        tail=None if prepared.tail is None else prepared.tail.filter(keep),
+    )
+
+
 def _prepare_daily_price_lookup(
     prepared: _PreparedDailyDiagnostics,
 ) -> _PreparedDailyDiagnostics:
@@ -1870,6 +1883,26 @@ def run_daily_prediction_sections(
             ).sort(["evaluation_date", "horizon_sessions"])
         if "persistence" in selected:
             frames["daily_signal_autocorrelation"] = persistence
+    weighted_contexts: dict[bool, _PreparedDailyDiagnostics] = {}
+
+    def weighted(use_suffix: bool) -> _PreparedDailyDiagnostics:
+        if use_suffix not in weighted_contexts:
+            source = (
+                incremental_context
+                if use_suffix and incremental_context is not None else prepared
+            )
+            if use_suffix and False in weighted_contexts:
+                # Cross-sectional weights have no temporal lookback. Slice the
+                # full prepared weights instead of ranking the same dates twice.
+                weighted_contexts[use_suffix] = _slice_daily_weights(
+                    weighted_contexts[False], source.factor["evaluation_date"].min()
+                )
+            else:
+                weighted_contexts[use_suffix] = _prepare_daily_weights(
+                    source, quantiles=config.quantiles
+                )
+        return weighted_contexts[use_suffix]
+
     horizons = None
     if selected & {"horizons", "rolling_ic"}:
         reusable_horizons = incremental_context is not None and all(
@@ -1883,19 +1916,10 @@ def run_daily_prediction_sections(
                 "factor_returns",
             )
         )
-        horizon_context = (
-            replace(
-                incremental_context,
-                factor=incremental_context.factor.filter(
-                    pl.col("evaluation_date") >= boundary
-                ),
-            )
-            if reusable_horizons
-            else prepared
-        )
-        horizon_context = _prepare_daily_price_lookup(
-            _prepare_daily_weights(horizon_context, quantiles=config.quantiles)
-        )
+        horizon_context = weighted(reusable_horizons)
+        if reusable_horizons:
+            horizon_context = _slice_daily_weights(horizon_context, boundary)
+        horizon_context = _prepare_daily_price_lookup(horizon_context)
         horizons = _run_prediction_horizon_diagnostics_prepared(
             horizon_context,
             windows=DAILY_SESSION_WINDOWS,
@@ -1943,16 +1967,7 @@ def run_daily_prediction_sections(
     if "rolling_ic" in reusable:
         # This small aggregate consumes the complete merged IC history.
         reusable.remove("rolling_ic")
-    weighted_contexts = {}
     forward_returns = None
-
-    def weighted(use_suffix):
-        if use_suffix not in weighted_contexts:
-            weighted_contexts[use_suffix] = _prepare_daily_weights(
-                incremental_context if use_suffix else prepared,
-                quantiles=config.quantiles,
-            )
-        return weighted_contexts[use_suffix]
 
     if path_components or "turnover" in selected:
         forward_returns = _prepare_price_data(

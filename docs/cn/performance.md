@@ -70,3 +70,7 @@ trade 和 checkpoint 状态要求完全一致。
 
 基准只统计计算。`bagelquant-workbench` 中逐月持久化、产物重载和 materialization
 hash 仍可能主导 126 段生产链路的总耗时，应在应用层的后续优化中单独处理。
+
+基准还支持 `daily-sections`、`account` 与 `account-stress`，可用 `--assets`、`--sessions` 和 `--runs` 固定规模与重复次数。`daily-sections` 测量 Workbench 实际使用的按章节入口，并报告真实 `rank_preparations`：期限、路径和换手复用同一组排名权重；增量期限从暖身区间已准备的权重切取较短窗口，新选择章节仍补齐完整历史。
+
+`account-stress` 只准备一次市场查找，每个独立压力账户的完整结果在下一个场景前释放。整股账户每张输出表每 8,192 行转成列式块，保持行序、schema、空值与 checkpoint 语义。这限制暂存 Python 行对象数量，完整公开 DataFrame 的总大小仍随结果增长。单账户日期按因果顺序执行；独立账户并发应由调用方总资源预算控制。

@@ -28,13 +28,18 @@ import polars as pl
 from bagelquant_core import Domain, PredictionPanel
 
 from bagelquant_bt import (
+    AccountBacktestConfig,
     BacktestConfig,
     PortfolioPathIdentity,
     ScheduledPrediction,
+    evaluate_portfolio_targets,
+    implementation_stress_scenarios,
     materialize_portfolio_path,
+    prepare_account_market_data,
     prepare_factor_market_data,
     resume_portfolio_path,
     run_daily_prediction_diagnostics,
+    run_daily_prediction_sections,
     run_daily_rank_path_diagnostics,
 )
 from bagelquant_bt.factor import run_factor_evaluation, top_n_equal_weights
@@ -45,6 +50,9 @@ CASES = (
     "constrained-factor",
     "daily-rank-path",
     "daily-prediction",
+    "daily-sections",
+    "account",
+    "account-stress",
     "portfolio-path",
 )
 
@@ -63,6 +71,7 @@ class BenchmarkMeasurement:
     materialization_seconds: float = 0.0
     materialized_peak_rss_mb: float = 0.0
     max_window_rows: int = 0
+    rank_preparations: int = 0
 
 
 def _peak_rss_mb() -> float:
@@ -367,6 +376,7 @@ def _daily_prediction_case(
     *,
     asset_count: int,
     session_count: int,
+    sections: bool = False,
 ) -> BenchmarkMeasurement:
     """Measure the unified daily kernel with configurable production shape."""
 
@@ -395,26 +405,97 @@ def _daily_prediction_case(
     data_peak_rss_mb = _peak_rss_mb()
 
     compute_started = time.perf_counter()
-    diagnostics = run_daily_prediction_diagnostics(
-        scheduled,
-        prices,
-        config=BacktestConfig(initial_capital=1_000_000, quantiles=10),
-        prediction_frame=prediction_frame,
-    )
+    rank_preparations = 0
+    if sections:
+        import bagelquant_bt.horizon as horizon_module
+
+        original = horizon_module._prepare_daily_weights
+
+        def measured(*args, **kwargs):
+            nonlocal rank_preparations
+            rank_preparations += 1
+            return original(*args, **kwargs)
+
+        horizon_module._prepare_daily_weights = measured
+        try:
+            frames, horizons = run_daily_prediction_sections(
+                scheduled, prices,
+                config=BacktestConfig(initial_capital=1_000_000, quantiles=10),
+                prediction_frame=prediction_frame,
+                components=["horizons", "book_tail", "quantiles", "turnover",
+                            "lead_lag", "alpha_return", "persistence", "rolling_ic"],
+            )
+        finally:
+            horizon_module._prepare_daily_weights = original
+        rows = sum(frame.height for frame in frames.values())
+        max_window_rows = horizons.max_window_forward_rows
+    else:
+        diagnostics = run_daily_prediction_diagnostics(
+            scheduled, prices,
+            config=BacktestConfig(initial_capital=1_000_000, quantiles=10),
+            prediction_frame=prediction_frame,
+        )
+        rows = (
+            diagnostics.horizons.ic.height
+            + diagnostics.paths.book_lead_lag_returns.height
+        )
+        max_window_rows = diagnostics.horizons.max_window_forward_rows
     compute_seconds = time.perf_counter() - compute_started
     return BenchmarkMeasurement(
-        case="daily-prediction",
+        case="daily-sections" if sections else "daily-prediction",
         data_seconds=data_seconds,
         data_peak_rss_mb=data_peak_rss_mb,
         compute_seconds=compute_seconds,
         peak_rss_mb=_peak_rss_mb(),
-        rows=(
-            diagnostics.horizons.ic.height
-            + diagnostics.paths.book_lead_lag_returns.height
-        ),
+        rows=rows,
         segments=12,
         materialized_peak_rss_mb=_peak_rss_mb(),
-        max_window_rows=diagnostics.horizons.max_window_forward_rows,
+        max_window_rows=max_window_rows,
+        rank_preparations=rank_preparations,
+    )
+
+
+def _account_case(*, asset_count: int, session_count: int, stress: bool):
+    """Measure saved-target whole-share accounts, releasing each scenario."""
+    started = time.perf_counter()
+    prices, targets = _market(
+        asset_count=asset_count, session_count=session_count, signal_stride=5,
+    )
+    sessions = prices["time"].unique().sort().to_list()
+    calendar = pl.DataFrame({"time": [
+        *sessions, *(sessions[-1] + timedelta(days=i) for i in range(1, 10)),
+    ]})
+    decisions = calendar.with_columns(
+        pl.when(pl.col("time").is_in(targets["time"].unique().implode()))
+        .then(pl.lit("rebalance")).otherwise(pl.lit("hold")).alias("status"),
+        pl.lit(None, dtype=pl.String).alias("reason"),
+    )
+    targets = targets.select("time", "asset_id", pl.lit(1 / asset_count).alias("value"))
+    prepared = prepare_account_market_data(prices.select(
+        "time", "asset_id", pl.col("price").alias("open"),
+        (pl.col("price") * 1.0001).alias("close"),
+    ))
+    coverage = calendar.with_columns(pl.lit(True).alias("is_complete"))
+    config = AccountBacktestConfig(initial_capital=10_000_000)
+    scenarios = (
+        list(implementation_stress_scenarios(config, session_lag=1))
+        if stress else [("baseline", config, 1)]
+    )
+    data_seconds = time.perf_counter() - started
+    data_peak = _peak_rss_mb()
+    started = time.perf_counter()
+    rows = 0
+    for _name, settings, lag in scenarios:
+        result = evaluate_portfolio_targets(
+            targets, decisions, prepared, calendar=calendar,
+            corporate_action_coverage=coverage, config=settings, session_lag=lag,
+        ).account
+        rows += result.positions.height + result.fills.height
+        del result
+    return BenchmarkMeasurement(
+        case="account-stress" if stress else "account", data_seconds=data_seconds,
+        data_peak_rss_mb=data_peak, compute_seconds=time.perf_counter() - started,
+        peak_rss_mb=_peak_rss_mb(), rows=rows, segments=len(scenarios),
     )
 
 
@@ -450,10 +531,16 @@ def _run_child(
         )
     if case == "daily-rank-path":
         return _daily_rank_path_case()
-    if case == "daily-prediction":
+    if case in {"daily-prediction", "daily-sections"}:
         return _daily_prediction_case(
             asset_count=asset_count,
             session_count=session_count,
+            sections=case == "daily-sections",
+        )
+    if case in {"account", "account-stress"}:
+        return _account_case(
+            asset_count=asset_count, session_count=session_count,
+            stress=case == "account-stress",
         )
     return _portfolio_path_case()
 
@@ -538,6 +625,7 @@ def main() -> None:
             "rows": measurements[0].rows,
             "segments": measurements[0].segments,
             "max_window_rows": measurements[0].max_window_rows,
+            "rank_preparations": measurements[0].rank_preparations,
         }
         if case != "portfolio-path":
             summary["median_materialization_seconds"] = statistics.median(

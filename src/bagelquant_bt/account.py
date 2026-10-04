@@ -113,6 +113,40 @@ class StatefulAccountBacktestResult:
 AccountTargetProvider = Callable[[AccountDecisionContext], pl.DataFrame]
 
 
+_ACCOUNT_ROW_BATCH_SIZE = 8192
+
+
+class _AccountRows:
+    """Bound Python output rows while retaining complete columnar results."""
+
+    __slots__ = ("_buffer", "_chunks")
+
+    def __init__(self) -> None:
+        self._buffer: list[dict[str, Any]] = []
+        self._chunks: list[pl.DataFrame] = []
+
+    def append(self, row: dict[str, Any]) -> None:
+        self._buffer.append(row)
+        if len(self._buffer) >= _ACCOUNT_ROW_BATCH_SIZE:
+            self._flush()
+
+    def _flush(self) -> None:
+        if self._buffer:
+            self._chunks.append(pl.DataFrame(self._buffer, infer_schema_length=None))
+            self._buffer.clear()
+
+    def frame(self, *, empty_schema=None) -> pl.DataFrame:
+        self._flush()
+        if not self._chunks:
+            return pl.DataFrame(schema=empty_schema)
+        result = pl.concat(self._chunks, how="diagonal_relaxed", rechunk=False)
+        self._chunks.clear()
+        return result
+
+
+type _OutputRows = list[dict[str, Any]] | _AccountRows
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedAccountMarketData:
     """Validated read-only market lookup shared by independent accounts.
@@ -374,8 +408,8 @@ def _run_account_backtest(
         initial_cash=initial_cash,
         checkpoint=checkpoint,
     )
-    rows: dict[str, list[dict[str, Any]]] = {
-        name: []
+    rows: dict[str, _OutputRows] = {
+        name: _AccountRows()
         for name in (
             "target_weights",
             "target_positions",
@@ -1104,9 +1138,9 @@ def _execute_rebalance(
     availability: dict[tuple[date, str], tuple[bool, bool, str]],
     lots: dict[str, int],
     config: AccountBacktestConfig,
-    order_rows: list[dict[str, Any]],
-    fill_rows: list[dict[str, Any]],
-    flow_rows: list[dict[str, Any]],
+    order_rows: _OutputRows,
+    fill_rows: _OutputRows,
+    flow_rows: _OutputRows,
     *,
     expire_unfilled: bool = False,
 ) -> tuple[float, float, dict[str, int | None]]:
@@ -1385,7 +1419,7 @@ def _apply_fill(
     config: AccountBacktestConfig,
     calendar: list[date],
     session_index: int,
-    fill_rows: list[dict[str, Any]],
+    fill_rows: _OutputRows,
     order_id: str,
 ) -> float:
     rate = config.transaction_cost.slippage_for(side)
@@ -1452,8 +1486,8 @@ def _desired_positions(
     state: dict[str, Any],
     prices: dict[str, dict[str, float | None]],
     lots: dict[str, int],
-    target_weight_rows: list[dict[str, Any]],
-    target_position_rows: list[dict[str, Any]],
+    target_weight_rows: _OutputRows,
+    target_position_rows: _OutputRows,
 ) -> dict[str, int | None]:
     desired: dict[str, int | None] = {}
     for asset_id in sorted(set(target) | set(state["positions"])):
@@ -1492,8 +1526,8 @@ def _planned_positions(
     session: date,
     plan: dict[str, Any],
     prices: dict[str, dict[str, float | None]],
-    target_weight_rows: list[dict[str, Any]],
-    target_position_rows: list[dict[str, Any]],
+    target_weight_rows: _OutputRows,
+    target_position_rows: _OutputRows,
 ) -> dict[str, int]:
     decision_date = plan["decision_date"]
     sizing_notional = float(plan["sizing_notional"])
@@ -1534,7 +1568,7 @@ def _apply_corporate_actions(
     actions_by_ex: dict[date, tuple[dict[str, Any], ...]],
     actions_by_pay: dict[date, tuple[dict[str, Any], ...]],
     actions_by_list: dict[date, tuple[dict[str, Any], ...]],
-    receivable_rows: list[dict[str, Any]],
+    receivable_rows: _OutputRows,
 ) -> None:
     for action in actions_by_ex.get(session, ()):
         entitlement = state["entitlements"].get(action["action_id"], 0)
@@ -1638,7 +1672,7 @@ def _rebalance_external_capital(
     state: dict[str, Any],
     fixed_notional: float,
     session: date,
-    flow_rows: list[dict[str, Any]],
+    flow_rows: _OutputRows,
 ) -> float:
     equity = _state_equity(state)
     if equity < fixed_notional - 1e-8:
@@ -1657,7 +1691,7 @@ def _rebalance_external_capital(
 def _pay_pending_withdrawal(
     state: dict[str, Any],
     session: date,
-    flow_rows: list[dict[str, Any]],
+    flow_rows: _OutputRows,
 ) -> float:
     amount = min(state["cash"], state["pending_withdrawal"])
     if amount <= 1e-12:
@@ -1673,7 +1707,7 @@ def _post_external_flow(
     session: date,
     amount: float,
     reason: str,
-    rows: list[dict[str, Any]],
+    rows: _OutputRows,
 ) -> float:
     equity = _state_equity(state)
     nav = equity / state["units"]
@@ -1690,7 +1724,7 @@ def _record_end_of_day_state(
     session: date,
     state: dict[str, Any],
     equity: float,
-    rows: dict[str, list[dict[str, Any]]],
+    rows: dict[str, _OutputRows],
 ) -> None:
     for asset_id in sorted(state["positions"]):
         quantity = state["positions"][asset_id]
@@ -1986,7 +2020,9 @@ def _order_row(
     }
 
 
-def _rows_frame(rows: list[dict[str, Any]], *, empty_schema=None) -> pl.DataFrame:
+def _rows_frame(rows: _OutputRows, *, empty_schema=None) -> pl.DataFrame:
+    if isinstance(rows, _AccountRows):
+        return rows.frame(empty_schema=empty_schema)
     return (
         pl.DataFrame(rows, infer_schema_length=None)
         if rows

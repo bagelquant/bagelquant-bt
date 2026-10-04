@@ -322,8 +322,13 @@ def test_horizon_append_reuses_prefix_and_matches_full_newly_matured_labels(
     with monkeypatch.context() as patch:
         patch.setattr(module, "_prepare_daily_weights", observed)
         incremental, sliced = run(380, prior_frames=old, prior_through=days[359])
+    assert len(observed_rows) == 1
     assert max(observed_rows) < values.height
-    full, complete = run(380)
+    observed_rows.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "_prepare_daily_weights", observed)
+        full, complete = run(380)
+    assert len(observed_rows) == 1
     for name in ("daily_book_lead_lag_returns", "daily_alpha_return_lag_returns"):
         assert_frame_equal(
             incremental[name],
@@ -382,6 +387,74 @@ def test_horizon_append_reuses_prefix_and_matches_full_newly_matured_labels(
             check_exact=False,
             abs_tol=1e-10,
         )
+
+
+def test_account_output_chunks_preserve_schema_order_and_promote_nulls(monkeypatch):
+    import bagelquant_bt.account as module
+
+    monkeypatch.setattr(module, "_ACCOUNT_ROW_BATCH_SIZE", 2)
+    rows = [
+        {"time": date(2024, 1, 1), "quantity": 0, "price": None},
+        {"time": date(2024, 1, 2), "quantity": 1, "price": None},
+        {"time": date(2024, 1, 3), "quantity": 2, "price": 10.0},
+        {"time": date(2024, 1, 4), "quantity": 3, "price": 11.0,
+         "reason": "corporate action"},
+        {"time": date(2024, 1, 5), "quantity": 0, "price": 12.0},
+    ]
+    output = module._AccountRows()
+    for row in rows:
+        output.append(row)
+        assert len(output._buffer) < 2
+    assert_frame_equal(
+        module._rows_frame(output), pl.DataFrame(rows, infer_schema_length=None)
+    )
+
+
+def test_chunked_account_matches_full_rows_and_checkpoint(monkeypatch):
+    from dataclasses import fields
+
+    import bagelquant_bt.account as module
+
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(35)]
+    calendar = pl.DataFrame({"time": days})
+    prices = calendar.join(pl.DataFrame({"asset_id": ["a", "b"]}), how="cross")
+    prices = prices.with_columns(
+        pl.lit(10.0).alias("open"), pl.lit(10.1).alias("close")
+    )
+    weights = pl.DataFrame({
+        "time": [days[0], days[0], days[10], days[10], days[20], days[20]],
+        "asset_id": ["a", "b"] * 3, "value": [1., 0., .5, .5, 0., 0.],
+    })
+    decisions = calendar.with_columns(
+        pl.when(pl.col("time").is_in(weights["time"].unique().implode()))
+        .then(pl.lit("rebalance")).otherwise(pl.lit("hold")).alias("status"),
+        pl.lit(None, dtype=pl.String).alias("reason"),
+    )
+
+    def run():
+        return evaluate_portfolio_targets(
+            weights, decisions, prices, calendar=calendar,
+            corporate_action_coverage=calendar.with_columns(
+                pl.lit(True).alias("is_complete")
+            ), config=AccountBacktestConfig(initial_capital=10000),
+        ).account
+
+    monkeypatch.setattr(module, "_ACCOUNT_ROW_BATCH_SIZE", 100000)
+    expected = run()
+    monkeypatch.setattr(module, "_ACCOUNT_ROW_BATCH_SIZE", 3)
+    actual = run()
+    for field in fields(actual):
+        if isinstance(getattr(actual, field.name), pl.DataFrame):
+            assert_frame_equal(
+                getattr(actual, field.name), getattr(expected, field.name)
+            )
+    for field in fields(actual.final_checkpoint):
+        value = getattr(actual.final_checkpoint, field.name)
+        reference = getattr(expected.final_checkpoint, field.name)
+        if isinstance(value, pl.DataFrame):
+            assert_frame_equal(value, reference)
+        else:
+            assert value == reference
 
 
 def test_turnover_checkpoint_retains_long_blocks_and_absent_price_targets():

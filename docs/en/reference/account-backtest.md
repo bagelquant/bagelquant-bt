@@ -59,6 +59,12 @@ daily positions, cash, receivables, external flows, pending withdrawals,
 account equity, performance NAV, executable weights, target/implementation/cost
 drag, and a resumable checkpoint.
 
+Output tables are accumulated in columnar chunks with at most 8,192 temporary
+Python rows per table. Public tables remain complete and preserve their schemas
+and chronological order; the checkpoint and monthly Legacy account contract are
+unchanged. This bounds row-object staging, while the caller still budgets memory
+for the requested complete result tables.
+
 Whole-lot sizing maximizes deployed stock notional before minimizing target
 deviation. For broad cross-sections, it preallocates all but the final four lots
 around each continuous target and uses a deterministic, target-aligned heap to
