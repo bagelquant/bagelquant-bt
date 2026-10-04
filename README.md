@@ -123,6 +123,11 @@ move is recognized when a new price appears.
 
 ## Development
 
+AI contributors start with [AGENTS.md](AGENTS.md) and the
+[local workflow and topic routes](.ai/README.md). Integrated checkouts use the
+verified workspace's bilingual AI workflow guide and ignored task records;
+standalone checkouts use the local rules and conversation handoff.
+
 The public `risk` module provides application-neutral constrained cross-sectional
 factor-return WLS, causal standardized rolling Ridge, rolling volatility and
 wealth-linked return contributions. Callers supply numerical panels and explicit
