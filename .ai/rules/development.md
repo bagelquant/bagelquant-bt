@@ -9,7 +9,7 @@ may redesign incompatible APIs and remove obsolete code without compatibility
 shims; real data, frozen evidence and operational actions retain their own
 authorization boundaries. Concrete replacement APIs belong to their code stages.
 
-BT owns scheduling, accounts/backtests, evaluation/statistics and the public
+BT owns financial execution scheduling, accounts/backtests, evaluation/statistics and the public
 APIs for persisting, querying and reusing its account/evaluation artifacts and
 checkpoints. Core owns generic numerical/training/optimization mechanics and
 graph/numerical artifacts. Data owns neutral dataset, version, PIT and frozen-input
@@ -23,6 +23,11 @@ and Workbench consuming all three. Market rules remain explicit caller inputs;
 BT never imports application/provider state. Current saved-result persistence
 and version bindings are partly in Workbench. The account/evaluation topic rules
 preserve current behavior until stages 4 and 5 transfer those mechanics.
+
+Workbench owns machine resource detection, global scheduling/admission and
+runtime policy. BT accepts explicit local parallel configuration for backtests
+and evaluation; it must not allocate machine-wide resources or select workers
+from available CPU/RAM. Concrete runtime changes belong to stage 4.
 
 ## Preparation and boundaries
 
