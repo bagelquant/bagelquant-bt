@@ -5,9 +5,9 @@ from time import perf_counter
 
 import numpy as np
 import polars as pl
+from bagelquant_bt.factor import FactorEvaluationResult
 
 from bagelquant_bt import BacktestConfig, run_factor_evaluation, summary_report
-from bagelquant_bt.factor import FactorEvaluationResult
 
 
 def make_prices(
