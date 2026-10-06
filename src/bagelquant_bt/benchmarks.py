@@ -9,7 +9,7 @@ import polars as pl
 
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_universe
-from .performance import _annualized_return
+from .statistics import return_metrics
 
 DEFAULT_BENCHMARK = "universe_equal_weight"
 
@@ -201,9 +201,10 @@ def build_universe_benchmark_returns(
         pl.col("forward_return").cast(pl.Float64, strict=False),
     )
     if universe is None and sizes is None:
-        valid = pl.col("forward_return").is_not_null() & pl.col(
-            "forward_return"
-        ).is_finite()
+        valid = (
+            pl.col("forward_return").is_not_null()
+            & pl.col("forward_return").is_finite()
+        )
         aggregated = (
             returns.group_by(TIME)
             .agg(
@@ -221,9 +222,9 @@ def build_universe_benchmark_returns(
             pl.lit(name).alias("benchmark"),
             "expected_count",
             "observed_count",
-            (
-                pl.col("observed_count") / pl.col("expected_count")
-            ).alias("coverage_ratio"),
+            (pl.col("observed_count") / pl.col("expected_count")).alias(
+                "coverage_ratio"
+            ),
         )
         return benchmark, coverage
     members = (
@@ -244,8 +245,7 @@ def build_universe_benchmark_returns(
         pl.len().cast(pl.Int64).alias("expected_count")
     )
     available = members.join(returns, on=[TIME, ASSET_ID], how="inner").filter(
-        pl.col("forward_return").is_not_null()
-        & pl.col("forward_return").is_finite()
+        pl.col("forward_return").is_not_null() & pl.col("forward_return").is_finite()
     )
     if sizes is None:
         weighted = available.with_columns(pl.lit(1.0).alias("_weight"))
@@ -265,13 +265,15 @@ def build_universe_benchmark_returns(
             pl.struct(TIME, ASSET_ID).is_duplicated().any()
         ).item():
             raise InputValidationError("sizes must be unique by (time, asset_id)")
-        weighted = available.join(
-            normalized_sizes, on=[TIME, ASSET_ID], how="inner"
-        ).filter(
-            pl.col("size").is_not_null()
-            & pl.col("size").is_finite()
-            & (pl.col("size") > 0)
-        ).rename({"size": "_weight"})
+        weighted = (
+            available.join(normalized_sizes, on=[TIME, ASSET_ID], how="inner")
+            .filter(
+                pl.col("size").is_not_null()
+                & pl.col("size").is_finite()
+                & (pl.col("size") > 0)
+            )
+            .rename({"size": "_weight"})
+        )
     observed = weighted.group_by(TIME).agg(
         pl.len().cast(pl.Int64).alias("observed_count")
     )
@@ -291,9 +293,9 @@ def build_universe_benchmark_returns(
         expected.join(observed, on=TIME, how="left")
         .with_columns(pl.col("observed_count").fill_null(0))
         .with_columns(
-            (
-                pl.col("observed_count") / pl.col("expected_count")
-            ).alias("coverage_ratio"),
+            (pl.col("observed_count") / pl.col("expected_count")).alias(
+                "coverage_ratio"
+            ),
             pl.lit(name).alias("benchmark"),
         )
         .select(
@@ -319,11 +321,15 @@ def validate_benchmark_returns(frame: pl.DataFrame) -> pl.DataFrame:
         raise InputValidationError(
             f"benchmark_returns is missing required columns: {missing}"
         )
-    normalized = frame.select(TIME, "benchmark", "return").with_columns(
-        pl.col(TIME).cast(pl.Date, strict=False),
-        pl.col("benchmark").cast(pl.String),
-        pl.col("return").cast(pl.Float64, strict=False),
-    ).drop_nulls([TIME, "benchmark", "return"])
+    normalized = (
+        frame.select(TIME, "benchmark", "return")
+        .with_columns(
+            pl.col(TIME).cast(pl.Date, strict=False),
+            pl.col("benchmark").cast(pl.String),
+            pl.col("return").cast(pl.Float64, strict=False),
+        )
+        .drop_nulls([TIME, "benchmark", "return"])
+    )
     normalized = normalized.filter(pl.col("return").is_finite())
     if normalized.filter(pl.col("benchmark").str.strip_chars() == "").height:
         raise InputValidationError("benchmark names must not be blank")
@@ -334,43 +340,40 @@ def validate_benchmark_returns(frame: pl.DataFrame) -> pl.DataFrame:
     return normalized.sort(["benchmark", TIME])
 
 
-def benchmark_performance(
-    returns: pl.DataFrame, *, annualization: int
-) -> pl.DataFrame:
+def benchmark_performance(returns: pl.DataFrame, *, annualization: int) -> pl.DataFrame:
     """Summarize each cost-free benchmark return path."""
 
+    fields = (
+        "total_return",
+        "annualized_return",
+        "annualized_volatility",
+        "sharpe",
+        "max_drawdown",
+    )
     rows: list[dict[str, object]] = []
     for frame in returns.partition_by("benchmark", maintain_order=True):
         name = str(frame.get_column("benchmark")[0])
-        values = np.array(frame.get_column("return"), dtype=float)
-        periods = len(values)
-        total = float(np.prod(1.0 + values) - 1.0)
-        mean = float(np.mean(values)) if periods else math.nan
-        std = float(np.std(values, ddof=1)) if periods > 1 else math.nan
-        wealth = np.cumprod(1.0 + values)
-        drawdown = wealth / np.maximum.accumulate(wealth) - 1.0
+        metrics = return_metrics(frame.get_column("return"), annualization)
         rows.append(
             {
                 "benchmark": name,
-                "total_return": total,
-                "annualized_return": _annualized_return(
-                    1.0 + total,
-                    periods=periods,
-                    annualization=annualization,
-                ),
-                "annualized_volatility": std * math.sqrt(annualization),
-                "sharpe": (
-                    mean / std * math.sqrt(annualization)
-                    if std != 0 and not math.isnan(std)
-                    else math.nan
-                ),
-                "max_drawdown": (
-                    float(np.min(drawdown)) if periods else math.nan
-                ),
+                **{
+                    key: metrics[key]
+                    for key in (
+                        *fields,
+                        *(f"{field}_reason" for field in fields),
+                        "sample_size",
+                        "status",
+                        "reason",
+                    )
+                },
             }
         )
     return (
-        pl.DataFrame(rows)
+        pl.DataFrame(rows).with_columns(
+            pl.col(name).cast(pl.String)
+            for name in ("status", "reason", *(f"{field}_reason" for field in fields))
+        )
         if rows
         else pl.DataFrame(
             schema={
@@ -380,6 +383,10 @@ def benchmark_performance(
                 "annualized_volatility": pl.Float64,
                 "sharpe": pl.Float64,
                 "max_drawdown": pl.Float64,
+                **{f"{field}_reason": pl.String for field in fields},
+                "sample_size": pl.Int64,
+                "status": pl.String,
+                "reason": pl.String,
             }
         )
     )
@@ -405,9 +412,7 @@ def top_n_excess_returns(
             )
             .with_columns(
                 (
-                    (1.0 + pl.col("daily_excess_return"))
-                    .cum_prod()
-                    .over("benchmark")
+                    (1.0 + pl.col("daily_excess_return")).cum_prod().over("benchmark")
                     - 1.0
                 ).alias("compounded_excess_return"),
                 (

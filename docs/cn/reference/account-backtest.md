@@ -1,40 +1,29 @@
-# 整股账户回测
+# 股数交易、FIFO 与续算
 
-`run_account_backtest` 是独立的确定性日频账户引擎。输入包括 target weights、与 provider
-无关的非复权 open/close、公司行动及覆盖、可交易性、lot size、初始现金/持仓和
-`AccountBacktestConfig`。
+evaluate_execution 接受冻结 signed share delta；卖单优先，再按 asset/plan ID
+稳定执行买单，不合并独立订单。实际成交遵循含费用的现金、可卖股数/结算、lot
+和 block。余量默认过期；显式 retry 只重试剩余股数，新交易日重新计费。
 
-每个交易日从上一 checkpoint 恢复，释放结算和公司行动应收，按 open 估值，按配置处理
-fixed-notional 外部流，计算整数目标股数，先执行可卖订单并支付 pending withdrawal，最后
-分配可负担买入整手。买入按最大跟踪误差改善排序，使用稳定 `asset_id` 打破平局。订单要么
-完整成交，要么明确标记为受限或缩减；最新 target revision 取代旧 pending intent。
+理论账本按给定 reference price 完整执行原股数，费用为零，忽略实际 lot/settlement/
+block；但必须现金和持仓可行，否则整个评估报错。理论/实际独立 FIFO，按匹配
+数量分摊买卖费用，未平仓费用/浮盈独立。现金分红归属 record-date 原 buy plan；
+送股保留原 plan，明确采用零 acquisition basis（原 lot 保留原成本），不隐含税务规则。
+每个 session 的 realized/unrealized/income 与 equity 严格对账。
 
-引擎不会用复权价格合成股数。Record-date 收盘持仓确定分红权益；ex-date 创建现金和股票
-应收；pay-date 释放现金；股票可用日释放红股。每个模拟交易日都必须具有完整公司行动覆盖。
+订单的可选 reference_price 优先于 market 行的 reference_price；均未提供时，
+理论账本使用调用者提供的 execution price。参考价格及选择规则进入 checkpoint
+identity。某个账本没有成交金额时，其 return 为 null，对应的 target_return_reason
+或 actual_return_reason 为 no_filled_notional，不填零收益。
 
-恢复 `run_stateful_account_backtest` 时，除 checkpoint 外，还应通过
-`initial_target_position_plans` 传入已冻结的计划。在 checkpoint 之前决定、之后才到执行日的
-计划会按原日期和原股数执行，不重复调用其决策回调，也不在执行日开盘重新确定股数。
-保存目标的 `evaluate_portfolio_targets` 使用相同规则：日历须包含已知的未来执行日期，
-价格仍截止模拟截止日。保存返回的未来计划并在续算时传入；无法安排决策的截断日历
-会明确报错。`prepare_account_market_data` 为多个独立压力账户共用已校验的价格及可交易性查询
-结构，其中不包含账户状态。
+权重桥接使用实际 decision-close 状态冻结 delta，execution open 不重新 sizing。
+未来 calendar 必须覆盖执行和结算；价格缺口冻结最后观测价，恢复时确认累计变动。
+桥接的 reference_price_mode 默认为 execution；显式 decision 把决策日收盘价
+随股数一起冻结。Workbench 为目标收益比较明确选择 decision。
+checkpoint 保存两类账本、FIFO/权益、零持仓坐标、未来/重试计划和输入前缀。
+新发现 old-record 行动需要核实实际/理论 position、session 和 lot 历史。
 
-检查点保留零股数坐标和原目标修订日期，使后续退出与待成交订单的审计身份和连续
-回测一致。追加公司行为的权益登记日在检查点之前时，必须传入已验证的
-`historical_positions` 和 `historical_sessions`，按登记日收盘持仓补齐权益，不使用
-当前持仓代替。完整历史账户交易日清单之外的登记日不产生账户权益；所需历史交易日
-缺少持仓记录时明确失败。
+merge_execution_tables 合并续算；summarize_transaction_pnl 使用截止日保存的
+lot/mark snapshot 和成熟事件。不能把最新 open_lots/transaction_pnl 直接用于
+旧窗口，不能读未来价格/成交或回放账户。每个 session/order/planning 支持取消。
 
-Fixed-notional 模式通过注入或申请取出现金维持 notional。外部资金流改变 fund units，不改变
-单位 NAV。受限提款保持显式；系统禁止负现金和隐含杠杆。Compounding 模式不产生外部流，
-使用当前 equity sizing。
-
-`AccountBacktestResult` 保存 target weights/positions、orders、fills、每日持仓、现金、应收、
-外部流、pending withdrawal、账户 equity、performance NAV、derived executable weights、
-target/implementation/cost drag 和可恢复 checkpoint。
-
-整手分配先最大化股票投入金额，再最小化目标偏差。HiGHS 出现数值求解错误时，只关闭
-presolve 并对同一模型重试一次；目标、上下界、资金预算及整数约束均保持不变，不放宽
-不可行约束，也不接受未完成求解的结果。取整后的股数仍须满足股票预算和第一阶段的
-投入金额下限。
+每个计划的 target/actual return 等于该计划归因 P&L 除以其已成交金额；金额收益和费用列单独展示。账户收益率按权益/NAV 计算。

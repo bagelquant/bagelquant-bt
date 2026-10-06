@@ -1,7 +1,7 @@
 [project]
 name = "bagelquant-bt"
-version = "0.11.0"
-description = "Saved-value evaluation and account backtesting for BagelQuant"
+version = "0.12.0"
+description = "Standalone alpha, weights and execution evaluation for BagelQuant"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = { text = "Apache-2.0" }
@@ -9,14 +9,8 @@ authors = [{ name = "BagelQuant" }]
 dependencies = [
     "bagelquant-core>=0.11.0,<0.12",
     "numpy>=2.4.0",
-    "plotly>=6.0.0",
     "polars>=1.35.0",
     "scipy>=1.16.0",
-]
-
-[project.optional-dependencies]
-optimizer = [
-    "bagelquant-core[optimizer]>=0.11.0,<0.12",
 ]
 
 [tool.uv.sources]

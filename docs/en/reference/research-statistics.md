@@ -1,37 +1,24 @@
-# Research inference and comparison
+# Saved research statistics
 
-These public primitives consume explicit saved tables. They do not fit models,
-simulate accounts, select production candidates or manage validation batches.
-Workbench freezes protocols, trial families, source receipts and result references.
+Public functions consume explicit saved tables and never fit models, fetch
+providers or change governance. `return_statistics` owns return, volatility,
+Sharpe, drawdown, Calmar and hit-rate summaries. Risk fit/profile/linking functions
+and exposure/factor functions reuse one numerical formula per concern.
 
-`library_endpoint_tests(trials, q_max=0.10)` uses two-sided HAC p-values from each
-declared primary endpoint, applies BH to every valid result including abandoned
-trials, and checks the declared direction and minimum effect. Missing statistics
-retain null p/q values with an unavailable reason. For p-values 0.01 and 0.04,
-BH q-values are 0.02 and 0.04; a failed third trial without a p-value is listed
-separately and does not increase the valid-test denominator.
+HAC inference and `library_endpoint_tests` apply two-sided p-values and BH across
+every valid declared trial, including abandoned trials. Missing or unsupported
+samples retain an unavailable reason. `deflated_sharpe` requires explicit trial
+scope and a common finite sample; correlation/effective-trial limitations remain
+visible. Workbench selects protocols, trial families and governance policy.
 
-`deflated_sharpe(returns, target=..., trials=..., minimum_sessions=240)` accepts
-long-form `(time, trial, return)` net returns. It uses one common finite sample,
-retains the declared trial scope and correlation matrix, and estimates effective
-trials by `rho + (1-rho)*M`. At least three trials, 240 sessions by default and
-more sessions than trials are required. Constant returns, negative unsupported
-average correlation, a singular/ill-conditioned correlation matrix or fewer
-than two effective trials produce an explicit unavailable result. This auxiliary
-estimate does not represent undocumented historical experiments. Its DSR formula
-and correlation approximation follow [Bailey and López de Prado (2014)](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf).
+`common_sample_comparison`, `partial_rank_ic`, `incremental_ic_summary`,
+`factor_return_correlation` and `holdings_factor_exposure` consume matching saved
+coordinates/returns/holdings. `account_fill_turnover` uses actual fill notional
+and prior equity. Default/custom periods aggregate saved primitives and correct
+maturity without account or model replay.
 
-`common_sample_comparison` compares scalar daily primitives on matching finite
-dates. `common_prediction_ic` uses matching finite asset/date coordinates and
-reports incremental and conditional rank IC; a collinear variant has no independent
-signal. `account_fill_turnover` uses actual fill notional and prior equity, including
-the frozen initial capital on the first session.
-
-`capacity_participation` divides each fill's absolute CNY notional by the asset's
-average CNY traded amount over the preceding 20 market sessions. Every session
-needs a nonnegative finite observation, including a known zero. The execution-day
-amount is excluded; missing coverage or a zero mean produces null participation.
-Account stress scenarios use the existing
-saved-target account engine, with independent cash, positions, fills and checkpoints.
-The capital factor scales initial capital and the fixed-notional capital target;
-otherwise the fixed-notional account would withdraw the increase immediately.
+`capacity_participation` uses strictly prior 20 market-session traded amounts;
+execution-day observations are excluded. Nonnegative known zero is valid;
+missing/negative/nonfinite coverage or a zero denominator is unavailable. This
+is diagnostic capacity, not a fill limit. `execution_stress_scenarios` supplies
+nine native-rule one-factor cases with independent accounts.

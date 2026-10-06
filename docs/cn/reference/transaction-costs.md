@@ -1,51 +1,17 @@
-# 交易成本
+# 成本
 
-默认成本模型为：
+权重研究 cost_return = 0.0005 × Net 调仓前漂移权重与 target 的 full-L1 差，
+包括首次建仓，直接从本期收益扣除。虚拟 research cash 不要求资金/lot/min-fee。
+Gross/Net 分别漂移；net_pre_cost_return − cost_return = net_return，不能要求
+独立 Gross path 减当期成本恒等于 Net path。
 
-```python
-TransactionCostConfig(
-    rate=0.00015,
-    min_fee=5.0,
-    buy_slippage_rate=0.0005,
-    stamp_tax_rate=0.0005,
-)
-```
+执行默认每订单/交易日 max(成交金额 × 0.0005, 5)，无成交不收费，独立 plan ID
+分别计费；跨日 residual retry 再收费。默认不含税/slippage。调用方可显式设置
+买卖滑点、卖出税、transfer fee、lot/settlement。可买股数预算包括全部钱款。
 
-`rate` 和 `min_fee` 分别表示双边佣金率和每资产每次交易的最低佣金。
-滑点同时应用于买入和卖出；印花税仅在卖出时收取。
+自定义纯规则须稳定 ID/version/parameters，quote 返回有效价格/非负费用，
+买入总支出随股数单调增加。理论 P&L、实际成交价 P&L 和显式费用分别报告；
+implementation shortfall 也包含未成交与价格差。FIFO 按匹配股数分摊成本。
 
-## 计算方式
-
-每个执行日、每个资产根据带方向的权重变化判断买卖方向：
-
-```text
-signed_delta = target_weight - previous_weight
-buy_notional = max(signed_delta, 0) * 交易前组合价值
-sell_notional = max(-signed_delta, 0) * 交易前组合价值
-traded_notional = buy_notional + sell_notional
-
-slippage_fee = traded_notional * 有效滑点率
-raw_fee = traded_notional * 佣金率
-commission_fee = max(raw_fee, 最低佣金)
-stamp_tax_fee = sell_notional * 印花税率
-total_fee = slippage_fee + commission_fee + stamp_tax_fee
-```
-
-调用方未提供 `slippage_rates` 时使用配置中的统一滑点率。点时滑点表必须包含
-`time`、`asset_id` 和 `slippage_rate`，可选 `is_fallback`；每个资产只向后沿用
-已经生效的费率，首个生效日前不回填。没有可用记录时使用统一费率，并增加回退交易数。
-
-每日总费用除以交易前组合价值：
-
-```text
-cost_return = total_fee / 交易前组合价值
-net_return = gross_return - cost_return
-```
-
-## 结果字段
-
-`BacktestResult.transaction_costs` 包含交易资产数、滑点回退资产数、总/买入/卖出
-名义金额、滑点、原始佣金、最低佣金补差、佣金合计、印花税、总费用和成本收益率。
-历史字段 `raw_fee` 与 `min_fee_adjustment` 继续仅表示佣金分项。
-
-每个回测同时保留无成本的 gross 结果和扣除完整成本后的 net 结果。
+原生 stress 只放大声明分量，比例佣金不改变 min-fee/tax，零 slippage 仍为零。
+不透明的 custom rule 需调用方明确提供场景，不能推测其费用构成。

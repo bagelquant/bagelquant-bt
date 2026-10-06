@@ -10,7 +10,158 @@ import polars as pl
 from bagelquant_core import quantile_rank_information_coefficient
 
 from ._quantiles import ordered_quantile_labels, quantile_number
+from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME
+
+
+def annualized_return(growth: float, *, periods: int, annualization: int) -> float:
+    """Annualize terminal wealth when a finite real result exists."""
+
+    if periods <= 0 or growth < 0.0 or not math.isfinite(growth):
+        return math.nan
+    try:
+        result = float(growth ** (annualization / periods) - 1.0)
+    except OverflowError:
+        return math.nan
+    return result if math.isfinite(result) else math.nan
+
+
+def return_metrics(
+    values: object, annualization: int
+) -> dict[str, float | int | str | None]:
+    """Summarize saved returns with null undefined metrics and explicit reasons.
+
+    Null/non-finite observations are excluded, never imputed. Wealth peaks
+    include the initial value of one so a first-interval loss is a drawdown.
+    """
+
+    if (
+        isinstance(annualization, bool)
+        or not isinstance(annualization, int)
+        or annualization <= 0
+    ):
+        raise InputValidationError("annualization must be a positive integer")
+    finite = np.asarray(
+        [
+            float(value)
+            for value in values
+            if value is not None and math.isfinite(float(value))
+        ],
+        dtype=float,
+    )
+    count = finite.size
+    names = (
+        "total_return",
+        "annualized_return",
+        "annualized_volatility",
+        "sharpe",
+        "max_drawdown",
+        "calmar",
+        "hit_rate",
+    )
+    result: dict[str, float | int | str | None] = dict.fromkeys(
+        (*names, *(f"{name}_reason" for name in names))
+    )
+    result["sample_size"] = int(count)
+    if count == 0:
+        result.update(
+            {f"{name}_reason": "no finite return observations" for name in names}
+        )
+        result.update(status="unavailable", reason="no finite return observations")
+        return result
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        wealth = np.cumprod(1.0 + finite)
+        deviation = float(finite.std(ddof=1)) if count > 1 else None
+        mean = float(finite.mean())
+    growth = float(wealth[-1])
+    if math.isfinite(growth):
+        result["total_return"] = growth - 1.0
+    else:
+        result["total_return_reason"] = "terminal wealth is non-finite"
+    annual_return = annualized_return(
+        growth, periods=int(count), annualization=annualization
+    )
+    if math.isfinite(annual_return):
+        result["annualized_return"] = annual_return
+    else:
+        result["annualized_return_reason"] = (
+            "terminal wealth must be nonnegative"
+            if growth < 0
+            else "annualized wealth is non-finite"
+        )
+    if deviation is None:
+        result["annualized_volatility_reason"] = (
+            "at least two return observations required"
+        )
+        result["sharpe_reason"] = "at least two return observations required"
+    elif not math.isfinite(deviation):
+        result["annualized_volatility_reason"] = (
+            "sample standard deviation is non-finite"
+        )
+        result["sharpe_reason"] = "sample standard deviation is non-finite"
+    else:
+        volatility = deviation * math.sqrt(annualization)
+        if math.isfinite(volatility):
+            result["annualized_volatility"] = volatility
+        else:
+            result["annualized_volatility_reason"] = (
+                "annualized volatility is non-finite"
+            )
+        if deviation == 0:
+            result["sharpe_reason"] = "sample variance is zero"
+        else:
+            sharpe = mean / deviation * math.sqrt(annualization)
+            if math.isfinite(sharpe):
+                result["sharpe"] = sharpe
+            else:
+                result["sharpe_reason"] = "Sharpe ratio is non-finite"
+    if np.isfinite(wealth).all():
+        peaks = np.maximum.accumulate(np.maximum(wealth, 1.0))
+        drawdown = float((wealth / peaks - 1.0).min())
+        result["max_drawdown"] = drawdown
+        if not math.isfinite(annual_return):
+            result["calmar_reason"] = result["annualized_return_reason"]
+        elif drawdown == 0:
+            result["calmar_reason"] = "maximum drawdown is zero"
+        else:
+            calmar = annual_return / abs(drawdown)
+            if math.isfinite(calmar):
+                result["calmar"] = calmar
+            else:
+                result["calmar_reason"] = "Calmar ratio is non-finite"
+    else:
+        result["max_drawdown_reason"] = "wealth path is non-finite"
+        result["calmar_reason"] = "wealth path is non-finite"
+    result["hit_rate"] = float((finite > 0).mean())
+    reasons = list(
+        dict.fromkeys(
+            result[f"{name}_reason"] for name in names if result[name] is None
+        )
+    )
+    result.update(
+        status="partial" if reasons else "complete",
+        reason="; ".join(reasons) if reasons else None,
+    )
+    return result
+
+
+def return_statistics(
+    frame: pl.DataFrame, *, annualization: int = 252
+) -> dict[str, float | int | str | None]:
+    """Shared Gross/Net/pre-cost metrics without capital or account replay."""
+
+    metrics: dict[str, float | int | str | None] = {}
+    ordered = frame.sort("time") if "time" in frame.columns else frame
+    for prefix, column in (
+        ("gross", "gross_return"),
+        ("net_pre_cost", "net_pre_cost_return"),
+        ("net", "net_return"),
+    ):
+        single = return_metrics(
+            ordered[column] if column in ordered.columns else [], annualization
+        )
+        metrics.update({f"{prefix}_{name}": value for name, value in single.items()})
+    return metrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,10 +292,7 @@ def _compound_quantile_period_returns(
         raise ValueError("period starts must be unique")
     if ordered_periods.filter(pl.col("next_time") <= pl.col(TIME)).height:
         raise ValueError("each period next_time must follow time")
-    if (
-        quantile_returns.select(TIME, "quantile").n_unique()
-        != quantile_returns.height
-    ):
+    if quantile_returns.select(TIME, "quantile").n_unique() != quantile_returns.height:
         raise ValueError("duplicate daily quantile returns")
 
     rows: list[dict[str, object]] = []

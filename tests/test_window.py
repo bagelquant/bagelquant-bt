@@ -45,9 +45,7 @@ def test_summary_reports_window_risk_turnover_and_cost_drag() -> None:
         "summary",
         ("summary_table", "coverage"),
         returns=_returns(gross, net),
-        turnover=pl.DataFrame(
-            {"time": _dates(4), "turnover": [0.2, 0.0, 0.1, 0.0]}
-        ),
+        turnover=pl.DataFrame({"time": _dates(4), "turnover": [0.2, 0.0, 0.1, 0.0]}),
         costs=pl.DataFrame(),
         series=_spread_series([0.04, -0.02, 0.01, 0.0], [0.03, -0.03, 0.0, 0.0]),
         annualization=4,
@@ -172,9 +170,7 @@ def test_summary_handles_zero_drawdown_empty_and_non_finite_inputs() -> None:
         "summary",
         ("summary_table",),
         returns=_returns([0.0, 0.0], [0.0, 0.0]),
-        turnover=pl.DataFrame(
-            {"time": _dates(2), "turnover": [0.2, float("nan")]}
-        ),
+        turnover=pl.DataFrame({"time": _dates(2), "turnover": [0.2, float("nan")]}),
         costs=pl.DataFrame(),
         series=_spread_series([0.0, 0.0], [0.0, 0.0]),
         annualization=2,
@@ -185,6 +181,8 @@ def test_summary_handles_zero_drawdown_empty_and_non_finite_inputs() -> None:
     assert metrics["top_n_net_sharpe"] is None
     assert metrics["top_n_net_max_drawdown"] == 0.0
     assert metrics["top_n_net_calmar"] is None
+    assert metrics["top_n_net_sharpe_reason"] == "sample variance is zero"
+    assert metrics["top_n_net_calmar_reason"] == "maximum drawdown is zero"
     assert metrics["top_n_annualized_turnover"] == pytest.approx(0.4)
 
     empty_metrics, _ = compute_window_tables(

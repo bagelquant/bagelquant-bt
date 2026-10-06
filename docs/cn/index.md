@@ -1,33 +1,17 @@
 # bagelquant-bt 文档
 
-`bagelquant-bt` 将 AlphaValue Node 组合成强类型 Prediction，执行研究诊断、Weight Policy
-与账户回测。它不负责检索市场数据。
+BT 提供 Alpha/Prediction、组合权重和具体股数交易三种评估，负责金融计算、
+通用统计及结果缓存。Core 拥有上游数值和模型，Data 拥有数据/PIT，Workbench
+调用公共 API，保留中国市场语义、应用/治理和全局调度。
 
-推荐流程为：
-
-```text
-AlphaValue Node -> PredictionOperator -> Node -> policies -> result
-```
-
-公开预测回测只接受 Core `Node`；价格使用按 `time`、`asset_id` 键控的 long-form
-Polars 数据。整股账户引擎是独立边界，接收 target weights 和 provider-neutral 市场输入。
-
-## 主要入口
-
-```python
-from bagelquant_bt import compose_prediction, run_prediction_backtest
-from bagelquant_bt import run_account_backtest
-```
-
-## 文档
-
-- [概念](concepts.md)
-- [架构](architecture.md)
 - [快速开始](quick-start.md)
-- [性能说明](performance.md)
-- [API](reference/api.md)
+- [架构与缓存](architecture.md)
+- [Workers 与资源](performance.md)
 - [公开 API](reference/public-api.md)
-- [交易成本](reference/transaction-costs.md)
-- [整股账户回测](reference/account-backtest.md)
-- [Signal 评估](reference/factor-evaluation.md)
-- [内部实现](reference/internals.md)
+- [Alpha 评估](reference/factor-evaluation.md)
+- [交易与 FIFO](reference/account-backtest.md)
+- [成本](reference/transaction-costs.md)
+- [统计推断](reference/research-statistics.md)
+
+旧 composition/policy/account runner 和 Legacy 运行入口已删除，不提供兼容层。
+真实数据库与服务切换仍为需单独授权的第 6 阶段。

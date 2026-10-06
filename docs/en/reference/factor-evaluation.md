@@ -1,207 +1,23 @@
-# Signal Evaluation
+# Alpha and Prediction evaluation
 
-Signal evaluation treats each scheduled `Node` snapshot as
-cross-sectional predictions. Higher values are better.
+`evaluate_alpha` evaluates saved numeric/prediction Nodes using caller-aligned
+one-session forward returns. Components select horizons, rolling IC, Book/Spread,
+turnover, lead-lag, persistence, lagged alpha returns and quantiles. Direct IC,
+rank IC and their IR plus persistence do not require an account.
 
-## Fixed prediction horizons
+Book uses centered cross-sectional average ranks with gross one. Spread assigns
++0.5/-0.5 to deterministic upper/lower quantile tails. `build_alpha_weights`
+provides both constructions as weights Nodes; their normalized research NAV is
+computed through the common weight path with proportional full-L1 costs.
 
-`run_prediction_horizon_diagnostics` is the prediction-only entry point. It
-keeps the prediction update cadence separate from the economic forecast
-horizon. The fixed daily protocol evaluates cumulative `1/5/10/20/40/60/120D`
-returns and the disjoint `1D`, `2–5D`, `6–20D`, `21–60D`, and `61–120D`
-buckets from the mapped next-open execution price. An unfinished end label is
-excluded and reported through per-window coverage; the signal cross-section is
-never selected or renormalized using future price availability.
+Default cumulative windows are 1/5/10/20/40/60/120 sessions with corresponding
+bucket diagnostics. Economic intervals/maturity remain explicit. Unmatured labels
+are unavailable. Mature constituent gaps retain fixed Book/Spread weights with
+visible expected/observed coverage; IC and complete quantile samples remain
+strict. No reselecting/renormalizing using future label availability.
 
-The main continuous cross-sectional return uses average-tie percentile ranks,
-centers them within the evaluation-date Universe, and normalizes by the sum of
-absolute centered scores. The resulting Book has net zero, gross one, and
-long/short books of `+0.5/-0.5`. `centered_rank_book_weights` returns unavailable
-for a constant or one-sided cross-section. `gross_one_tail_weights` retains q1
-long and q10 short at the same gross-one scale. Book, Tail, and the complete
-quantile curve are diagnostics; they do not create NAV, costs, turnover,
-Sharpe, or drawdown.
-
-Once Book or Tail weights are structurally valid, a missing member forward
-return contributes zero while the original weight remains in place. The row is
-still usable, and `expected_count`, `observed_count`, and `coverage_ratio`
-continue to report the incomplete label coverage. No member is dropped and no
-weight is recomputed. This rule does not relax the complete common-sample rule
-for the ten-quantile curve or the inputs required by IC and other diagnostics.
-
-Every window reports Pearson/Spearman IC, positive-IC ratio, ICIR, Book, Tail,
-quantile-rank IC, and cross-sectional regression slopes. Mean inference uses a
-Bartlett Newey–West estimator with
-`max(window_width-1, floor(4*(n/100)^(2/9)))` lags, two-sided p-values and 95%
-confidence intervals. Benjamini–Hochberg q-values are calculated within each
-metric family across all twelve windows. All modulo-window-width staggered
-non-overlapping cohorts are retained as robustness diagnostics. Signal rank
-persistence is evaluated at `1/5/10/20/40/60/120D`; half-life is reported only
-as the first grid band crossing 0.5, or `>120D`.
-
-The legacy `run_prediction_evaluation` sections below remain the portfolio
-evaluation API. They are distinct from fixed-horizon prediction diagnostics.
-
-## Daily diagnostic rank paths
-
-`run_daily_rank_path_diagnostics` turns each PIT daily signal into the same
-centered-rank Book and gross-one Tail targets, then calculates capital-free
-factor returns directly. Gross is `sum(weight * next_return)`. Net subtracts
-proportional commission, sell stamp tax, transfer fees, and current/fallback
-slippage from requested weight changes. It deliberately excludes initial
-capital, cash, minimum fees, blocked execution, and bankruptcy state. Price
-gaps retain the freeze-and-catch-up valuation rule without selecting or
-renormalizing the cross-section. Its output contains daily Book/Tail gross and net returns,
-plus ten daily-rebalanced equal-weight quantile Gross paths. Each quantile
-covers about one tenth of the valid signal cross-section and rebalances at the
-mapped next open. A missing constituent return contributes zero during the gap
-and catches up on recovery; it never invalidates or renormalizes the group.
-Book requested and executed turnover, and Book gross/net returns for every
-integer lead or lag from `-30` through `+30`. Initial construction counts toward
-turnover and cost and is explicitly marked by `is_initial_rebalance`, allowing
-read-time summaries to exclude that one event without dropping the first row of
-an arbitrary date slice. `alpha_return_lag_returns` additionally contains Book
-and Tail gross/net paths at lags `0/1/2/5/10/20/60`; all fourteen paths use one
-common complete date sample. Executed turnover applies execution constraints as
-an independent implementability diagnostic and never changes Gross or Net.
-Negative lags intentionally use the signal before it was available and are
-therefore labeled non-PIT/look-ahead diagnostics; every lag uses the common
-complete overlap of shifted execution dates.
-
-`run_prediction_horizon_diagnostics` generates one cumulative or bucket label
-frame at a time and immediately retains only its aggregate IC, Book, Tail,
-quantile, regression, coverage, and inference outputs. Row-level labels remain
-available from `session_window_forward_returns`, but the aggregate result does
-not retain forward-label or Book/Tail-weight frames for all windows.
-
-The daily Summary autocorrelation grid uses average-tie cross-sectional rank
-correlation for all lags `1..120`. Per-lag implied half-life is
-`-lag * ln(2) / ln(rho_lag)` only when `0 < rho_lag < 1`. Rolling IC uses exactly
-240 valid observations, is causal, and emits no value before that warm-up is
-complete. These outputs support diagnostic charts and do not turn an Alpha
-result into an account or Weight-Policy Portfolio Performance section.
-
-`run_daily_prediction_diagnostics` is the application-facing combined entry.
-It returns `DailyPredictionDiagnostics(horizons, paths)` after one Signal
-validation/collection and one market, calendar, Book, Tail, and quantile
-preparation. It streams each forward-label window to aggregates, calculates the
-`1..120` rank-persistence grid once, and reuses the required subset in the
-horizon result. The two independent entry points retain the same schemas and
-remain suitable when only one diagnostic family is requested.
-
-The combined entry's optional `progress(label, completed, total)` callback
-announces input, weight, price and return preparation before native work starts.
-Each horizon reports its window ID while building labels and aggregating
-statistics, then advances the completed-window count. Inference, Book/quantile
-paths, Tail paths, executed turnover, lead-lag paths and rolling IC also report
-their current stage. These callbacks do not change numerical results or retain
-additional asset-label windows.
-
-## IC and ICIR
-
-For each date, `bagelquant-bt` computes the cross-sectional correlation between
-signal values at one execution date and asset returns through the next signal
-execution date.
-
-Signal evaluation outputs both Pearson correlation and Spearman rank
-correlation in `result.ic`:
-
-```python
-result.ic.select("time", "pearson_ic", "spearman_ic")
-```
-
-`result.ic_summary` includes mean, standard deviation, and ICIR for each method.
-The result-level `ic_mean`, `ic_std`, and `icir` fields report the configured
-IC method.
-
-`icir` is:
-
-```text
-mean(IC) / standard_deviation(IC) * sqrt(IC observations per year)
-```
-
-`BacktestConfig.ic_annualization` sets IC observations per year. When omitted,
-it defaults to the daily-return `annualization` setting. This is distinct from
-portfolio returns: annualized return, volatility, Sharpe, rolling performance,
-benchmarks, and lag Sharpe use the daily-return annualization setting.
-
-## Signal date and execution policies
-
-`AlphaPolicy.select` chooses whole snapshots from a `Node` and
-returns `ScheduledPrediction`, which contains the resolved schedule, execution-date
-lineage, and typed signal. `month_end` prefers the last open session, falls back
-only to an earlier whole snapshot in the same calendar month, and otherwise
-records a skip. It never fills one asset from an earlier date.
-
-`ExecutionPolicy("next_open")` separately maps rebalance dates to execution
-dates. `run_prediction_evaluation` accepts the resolved `ScheduledPrediction`, measures
-IC through the next execution date, and marks portfolios to market daily
-between executions. The final signal without a complete following execution
-period is excluded.
-
-For a monthly `month_end` policy, the value selected at a calendar month end is
-therefore evaluated from its mapped next-open execution price through the next
-scheduled execution price. In-progress months never enter IC or a rolling
-supervised-operator window.
-
-## Quantile Returns
-
-Each day, assets are sorted by factor score from highest to lowest and split
-into quantiles: `q1` contains the highest scores and `qN` the lowest.
-
-Each quantile return is the equal-weight average forward return of assets in
-that bucket.
-
-Daily prediction Quantile Test uses the separate continuous requested-target
-series from `DailyRankPathDiagnostics.quantile_returns`, not the independent
-fixed-horizon label means. All ten groups share the same structurally valid
-dates; a cross-section with fewer than ten assets, a constant signal, or no
-following session makes all groups unavailable together. Costs, execution
-constraints, cash, and account state remain excluded.
-
-The spread is:
-
-```text
-q1_return - qN_return
-```
-
-`quantile_rank_information_coefficients(quantile_returns, periods=...)` infers
-N from the stored q1-to-qN labels, so historical q5 results remain readable.
-When execution periods are supplied, it compounds each group's daily gross
-returns inside `[time, next_time)` and emits exactly one observation at the
-period start. It then assigns q1-to-qN scores N-to-1 and computes Spearman
-correlation with the group returns. A strictly decreasing return path is `+1`,
-a strictly increasing path is `-1`, and missing groups, groups without a finite
-return, or equal group returns produce null. Result statistical tests use the
-same complete periods and two-sided one-sample Student t-test as ordinary IC.
-
-Quantile labels are always ordered by their numeric suffix in result tables,
-figures, legends, and HTML reports: `q1, q2, ..., q10`, while historical q5
-artifacts retain `q1, ..., q5`.
-
-## TOP N Backtest
-
-The TOP N backtest converts signal values into long-only equal weights:
-
-```text
-top N assets each day -> 1 / N weight each
-```
-
-The resulting weight frame is passed through the same backtest engine as a
-normal portfolio-weight DataFrame, including transaction costs.
-
-## Spread and Lag Analysis
-
-Signal evaluation also builds a spread portfolio: long `q1`, short `qN`, and
-passes it through the same cost-aware backtest engine.
-
-`lag_analysis` evaluates TOP N and spread portfolios with signals
-delayed by 0, 1, 2, 3, 4, 5, 10, 20, 30, and 60 trading sessions. The delay is
-resolved on the daily price-session calendar, so a monthly signal delayed by 15
-is delayed by 15 open sessions rather than 15 monthly observations.
-
-`lag_returns` contains gross and net cumulative return time series for the same
-portfolio and lag combinations.
-
-`ic_decay` reports mean Pearson and Spearman IC at the same trading-session
-lags and is plotted as an IC decay line chart.
+Cadence uses latest causal whole snapshots, a supplied calendar and explicit
+anchor. Stable asset ordering resolves ties. Lag tests use caller-declared
+calendar shifts; diagnostic negative lags are labelled research diagnostics,
+never an executable plan. Shared functions compute rolling IC, persistence,
+HAC/BH inference and risk/comparisons; applications do not copy those formulas.

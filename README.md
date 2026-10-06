@@ -1,144 +1,54 @@
 # bagelquant-bt
 
-`bagelquant-bt` provides typed signal composition, evaluation, portfolio-policy
-application, performance metrics, and Plotly visualization.
+BT 0.12 provides standalone financial evaluation of saved values, portfolio weights and signed
+share transaction plans. BT depends only on Core; callers supply all returns,
+prices, calendars, market rules and receipt references.
 
-Importing the public package does not load SciPy's optimizer or statistical
-runtime. These dependencies load only when their numerical operations are
-called, keeping read-only application workers inexpensive to start.
+| Mode | Public entry | Inputs and result |
+| --- | --- | --- |
+| Alpha / Prediction | `evaluate_alpha` | Saved Core numeric/prediction Node; caller-aligned one-session forward returns; IC, rank IC, persistence, horizons, quantiles and Book/Spread diagnostics |
+| Portfolio weights | `evaluate_weights` | Saved Core weights Node; forward returns; independent Gross/Net normalized NAV, drift, turnover and lag diagnostics |
+| Portfolio execution | `evaluate_execution` | Stable `plan_id`, execution date, asset and signed integer share quantity; explicit prices and initial capital; cash/holdings, fills, FIFO costs and ideal-versus-actual P&L |
 
-The primary application contract consumes saved Prediction values and saved
-Portfolio targets. Core owns numerical processing, model fitting and optimization;
-BT owns account simulation and selective evaluation. `evaluate_portfolio_targets`
-accepts explicit complete targets plus `rebalance`, `hold` or `unavailable`
-decisions. It handles lots, cash, costs, execution blocks and corporate actions,
-and returns target/filled holdings separately with a causal account checkpoint.
-Its calendar includes known execution sessions beyond the price cutoff. Retain
-future `target_position_plans` and pass them as `initial_target_position_plans`
-with a checkpoint; historical decisions are not sized again. Unknown future
-execution dates are an explicit input error. `prepare_account_market_data` prepares
-read-only price and execution-block lookups for independent stress accounts while their state remains
-separate.
-`run_daily_prediction_sections` evaluates selected numerical groups, persists
-reusable primitives and continues verified prefixes on append. Evaluation never
-produces or trains an upstream value. The frozen monthly adapter uses the
-retained typed scheduling primitives for its immutable bagel-001 calculation.
+`build_alpha_weights` produces gross-one, net-zero centered-rank Book or tail
+Spread weights. Caller-selected rebalance cadence uses the latest causal whole
+snapshot. `run_execution_from_weights` converts saved targets into frozen deltas
+at actual decision-close state using the same execution engine.
 
-`run_prediction_evaluation` computes execution-to-execution IC, quantiles,
-spread, TOP N, lag, and IC-decay diagnostics from `ScheduledPrediction`.
-For prediction-only research, `run_prediction_horizon_diagnostics` decouples
-evaluation cadence from economic horizon. Daily predictions are evaluated on
-fixed cumulative `1/5/10/20/40/60/120D` windows and `1D`, `2–5D`, `6–20D`,
-`21–60D`, and `61–120D` buckets. It publishes centered-rank gross-one Book
-returns, gross-one Tail returns, full quantile curves, IC, signal persistence,
-and Bartlett Newey–West inference without constructing a portfolio NAV.
-For a structurally valid Book or Tail, a member whose forward label is missing
-contributes zero for that window while its original weight is preserved. The
-reported expected/observed counts and coverage ratio still expose the gap; the
-cross-section is never reselected or renormalized. Quantile completeness and IC
-rules remain strict and unchanged.
-`run_daily_rank_path_diagnostics` complements those forward-window statistics
-with a daily-rebalanced, capital-free research path. Gross is the requested
-Book/Tail factor return; Net subtracts proportional commission, sell tax,
-transfer fees, and slippage from requested weight changes. Initial capital,
-cash, minimum fees, execution blocks, and insolvency state never enter these
-returns. Execution availability affects only the separately reported executed
-turnover. It also publishes ten continuous daily-rebalanced equal-weight
-quantile Gross paths. Missing asset returns freeze at zero and recover later
-without reselecting or renormalizing the group. The result marks the true
-initial rebalance, evaluates the Book over a common-sample integer lead-lag grid from
-`-30` through `+30` sessions, and publishes common-sample Book/Tail paths for
-lags `0/1/2/5/10/20/60`.
-Applications that need both result families should call
-`run_daily_prediction_diagnostics`. It validates and collects the scheduled
-Prediction once, prepares the market/calendar and rank weights once, streams
-one asset-label window at a time, and reuses one `1..120` autocorrelation pass.
-The two narrower entry points remain available for independent analysis.
-`AlphaPolicy` owns only evaluation-date alignment. `StandardizePolicy` is the
-independent cross-sectional preprocessing contract (`none`, `z_score`, or
-`percentile_rank`). Z-score reduction sorts each cross-section by asset and uses
-a fixed per-date kernel, so an unchanged historical prefix is byte-identical
-across Arrow chunk layouts and future-horizon extensions. Prediction composition returns the operator's raw
-`Node(value_type="prediction")`; callers may explicitly apply Core Operators before the
-Weight Policy boundary.
+Research costs default to `0.0005 * full-L1 weight change` and subtract directly
+from period returns. Holdings drift between rebalances; Gross and Net maintain
+independent state. This is a virtual research NAV, with no money minimum fee.
+Execution costs default to `max(0.0005 * executed notional, 5)` per order and
+execution date, with lot 1, settlement 0 and no tax/slippage. Unfilled remainders
+expire unless retry is explicitly requested. The zero-cost ideal plan must be
+cash- and inventory-feasible; otherwise evaluation fails.
 
-On-demand factor research can use `partial_rank_ic`, `incremental_ic_summary`,
-`factor_return_correlation`, `monthly_rank_returns`, and
-`holdings_factor_exposure`. These pure numerical functions accept explicit
-cross-sectional signals, labels, returns, and actual holdings. Callers own
-source resolution, cadence and authorization; these functions never build
-artifacts, access a provider, or construct an account.
+BT does not choose a lag or a return price convention. Forward-return rows
+include `time`, `asset_id`, `forward_return`, `interval_start`, `interval_end`
+and `available_date`. The caller owns the label alignment and maturity cutoff.
+Workbench's China adapter labels decision t with adjusted t+1 open to t+2 open
+and explicitly supplies its market rules and annualization 240; BT defaults to
+252 and ten quantiles.
 
-`PredictionRegularizedOptimizerPolicy` converts a Prediction plus explicit
-reference weights into target weights under long-only, fully-invested, and
-maximum-weight constraints. Its separable quadratic-plus-L1 objective is solved
-exactly through a deterministic scalar dual search with a capped-simplex
-projection, so large daily cross-sections do not require rebuilding a general
-convex-program model for every evaluation date.
+`BTStore(meta_path, artifact_path)` owns SQLite metadata, immutable Parquet
+artifacts, receipts, integrity, invalidation and recovery. Consumers use public
+read/publication APIs and retain opaque receipt references. No Workbench database
+or backend-file access is required for standalone evaluation or caching.
 
-`PredictionExposureConstrainedOptimizerPolicy` is a separate policy for explicit
-absolute exposure bounds and an optional full-L1 turnover cap. Supply a
-`(time, asset_id, <exposure columns>)` frame and `ExposureBounds` for each selected
-coordinate. Forced exits count toward turnover; missing exposures and infeasible
-constraints fail explicitly. CVXPY/CLARABEL load lazily from the `optimizer` extra.
-The original analytic optimizer is unchanged.
+`BTExecutionOptions` and `run_evaluation_batch` accept explicit worker and Core
+resource limits for independent evaluations. One account is causal and sequential;
+BT never probes RAM/CPU or allocates a global budget. Workbench owns admission
+and machine policy.
 
-`allocate_integer_positions` is the public deterministic bridge from one
-continuous target snapshot to whole-lot positions. It first maximizes deployed
-stock notional under the stock budget, then minimizes absolute notional
-deviation among maximum-deployment solutions with stable `asset_id`
-tie-breaking for ordinary cross-sections. Broad cross-sections preallocate all
-but the final four lots around each continuous target, then use a deterministic,
-target-aligned heap to fill that bounded neighborhood. This avoids pathological
-subset-sum runtimes while keeping the result maximal inside the local
-neighborhood. Callers provide
-prices, lot sizes, minimum frozen quantities, and whether each asset may exceed
-its continuous target by one lot; infeasible inputs fail explicitly.
-
-The separate `run_account_backtest` engine sizes target weights into integer
-positions and simulates cash, T+1 availability, lot rules, sell-first funding,
-orders, fills, unadjusted open/close marks, corporate-action receivables,
-external-flow units, pending withdrawals, and performance attribution. It
-returns `AccountBacktestResult` and does not change the fractional-weight
-engine used by research diagnostics. See
-[Whole-share account backtests](docs/en/reference/account-backtest.md).
-
-`run_planned_account_backtest` is the causal execution counterpart for a
-decision system. It accepts quantities frozen from decision-date target
-weights, notional, and prices, executes those quantities on the declared next
-session without sizing them again at the open, and expires every unfilled
-remainder at the end of that session. Its resulting executable weights are
-actual account weights and remain distinct from the frozen target weights.
-
-`run_stateful_account_backtest` combines decision-close sizing and later
-execution in one causal account pass. Its callback sees the actual checkpoint
-and reference weights at each decision close, returns target weights once, and
-the engine freezes whole-lot quantities without replaying prior sessions.
-
-During an asset-specific price gap, its holding is frozen at the last observed
-price. A held asset without a decision-close price remains outside that
-decision's immutable execution plan, while every newly targeted asset still
-requires a finite close. The gap sessions have zero return and the cumulative
-move is recognized when a new price appears.
-
-## Development
-
-AI contributors start with [AGENTS.md](AGENTS.md) and the
-[local workflow and topic routes](.ai/README.md). Integrated checkouts use the
-verified workspace's bilingual AI workflow guide and ignored task records;
-standalone checkouts use the local rules and conversation handoff.
-
-The public `risk` module provides application-neutral constrained cross-sectional
-factor-return WLS, causal standardized rolling Ridge, rolling volatility and
-wealth-linked return contributions. Callers supply numerical panels and explicit
-interval start/availability dates; the module never fetches market data or
-constructs an account. `link_risk_contributions` rebases valid segments and keeps
-linked contributions separate from independently compounded specific return.
-`industry_exposure_strength` returns the L2 norm of a complete industry-beta
-vector for one selected metric. Positive and negative betas do not cancel;
-missing or non-finite industry coordinates leave that date unavailable.
+See [quick start](docs/en/quick-start.md), [public API](docs/en/reference/public-api.md),
+[execution](docs/en/reference/account-backtest.md), [costs](docs/en/reference/transaction-costs.md),
+and [中文文档](docs/cn/index.md). AI contributors start with [AGENTS.md](AGENTS.md).
 
 ```bash
 uv run ruff check .
-uv run python -m pytest
+uv run pytest
 ```
+
+The stage-4 contract is breaking: removed signal/policy/account runners have no
+aliases or migration readers. Real database/service cutover remains separately
+authorized stage 6; historical/authored evidence is preserved.

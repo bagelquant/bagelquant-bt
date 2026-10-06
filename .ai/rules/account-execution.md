@@ -1,72 +1,64 @@
-# Typed contracts, targets and account execution
+# Portfolio and execution contracts
 
-These are current API/numerical constraints. The
-[staged target](development.md#staged-refactor-target) assigns reusable account
-artifact storage and checkpoint persistence to BT; the present Workbench bindings
-below remain baseline facts until the owning refactor stages implement that API.
+## Research weights
 
-## Boundaries and scheduling
+Book centers cross-sectional average ranks and normalizes full absolute weight
+to one; Spread allocates +0.5 and -0.5 to deterministic top/bottom tails. Both
+are net-zero. Rebalance cadence uses the latest finite causal whole snapshot,
+anchored to a supplied calendar/start; NaN is never an order. Complete targets
+include zero exits; hold/unavailable states remain explicit.
 
-- Depend on Core Node/Prediction contracts; never import Data/Workbench or assume
-  China/application-specific behavior in generic APIs. BT owns simulation and
-  evaluation, not upstream value production or training.
-- `run_prediction_backtest` requires `Node`, never a plain Node,
-  raw frame or direct weights. `ExecutionPolicy.schedule_prediction` produces
-  `ScheduledPrediction` for prediction diagnostics/evaluation. The separate
-  saved-target account APIs accept explicit target frames; in particular,
-  `evaluate_portfolio_targets` consumes complete saved targets plus
-  rebalance/hold/unavailable decisions. Do not conflate these input contracts.
-- `compose_prediction` and `compose_processed_prediction` return the Operator's
-  raw typed `Node`. Do not add fixed/implicit normalization;
-  callers explicitly express post-operator transformations.
-- Prices use `(time, asset_id, price)`; Prediction/weights use Core's
-  `(time, asset_id, value)`. Align snapshots to exact observed price keys.
-  Executed weights at `time=t` earn the next market-session close-to-close return.
-- Keep signal selection, execution schedule, portfolio policy, returns, costs,
-  metrics, results, reports and figures separable. Sparse/monthly signals only
-  rebalance on snapshot dates and hold between them. NaN is never an order;
-  full target zeros exit assets, hold/unavailable states stay explicit.
-- Distinguish observation, publication/information cutoff, signal-effective and
-  execution dates; no latest-value substitution or future information at time t.
-- `PredictionRegularizedTargetVolatilityPolicy` is a separate Weight Policy;
-  do not change `PredictionRegularizedOptimizerPolicy` to implement it. First
-  construct the unchanged fully invested risky sleeve, estimate volatility from
-  strictly prior independent gross sleeve returns, skip incomplete warm-up,
-  scale exposure without renormalization and retain residual zero-return cash.
+Research weights drift between rebalances. Cost equals rate times the full L1
+change from the Net account's drifted pretrade weights, including initial entry;
+default rate is 0.0005. Costs subtract directly from returns in virtual cash.
+Gross and Net drift independently. `net_pre_cost_return - cost_return` equals
+Net return; independent Gross return is not required to satisfy that equality.
+Minimum money fees, fills, lots, cash constraints and capital do not enter this
+research account.
 
-## Account mechanics and continuation
+## Execution
 
-- BT alone simulates fills/lots/T+1/cash/costs/suspension/limits/corporate actions
-  from caller-supplied market rules. Research backtests, whole-share simulated
-  accounts and orders/fills are in scope; broker connectivity, production order
-  planning, real-account state and live submission are not.
-- During an asset price gap, freeze existing holdings at the last observed
-  price, recognize the cumulative move on recovery, do not silently resize/open
-  blocked assets and leave blocked new target weight as cash.
-- Turnover and costs reflect actual target changes. Keep commission/minimum
-  fees/slippage/sell tax/insolvency explicit and reproducible. Rank and allocation
-  ties use stable `asset_id`; optimizers reference computed targets, not accounts.
-- Checkpoint continuation retains zero-quantity coordinates, original target
-  dates and frozen future decision-close plans. Never rerun old callbacks,
-  resize frozen quantities at execution open, or reprocess checkpoint decisions.
-- Saved-target schedule kernel v2 requires known future trading dates and
-  freezes their calendar proof; prices still stop at Available Date. Persist
-  unexecuted plans with the account checkpoint and restore them on continuation.
-  Schedule changes affect account evaluation identity, not saved Portfolio targets.
-- Newly mature actions with pre-checkpoint record dates require verified saved
-  positions and complete prior account-session inventory; never use current
-  shares for historical entitlement. Prefix proofs use canonical row order,
-  never physical scan order. Missing required prior history fails explicitly.
-- `PreparedAccountMarketData` shares validated prices and execution blocks only;
-  independent accounts/scenarios retain separate cash, positions, fills and state.
-  Consumers prepare it lazily only for accounts that need computation.
-- Keep frozen evaluation kernel versions; unavailable historical kernels require
-  a new forward validation batch, never rewritten immutable registrations/evidence.
-  Currently Workbench holds account-kernel and Portfolio decision/checkpoint
-  version bindings; target BT owns account artifact/checkpoint mechanics while
-  Workbench retains application bindings to the backend receipts.
-- Flush account output rows in bounded columnar batches; preserve complete
-  public schemas and causal date order. Share prepared inputs under the total
-  resource budget; operational limits never change numerical identity.
-- Importing BT must not initialize SciPy optimization/statistics. Load those at
-  their numerical call sites while retaining public exports and behavior.
+Plans carry unique stable plan_id, execution_date, asset_id and signed integer
+quantity. No netting or default lag/price selection. Explicit market inputs use
+execution_price/valuation_price (or caller-specified open/close fields). Sell-first
+order is deterministic by asset/plan ID. Actual buys respect cash including fees
+and lots; sells respect available inventory. Missing prices/blocks prevent fills.
+Unfilled quantities expire by default; explicit retry preserves only residual
+shares, charging per order per new execution date. No negative cash or shorts.
+
+Default costs are max(0.0005 * executed notional, 5), with no tax/slippage, lot 1
+and settlement 0. Custom pure cost rules need stable ID/version/parameters and
+nonnegative valid quotes; total buy charge must increase with quantity.
+Caller supplies exchange-specific lots/settlement/tax/slippage/actions.
+
+The ideal zero-fee account fully executes original quantities at supplied
+reference prices without actual blocks/lots/settlement constraints. It must
+remain cash- and inventory-feasible; reject the entire evaluation otherwise.
+The ideal and actual ledgers have separate FIFO basis, holdings and P&L.
+Plan reference_price overrides market reference_price, otherwise the supplied
+execution price is used. The bridge explicitly selects execution (default) or
+decision reference mode; decision mode freezes decision-close prices. Reference
+choices enter causal identity. Null per-plan returns carry typed reason columns.
+Entry/exit fees allocate by matched quantities. Bonus shares have explicit zero
+acquisition basis and retain originating plan IDs; cash dividends belong to
+record-date lots. Realized/unrealized plus income reconcile equity every session.
+These are investment P&L records, not an implicit tax-basis policy.
+
+The saved-weight bridge sizes at actual decision-close state and freezes signed
+deltas. No execution-date sizing or historical callback replay. Price gaps use
+last observed marks and recognize recovery moves; never mark with future prices.
+Known future calendar must cover execution and buy settlement.
+
+## Continuation and views
+
+Checkpoint retains both ledgers, active FIFO lots, per-lot entitlements, frozen
+future/retry plans, zero asset coordinates and cumulative money totals. Resume
+verifies canonical historical/settings/calendar prefix proofs before continuing.
+Newly known actions with old record dates require verified actual/ideal position,
+lot and complete session history; never substitute current holdings.
+
+Use public codec, merge_execution_tables and summarize_transaction_pnl. Historical
+summaries use the cutoff's saved lot/mark snapshot and mature events, never the
+latest open-lot/per-plan table. Period reads do not replay accounts or write caches.
+Account loop cancellation checks each session/order/planning step. Internal
+account.py contains private reachable primitives and no second execution loop.

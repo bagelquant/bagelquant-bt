@@ -1,30 +1,21 @@
 # BT AI workflow and rule routes
 
-Always read [development rules](rules/development.md), including the staged
-refactor target and current baseline. Then load affected topic rules; linked
-docs describe current use until the corresponding code stage updates them.
+Read [development](rules/development.md) first, then only affected topic rules.
 
-| Task topic | Owner rules | Relevant docs |
+| Topic | Rules | Docs |
 | --- | --- | --- |
-| Signal/Prediction, scheduling, target policies, prices/costs, lots, checkpoint continuation | [Account and execution](rules/account-execution.md) | [Architecture](../docs/en/architecture.md), [Account engine](../docs/en/reference/account-backtest.md), [Transaction costs](../docs/en/reference/transaction-costs.md) |
-| IC/quantiles, horizon/path diagnostics, HAC/BH/DSR, comparisons, capacity/stress | [Evaluation and statistics](rules/evaluation-statistics.md) | [Factor evaluation](../docs/en/reference/factor-evaluation.md), [Research inference](../docs/en/reference/research-statistics.md), [Performance](../docs/en/performance.md) |
-| Public exports/import cost, shared primitives, application contract | Both owner rules and [development](rules/development.md) | [Public API](../docs/en/reference/public-api.md), [Internals](../docs/en/reference/internals.md) |
+| Signed plans, actual-state sizing, prices, FIFO, lots, costs, checkpoints | [Account/execution](rules/account-execution.md) | [Execution](../docs/en/reference/account-backtest.md), [costs](../docs/en/reference/transaction-costs.md) |
+| Alpha/weights, IC, maturity, horizons, comparisons, inference | [Evaluation/statistics](rules/evaluation-statistics.md) | [Alpha](../docs/en/reference/factor-evaluation.md), [inference](../docs/en/reference/research-statistics.md) |
+| Public API, cache/receipts, local workers and resource boundaries | [Development](rules/development.md) | [Architecture](../docs/en/architecture.md), [API](../docs/en/reference/public-api.md), [resources](../docs/en/performance.md) |
 
-BT is independently versioned and depends only on Core. The target assigns
-generic numerical processing/training/optimization and graph artifacts to Core,
-account/evaluation artifacts to BT, and dataset/frozen-input APIs to Data.
-Workbench keeps China semantics, authored definitions, application metadata,
-governance, lifecycle and orchestration, consuming backend public APIs.
-Current result persistence remains partly in Workbench pending stages 4 and 5;
-the topic rules describe that baseline, not a completed ownership transfer.
-BT docs stay in this repository. The website links to package documentation
-and does not collect or republish it.
+Stage 4 implements three evaluation modes and BT-owned result storage. Removed
+signal/policy/account runners have no compatibility path. Core owns numerical
+values/graphs/model evidence; Data owns datasets/PIT/frozen inputs; Workbench
+composes public APIs and retains China semantics, governance, app relationships,
+backend references and global scheduler policy. Broader Workbench cleanup is
+stage 5; real database/service cutover is stage 6 with separate authorization.
 
-Integration discovery and standalone fallback are in [AGENTS.md](../AGENTS.md).
-After verifying an integration root, use its `.ai/workflow.md` and root task CLI.
-For package-boundary work also read its
-`.ai/rules/contracts/package-boundaries.md`. Local target rules remain sufficient
-in a standalone checkout.
-The bilingual usage guide is `docs/ai-workflow.md` / `docs/zh-CN/ai-workflow.md`
-in that verified root. Rules/templates are versioned; actual task records are
-local, ignored, and owned only by the workspace root. A clone does not restore them.
+Workspace discovery and standalone fallback are in [AGENTS](../AGENTS.md).
+Versioned rules and source travel through Git; ignored full-task records remain
+in the verified workspace's .ai/tasks. Historical task plans are evidence, not
+current API authority. Package docs remain owned here and are not website input.

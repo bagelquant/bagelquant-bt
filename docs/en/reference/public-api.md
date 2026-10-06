@@ -1,162 +1,37 @@
-# Public API
+# Public API — BT 0.12
 
-The stable public API is exported from `bagelquant_bt`. Version 0.9.4 accepts
-strongly typed predictions only; ordinary `Node`, raw DataFrames, and direct
-weights are not public backtest inputs.
+- `evaluate_alpha(alpha, forward_returns, ...)` accepts a saved Core numeric or
+  prediction Node. `evaluate_weights(weights, forward_returns, ...)` accepts a
+  saved weights Node. Both return tables/metrics and the weight mode a checkpoint.
+- Returns require time, asset_id, forward_return, interval_start, interval_end
+  and available_date. Time is the caller's alignment key; economic intervals
+  must be sequential/nonoverlapping. No implicit execution lag/price convention.
+- `build_alpha_weights(alpha, method="book"|"spread", every=..., calendar=...,
+  anchor=...)` builds gross-one/net-zero weights from latest causal snapshots.
+- `evaluate_execution(transactions, market_prices, initial_capital=..., ...)`
+  consumes stable plan_id, execution_date, asset_id and signed integer quantity.
+  Prices explicitly provide execution_price/valuation_price or open/close.
+  Optional per-plan reference_price overrides the market reference_price;
+  otherwise the ideal account uses the supplied execution price.
+- `run_execution_from_weights(weights, decisions, market_prices, calendar=...,
+  session_lag=..., initial_capital=..., ...)` uses actual decision-close state
+  to freeze deltas; rebalance/hold/unavailable stay explicit. Frozen shares are
+  never resized at the execution price. Decisions have time/status columns.
+  reference_price_mode="execution" is the default; "decision" explicitly freezes
+  decision-close reference prices. Workbench chooses "decision".
+- `save_checkpoint`, `load_checkpoint`, `merge_execution_tables` and
+  `summarize_transaction_pnl(frames, through=...)` own continuation and saved
+  historical account views. New record-date discoveries require verified actual
+  and reference position/session/lot histories. No historical replay on reads.
+- `ExecutionConfig` owns neutral money costs/lots/settlement/retry/annualization.
+  `ExecutionCostRule` requires stable ID/version/JSON parameters and a pure valid
+  monotone-cost quote returning `ExecutionCostQuote`.
+- `return_statistics` and the public financial/risk/inference functions operate
+  on explicit saved tables. BT defaults annualization 252 and quantiles 10;
+  Workbench explicitly chooses 240 and China market rules.
+- `BTStore`, `evaluation_identity`, `BTExecutionOptions` and
+  `run_evaluation_batch` own result persistence and bounded local execution.
 
-## Entry points
-
-```python
-from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, run_prediction_backtest, run_prediction_evaluation, run_prediction_horizon_diagnostics
-```
-
-- `compose_prediction(...) -> Node` applies a `PredictionOperator` at the
-  cadence selected by `AlphaPolicy`. Supervised operators derive labels
-  from one execution price to the next and enforce label-availability cutoffs.
-- `run_prediction_backtest(prediction, prices, calendar, weight_policy=..., ...)`
-  schedules a `Node`, applies `ExecutionPolicy` and `WeightPolicy`,
-  and returns `BacktestResult`.
-- `run_prediction_evaluation(scheduled_signal, prices, ...)` computes IC,
-  quantiles, lag diagnostics, and signal-driven portfolio results.
-- `run_prediction_horizon_diagnostics(scheduled_signal, prices, ...)` computes
-  one fixed-session label window at a time and retains aggregate IC,
-  centered-rank Book, gross-one Tail,
-  quantile structure, signal persistence, HAC inference, BH q-values, and
-  staggered cohorts without constructing portfolio performance. Structurally
-  valid Book/Tail weights remain fixed when a member label is missing: that
-  contribution is zero while coverage counts continue to expose the gap.
-- `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`
-  calculates capital-free daily Book/Tail gross/net diagnostic paths, where Net
-  subtracts requested-turnover proportional costs but excludes capital, minimum
-  fees, execution blocks, and insolvency; it also reports Book requested/executed
-  turnover with an initial-rebalance marker, common-sample Book lead-lag returns
-  for integer lags `-30..30`, and Book/Tail lag paths at
-  `0/1/2/5/10/20/60`.
-- `rolling_window_information_coefficients` and `implied_signal_half_life`
-  expose the causal 240-valid-observation rolling IC and per-lag half-life
-  primitives used by daily result charts.
-- `session_window_forward_returns`, `centered_rank_book_weights`,
-  `gross_one_tail_weights`, `hac_mean_test`, and
-  `non_overlapping_cohort_statistics` expose the corresponding deterministic
-  primitives.
-- `standardize_alpha_values(frame, method)` applies the public deterministic
-  cross-sectional preprocessing kernel. Z-scores use fixed asset order and
-  per-date reductions, so future extensions and physical chunking cannot alter
-  an unchanged historical prefix.
-- `quantile_rank_information_coefficients(quantile_returns, *, periods=None)`
-  derives the monotonic rank IC from stored q1-to-qN gross returns. Optional
-  `time`/`next_time` periods compound daily returns into one observation per
-  complete execution interval.
-- `summary_report(...)` builds a static HTML report for a backtest or signal
-  evaluation result.
-
-Candidate-prediction validation is available through `score_ic_validation`,
-`select_top_n_stable`, `top_n_monthly_performance`, and
-`score_top_n_performance`. Undefined or constant-prediction IC months are
-excluded rather than scored as zero; candidates fail below their minimum valid
-month count. Top-N selection always returns exactly N eligible assets using
-prediction descending then asset ID ascending for cutoff ties, and reports the
-cutoff/tie audit. Turnover regularization is explicitly
-`net_sharpe - lambda * average_turnover`.
-`top_n_monthly_performance` accepts either a compact proportional-turnover
-cost or detailed commission, per-asset minimum fee, sell-tax, slippage, and
-initial-capital inputs.
-
-`AlphaPolicy` and `ExecutionPolicy` are separate contracts. A weight policy
-receives `Node` and returns
-`WeightBuild(weights: Node, skipped: DataFrame)`. The standalone
-`allocate_integer_positions` helper converts one continuous target snapshot to
-whole-lot positions with explicit prices, budgets, lot sizes, and frozen
-minimums. Snapshots with at least 16 assets use the bounded deterministic
-projection near the continuous target, avoiding pathological subset-sum MILP
-runtimes in daily Top 50/100 portfolios. This preserves budgets, whole lots,
-minimum positions and per-asset ceilings; deployment is locally maximal rather
-than globally optimal. Smaller snapshots retain the exact two-stage MILP.
-Market-specific rules and live order submission are outside the package boundary.
-
-Regularized optimizer v3 refines the scalar dual before projecting positive
-coordinates onto the capped simplex. Exact zero weights remain zero, so solver
-roundoff cannot turn an excluded asset into a one-lot purchase.
-
-## Configuration
-
-```python
-from bagelquant_bt import BacktestConfig, TransactionCostConfig
-
-config = BacktestConfig(
-    initial_capital=1_000_000,
-    transaction_cost=TransactionCostConfig(
-        rate=0.00015,
-        min_fee=5.0,
-        buy_slippage_rate=0.0005,
-        sell_slippage_rate=0.0005,
-        stamp_tax_rate=0.0005,
-    ),
-    annualization=252,
-    quantiles=5,
-    top_n=50,
-)
-```
-
-`initial_capital` must be positive. `quantiles` and `top_n` control evaluation
-metrics; portfolio construction parameters belong to the selected
-`WeightPolicy`.
-`insolvency_action` defaults to `"raise"`. Setting it to `"freeze_zero"`
-caps effective fees at available wealth on the insolvency session, records
-requested and unfunded fees, sets net return to `-100%`, and freezes later
-gross/net returns and trading at zero. Return, lag, and quantile paths expose
-`is_bankrupt` and `bankruptcy_event` markers.
-
-## Results
-
-`BacktestResult` exposes weights, returns, value, turnover, transaction costs,
-performance, execution blocks, coverage, and missing price keys.
-
-`PredictionEvaluationResult` exposes the evaluated prediction, execution-to-execution
-forward returns, Pearson and Spearman IC, quantile and spread results, TOP N
-portfolios, lag analysis, IC decay, benchmarks, coverage, and missing price
-keys. `FactorEvaluationResult` remains the internal result class name for the
-statistical implementation; operator-facing APIs use Prediction terminology.
-
-## Exposure-constrained optimization
-
-`PredictionExposureConstrainedOptimizerPolicy(concentration_penalty,
-turnover_penalty, max_weight, exposure_bounds={}, max_turnover=None)` is a
-separate long-only, fully-invested policy. Each mapping entry is an
-`ExposureBounds(lower=None, upper=None)` with at least one finite boundary.
-`build(prediction, reference_weights=..., exposures=...)` requires point-in-time
-stock exposure columns keyed by `(time, asset_id)`. An industry coordinate can
-be a caller-supplied zero/one dummy. BT does not infer factor names or read data.
-
-The objective is `prediction @ w - concentration_penalty * sum(w**2) -
-turnover_penalty * turnover`. Turnover is `sum(abs(w - reference))` plus all
-reference mass outside the finite Prediction cross-section, without a one-half
-factor. The initial fully-invested allocation needs a turnover budget of one.
-Bounds apply to requested target weights, not later realized fills.
-
-Install `bagelquant-bt[optimizer]`. CVXPY/CLARABEL loads only when solving;
-missing/nonfinite exposures, infeasibility and inaccurate/failing solves are
-errors with the evaluation date. No automatic relaxation or fallback occurs.
-`WeightBuild.diagnostics` contains solver status, prediction scale, reward and
-penalty contributions, turnover, forced-exit turnover and exposure/slack columns.
-The original analytic optimizer remains unchanged.
-
-Portfolio Path identity v4 requires `PortfolioPathIdentity.pipeline` instead of
-the removed Combo field. Callers supply a frozen pipeline identity; previous v3
-path identities are not adopted.
-
-## Minimum planned adjustments
-
-`run_stateful_account_backtest(..., minimum_trade_notional=0.0)` optionally
-filters small whole-lot adjustments at the decision close. Non-exit changes
-below the threshold keep current quantities; zero/missing target weights still
-exit completely. The default preserves prior planning behavior. Opening gaps,
-cash and lot constraints may produce smaller fills. Callers must include this
-setting in their result/checkpoint identities. Empty fills, positions and
-executable weights retain typed schemas for cash-only paths.
-
-## Exceptions
-
-- `BagelQuantBacktestError`: base package error.
-- `BacktestConfigError`: invalid configuration.
-- `InputValidationError`: invalid or incompatible market data.
+No public evaluation fetches providers, trains/builds upstream graphs, probes
+hardware or changes governance. [Execution](account-backtest.md),
+[costs](transaction-costs.md) and [architecture](../architecture.md) define details.

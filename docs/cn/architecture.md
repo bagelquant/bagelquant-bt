@@ -1,31 +1,19 @@
-# 架构与设计
+# 架构与结果权威
 
-## 保存值与评估
+portfolio mechanics 负责权重构建/漂移、显式调度、冻结股数和账户状态；通用
+评价函数消费这些结果计算 IC、收益、风险、推断和比较。只有一条执行账户循环，
+account.py 仅保留可达的私有状态/成交/结算/企业行动 primitives。
 
-BT 消费完整保存的 Alpha / Prediction 和 Portfolio 目标权重。值计算、选股、通用
-优化与训练属于 Core；BT 负责诊断、账户模拟、统计和 Plotly。评估不构建上游值。
+BT 只依赖 Core，不导入 Data/Workbench，也不访问 provider/应用内部状态。
+BTStore(meta_path, artifact_path) 独立拥有 SQLite 元数据、不可变 Parquet、
+结果身份、receipt、查询、校验、失效、恢复和清理。调用 begin、publish_shared、
+publish_chapter、read_reference/read_chapter、history、invalidate、verify、
+recover、cleanup_plan/cleanup 等公开 API。失败保留原有有效 receipt，不自动迁移
+不兼容数据库。Workbench 保存应用关系与 backend 引用，不复制数值或证明权威。
 
-```text
-保存的 Prediction + 显式市场数据 → 预测诊断 / 指标 / 图表
-保存的权重 + 调仓状态 + 市场数据 → 账户模拟 → 收益 / 持仓 / 成交 / 图表
-```
+执行 checkpoint 保存实际/理论账本、FIFO/权益证据、未来及重试计划。续算验证
+规范化输入前缀；merge_execution_tables 合并历史；历史窗口使用截止日期的
+lot/mark snapshot 和成熟事件，由 summarize_transaction_pnl 聚合，不回放账户。
 
-## 诊断章节
-
-run_daily_prediction_sections 共享准备好的信号、日历、排名与价格上下文，仅执行所选
-章节所需组件。逐次聚合一个标签窗口，保存数值原语与统计，不保存完整巨型未来收益矩阵。
-增量标签计算复用有效前缀，重新处理跨边界窗口及新成熟标签；自相关重算新成熟历史配对。
-
-## 账户模拟
-
-evaluate_portfolio_targets 消费明确的 rebalance / hold / unavailable 决策。
-目标零权重明确退出；hold 不生成新指令；unavailable 保留原因。账户支持整手、现金、
-成本、可用数量、T+1、交易阻断、公司行为和待执行指令。规则由调用方提供，不从股票代码
-猜测交易所。模拟权重可因成交限制偏离目标，二者分别保存。
-
-## 状态与包边界
-
-账户 checkpoint 保存持仓、现金、待执行和公司行为状态。续算前由调用方验证信号、
-目标、价格、约束、公司行为和设置的历史前缀。失败不覆盖有效旧结果。
-旧政策数值适配仅供冻结月频行为；通用权重优化实现委托 Core。
-BT 仅依赖 Core，不导入 Data 或 Workbench。数据、定义、章节持久化与 UI 属于调用方。
+Workbench 拥有全局调度、资源策略、中国市场声明、研究/治理与 GUI。
+BT 接受明确的本地 workers/预算，不探测机器。真实服务/数据切换需另行授权。

@@ -17,8 +17,13 @@ from .horizon import (
     summarize_window_ic,
 )
 from .inputs import TIME
-from .performance import _annualized_return, rolling_performance
-from .statistics import one_sample_t_test, quantile_rank_information_coefficients
+from .performance import rolling_performance
+from .statistics import (
+    one_sample_t_test,
+    quantile_rank_information_coefficients,
+    return_metrics,
+    return_statistics,
+)
 
 
 def compute_window_tables(
@@ -33,7 +38,7 @@ def compute_window_tables(
     ic_annualization: int,
     periods: pl.DataFrame | None = None,
     benchmark_returns: pl.DataFrame | None = None,
-) -> tuple[dict[str, bool | float | int | None], dict[str, pl.DataFrame]]:
+) -> tuple[dict[str, bool | float | int | str | None], dict[str, pl.DataFrame]]:
     """Build one result section from already-windowed primitive series."""
 
     selected = set(items)
@@ -252,6 +257,7 @@ def _daily_quantile_test_tables(
                 schema={
                     "quantile": pl.String,
                     "annualized_return": pl.Float64,
+                    "annualized_return_reason": pl.String,
                     "observation_count": pl.Int64,
                 }
             ),
@@ -259,16 +265,16 @@ def _daily_quantile_test_tables(
     rows = []
     for sample in performance_returns.partition_by("quantile", maintain_order=True):
         values = sample.get_column("return")
+        metrics = return_metrics(values, annualization)
         rows.append(
             {
                 "quantile": sample.item(0, "quantile"),
-                "annualized_return": _single_return_metrics(values, annualization)[
-                    "annualized_return"
-                ],
+                "annualized_return": metrics["annualized_return"],
+                "annualized_return_reason": metrics["annualized_return_reason"],
                 "observation_count": values.len(),
             }
         )
-    performance = sort_quantile_frame(pl.DataFrame(rows))
+    performance = sort_quantile_frame(_metric_reason_types(pl.DataFrame(rows)))
     return {
         "quantile_test_returns": path,
         "quantile_test_performance": performance,
@@ -352,12 +358,12 @@ def _summary(
     ic_annualization: int,
     benchmark_returns: pl.DataFrame | None,
     periods: pl.DataFrame | None,
-) -> tuple[dict[str, bool | float | int | None], dict[str, pl.DataFrame]]:
-    top_n = _paired_return_metrics(returns, annualization)
+) -> tuple[dict[str, bool | float | int | str | None], dict[str, pl.DataFrame]]:
+    top_n = return_statistics(returns, annualization=annualization)
     spread = _lag_period_returns(series, portfolio="spread", lag=0)
-    spread_metrics = _paired_return_metrics(spread, annualization)
+    spread_metrics = return_statistics(spread, annualization=annualization)
     ic = _ic_frame(series, periods)
-    row: dict[str, bool | float | int | None] = {}
+    row: dict[str, bool | float | int | str | None] = {}
     for method, column in (("pearson", "pearson_ic"), ("spearman", "spearman_ic")):
         values = ic.get_column(column).drop_nulls() if column in ic.columns else []
         summary = _ic_summary(values, ic_annualization)
@@ -394,6 +400,17 @@ def _summary(
             "spread_is_bankrupt": _is_bankrupt(spread),
         }
     )
+    for name, metrics in (("top_n", top_n), ("spread", spread_metrics)):
+        row[f"{name}_net_status"] = metrics["net_status"]
+        row[f"{name}_net_reason"] = metrics["net_reason"]
+        for metric in (
+            "annualized_return",
+            "annualized_volatility",
+            "sharpe",
+            "max_drawdown",
+            "calmar",
+        ):
+            row[f"{name}_net_{metric}_reason"] = metrics[f"net_{metric}_reason"]
     coverage = series.get("coverage", pl.DataFrame())
     row["mean_coverage"] = (
         coverage.get_column("coverage_ratio").mean()
@@ -401,7 +418,7 @@ def _summary(
         else None
     )
     return row, {
-        "summary": pl.DataFrame([row]),
+        "summary": _metric_reason_types(pl.DataFrame([row])),
         "coverage": coverage,
     }
 
@@ -527,7 +544,7 @@ def _quantile_tables(
     if {"annualized_return", "annualized_sharpe"} & selected:
         rows = []
         for frame in returns.partition_by("quantile", maintain_order=True):
-            metrics = _single_return_metrics(frame.get_column("return"), annualization)
+            metrics = return_metrics(frame.get_column("return"), annualization)
             bankruptcy_time = _bankruptcy_time(frame)
             rows.append(
                 {
@@ -537,7 +554,9 @@ def _quantile_tables(
                     "bankruptcy_time": bankruptcy_time,
                 }
             )
-        tables["quantile_performance"] = sort_quantile_frame(pl.DataFrame(rows))
+        tables["quantile_performance"] = sort_quantile_frame(
+            _metric_reason_types(pl.DataFrame(rows))
+        )
     if "time_series" in selected:
         tables["quantile_returns"] = sort_quantile_frame(
             returns,
@@ -669,82 +688,6 @@ def _lag_period_returns(
         "is_bankrupt",
         "bankruptcy_event",
     ).sort(["lag", TIME])
-
-
-def return_statistics(
-    frame: pl.DataFrame, *, annualization: int
-) -> dict[str, float | None]:
-    """Summarize saved gross/net return primitives without an account replay."""
-    if annualization <= 0:
-        raise ValueError("annualization must be positive")
-    return _paired_return_metrics(frame, annualization)
-
-
-def _paired_return_metrics(
-    frame: pl.DataFrame, annualization: int
-) -> dict[str, float | None]:
-    result: dict[str, float | None] = {}
-    for prefix, column in (("gross", "gross_return"), ("net", "net_return")):
-        metrics = _single_return_metrics(
-            frame.get_column(column) if column in frame.columns else [],
-            annualization,
-        )
-        for name, value in metrics.items():
-            result[f"{prefix}_{name}"] = value
-    return result
-
-
-def _single_return_metrics(
-    values: object, annualization: int
-) -> dict[str, float | None]:
-    finite = np.asarray(
-        [
-            float(value)
-            for value in values
-            if value is not None and math.isfinite(float(value))
-        ]
-    )
-    if finite.size == 0:
-        return {
-            "annualized_return": None,
-            "annualized_volatility": None,
-            "sharpe": None,
-            "max_drawdown": None,
-            "calmar": None,
-        }
-    total = float(np.prod(1.0 + finite) - 1.0)
-    raw_annualized_return = _annualized_return(
-        1.0 + total,
-        periods=int(finite.size),
-        annualization=annualization,
-    )
-    annualized_return = (
-        raw_annualized_return if math.isfinite(raw_annualized_return) else None
-    )
-    std = float(finite.std(ddof=1)) if finite.size > 1 else math.nan
-    annualized_volatility = (
-        float(std * math.sqrt(annualization)) if math.isfinite(std) else None
-    )
-    sharpe = (
-        float(finite.mean() / std * math.sqrt(annualization))
-        if std != 0 and math.isfinite(std)
-        else None
-    )
-    wealth = np.cumprod(1.0 + finite)
-    peaks = np.maximum.accumulate(np.maximum(wealth, 1.0))
-    max_drawdown = float(np.min(wealth / peaks - 1.0))
-    calmar = (
-        float(annualized_return / abs(max_drawdown))
-        if max_drawdown < 0 and annualized_return is not None
-        else None
-    )
-    return {
-        "annualized_return": annualized_return,
-        "annualized_volatility": annualized_volatility,
-        "sharpe": sharpe,
-        "max_drawdown": max_drawdown,
-        "calmar": calmar,
-    }
 
 
 def _annualized_turnover(turnover: pl.DataFrame, annualization: int) -> float | None:
@@ -890,14 +833,30 @@ def _lag_performance(frame: pl.DataFrame, annualization: int) -> pl.DataFrame:
     for part in frame.partition_by("lag", maintain_order=True):
         row: dict[str, object] = {"lag": part.get_column("lag")[0]}
         for prefix, column in (("gross", "gross_return"), ("net", "net_return")):
-            metrics = _single_return_metrics(part.get_column(column), annualization)
+            metrics = return_metrics(part.get_column(column), annualization)
             row[f"{prefix}_annualized_return"] = metrics["annualized_return"]
             row[f"{prefix}_sharpe"] = metrics["sharpe"]
+            row[f"{prefix}_annualized_return_reason"] = metrics[
+                "annualized_return_reason"
+            ]
+            row[f"{prefix}_sharpe_reason"] = metrics["sharpe_reason"]
+            row[f"{prefix}_status"] = metrics["status"]
+            row[f"{prefix}_reason"] = metrics["reason"]
         bankruptcy_time = _bankruptcy_time(part)
         row["is_bankrupt"] = bankruptcy_time is not None
         row["bankruptcy_time"] = bankruptcy_time
         rows.append(row)
-    return pl.DataFrame(rows).sort("lag")
+    return _metric_reason_types(pl.DataFrame(rows)).sort("lag")
+
+
+def _metric_reason_types(frame: pl.DataFrame) -> pl.DataFrame:
+    """Keep unavailable diagnostic fields typed even when every value is null."""
+
+    return frame.with_columns(
+        pl.col(name).cast(pl.String)
+        for name in frame.columns
+        if name in {"status", "reason"} or name.endswith(("_status", "_reason"))
+    )
 
 
 def _is_bankrupt(frame: pl.DataFrame) -> bool:

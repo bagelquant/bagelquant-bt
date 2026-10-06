@@ -7,14 +7,14 @@ import pytest
 from bagelquant_bt import (
     account_fill_turnover,
     capacity_participation,
-    common_prediction_ic,
+    common_alpha_ic,
     common_sample_comparison,
     deflated_sharpe,
     library_endpoint_tests,
 )
 
 
-def test_prediction_comparison_uses_identical_asset_sample_and_bounded_batches():
+def test_alpha_comparison_uses_identical_asset_sample_and_caller_labels():
     days = [date(2024, 1, 1) + timedelta(days=index) for index in range(9)]
     values = pl.DataFrame(
         {
@@ -24,17 +24,24 @@ def test_prediction_comparison_uses_identical_asset_sample_and_bounded_batches()
         }
     )
     variant = values.head(7)
-    prices = pl.DataFrame(
+    labels = pl.DataFrame(
         [
-            {"time": day, "asset_id": str(asset), "price": 100.0 + index * (asset + 1)}
-            for index, day in enumerate(days)
+            {
+                "time": day,
+                "asset_id": str(asset),
+                "forward_return": 0.01 * (asset + 1),
+                "interval_start": days[index + 1],
+                "interval_end": days[index + 2],
+                "available_date": days[index + 2],
+            }
+            for index, day in enumerate(days[:-2])
             for asset in range(8)
         ]
     )
-    result = common_prediction_ic(
+    result = common_alpha_ic(
         values,
         variant,
-        prices,
+        labels,
         calendar=pl.DataFrame({"time": days}),
         horizon=2,
         batch_sessions=1,

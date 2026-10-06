@@ -1,46 +1,17 @@
 # 快速开始
 
-`bagelquant-bt` 将 AlphaValue Node 组合成强类型 Signal，回测只能通过该
-Signal 契约进入。
+输入为已保存的 Core Node 与调用方对齐的收益表，不会重建上游或读取 provider。
+可运行的完整构造例见[英文快速开始](../en/quick-start.md)。
 
 ```python
-from bagelquant_core import IdentityPredictionOperator, Node
-from bagelquant_bt import (
-    BacktestConfig,
-    MissingSnapshotAction,
-    EvaluationAnchor,
-    AlphaPolicy,
-    compose_prediction,
-    run_prediction_backtest,
-)
-
-alpha_value = Node.from_domain(alpha_frame, domain, name="quality")
-policy = AlphaPolicy(
-    id="month_end",
-    frequency="monthly",
-    anchor=EvaluationAnchor.LAST_TRADING_DAY,
-    missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
-)
-signal = compose_prediction(
-    {"quality": alpha_value},
-    IdentityPredictionOperator(),
-    calendar,
-    policy,
-    standardize_policy="z_score",
-)
-result = run_prediction_backtest(
-    signal,
-    prices,
-    calendar,
-    policy,
-    config=BacktestConfig(initial_capital=1_000_000, top_n=50),
-)
+from bagelquant_bt import build_alpha_weights, evaluate_alpha, evaluate_weights
+weights = build_alpha_weights(saved_alpha, method="book")
+result = evaluate_weights(weights, forward_returns, components=("returns",),
+                          annualization=240, available_date=cutoff)
+diagnostics = evaluate_alpha(saved_prediction, forward_returns,
+                             annualization=240, quantiles=10, available_date=cutoff)
 ```
 
-使用 `ICWeightedPredictionOperator`、`ICWeightedDecayPredictionOperator`、
-`OLSPredictionOperator` 或 `GLSPredictionOperator` 时，还需向 `compose_prediction`
-提供 `prices`。rolling window 与 half-life 按 AlphaPolicy 的交易期计数，不按日频行计数。普通 Node、裸 DataFrame
-与直接 weights 均不能传给 `run_prediction_backtest`。
-
-`AlphaPolicy` 只负责选择评估观测；横截面标准化由独立的 `StandardizePolicy` 负责。
-规范 registry ID 为 `"none"`、`"z_score"` 和 `"percentile_rank"`。
+收益表必须含 time、asset_id、forward_return、interval_start、interval_end、
+available_date；time 为决策/对齐标签，不能代替真实经济区间。BT 不插入默认 lag
+或价格规则。`evaluate_execution` 另需显式交易价格、估值价格和初始资金。

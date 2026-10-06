@@ -1,56 +1,24 @@
-# Transaction Costs
+# Transaction costs
 
-The default cost model is:
+Research weights use `cost_return = cost_rate * sum(abs(target - Net pretrade
+ drift weight))`, including initial entry; default cost_rate is 0.0005. Net
+subtracts this amount directly from its period return. Virtual research cash may
+reflect fees without a capital/lot/minimum-fee constraint. Gross and Net holdings
+drift independently; Net pre-cost return minus its cost equals Net return, while
+independent Gross return need not satisfy that subtraction after drift.
 
-```python
-TransactionCostConfig(
-    rate=0.00015,
-    min_fee=5.0,
-    buy_slippage_rate=0.0005,
-    sell_slippage_rate=0.0005,
-    stamp_tax_rate=0.0005,
-)
-```
+Execution commission defaults to max(executed notional * 0.0005, 5) per order and
+execution date. No fill means no fee. Separate IDs are charged separately; a
+later residual retry is another daily fill. Defaults have no tax/slippage.
+Caller inputs may declare buy/sell slippage, sell tax and transfer fee. Cash
+includes all charges when selecting affordable whole shares.
 
-`rate` and `min_fee` are the two-sided commission settings. Buy and sell
-slippage are configured independently. Stamp tax applies only to sells.
+Custom identified pure rules return a nonnegative fee and valid fill price;
+quote quantity cannot decrease total buy charge. ID/version/parameters enter
+numerical identity. Fee-free reference P&L, actual fill-price P&L and explicit
+fees are separate; implementation shortfall includes unfilled shares and price
+changes as well as fees. FIFO allocates entry/exit costs by matched quantity.
 
-## Calculation
-
-For each execution date and asset, the signed weight change determines side:
-
-```text
-signed_delta = target_weight - previous_weight
-buy_notional = max(signed_delta, 0) * portfolio_value_before_trade
-sell_notional = max(-signed_delta, 0) * portfolio_value_before_trade
-traded_notional = buy_notional + sell_notional
-
-slippage_fee = traded_notional * effective_slippage_rate
-raw_fee = traded_notional * commission_rate
-commission_fee = max(raw_fee, min_fee)
-stamp_tax_fee = sell_notional * stamp_tax_rate
-total_fee = slippage_fee + commission_fee + stamp_tax_fee
-```
-
-The effective slippage rate is the configured rate for the trade side unless
-the caller supplies an effective-dated `slippage_rates` frame. Its required columns are
-`time`, `asset_id`, and `slippage_rate`; optional `is_fallback` marks an
-operator-selected fallback. Rates are held forward per asset and are never
-backfilled before their first effective date. A missing prior row uses the
-configured buy or sell rate and increments the fallback count.
-
-Daily total fees are divided by portfolio value before trading:
-
-```text
-cost_return = total_fee / portfolio_value_before_trade
-net_return = gross_return - cost_return
-```
-
-## Result Fields
-
-`BacktestResult.transaction_costs` contains traded-asset and slippage-fallback
-counts, total/buy/sell notional, `slippage_fee`, `raw_fee`,
-`min_fee_adjustment`, `commission_fee`, `stamp_tax_fee`, `total_fee`, and
-`cost_return`. `raw_fee` and `min_fee_adjustment` are commission-only fields.
-
-Every backtest includes both gross no-cost and net cost-adjusted results.
+Native stress scales only the configured component. Minimum fees/tax stay fixed
+for proportional commission stress; zero slippage stays zero. Opaque custom
+rules require explicit caller-declared scenarios.

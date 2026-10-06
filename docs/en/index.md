@@ -1,35 +1,18 @@
-# bagelquant-bt Documentation
+# bagelquant-bt documentation
 
-`bagelquant-bt` composes AlphaValue panels into signals and evaluates those
-signals. It does not retrieve market data.
+BT evaluates saved Alpha/Prediction values, portfolio weights and frozen share
+transaction plans. It supplies financial mechanics and reusable statistics;
+Core owns value/model computation and Data owns data and PIT evidence.
 
-The expected workflow is:
-
-```text
-AlphaValue Node -> PredictionOperator -> Node -> policies -> result
-```
-
-The package is Polars-first. Public backtests require core `Node`; prices
-remain long-form Polars frames keyed by `time` and `asset_id`.
-
-## Main Entry Points
-
-```python
-from bagelquant_bt import compose_prediction, run_prediction_backtest
-```
-
-Use `compose_prediction` to create a typed signal and `run_prediction_backtest` to apply
-date, execution, market, and portfolio policies.
-
-## Docs
-
-- [Concepts](concepts.md)
-- [Architecture](architecture.md)
 - [Quick start](quick-start.md)
-- [Performance notes](performance.md)
-- [API](reference/api.md)
+- [Architecture and artifact ownership](architecture.md)
+- [Workers and resource limits](performance.md)
 - [Public API](reference/public-api.md)
-- [Transaction costs](reference/transaction-costs.md)
-- [Whole-share account backtests](reference/account-backtest.md)
-- [Signal evaluation](reference/factor-evaluation.md)
-- [Internals](reference/internals.md)
+- [Alpha evaluation](reference/factor-evaluation.md)
+- [Execution and FIFO](reference/account-backtest.md)
+- [Costs](reference/transaction-costs.md)
+- [Research inference](reference/research-statistics.md)
+
+The three public modes share one implementation per concern. Removed runners,
+policy registries and legacy adapters have no compatibility aliases. Real
+cutover is a separately authorized later stage.

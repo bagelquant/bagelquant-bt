@@ -10,7 +10,8 @@ import pytest
 import scipy.optimize as optimize
 
 import bagelquant_bt.allocation as allocation_module
-from bagelquant_bt import InputValidationError, allocate_integer_positions
+from bagelquant_bt import InputValidationError
+from bagelquant_bt.allocation import allocate_integer_positions
 
 
 def test_integer_allocation_maximizes_budget_then_tracks_targets() -> None:
@@ -98,21 +99,18 @@ def test_integer_allocation_is_row_order_independent() -> None:
 
 @pytest.mark.parametrize("count", [16, 32, 50, 100, 128])
 def test_large_integer_allocation_uses_bounded_deterministic_projection(
-    monkeypatch: pytest.MonkeyPatch, count: int,
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
 ) -> None:
     assets = [f"A{index:03d}" for index in range(count)]
-    weights = pl.DataFrame(
-        {"asset_id": assets, "weight": [1.0 / count] * count}
-    )
+    weights = pl.DataFrame({"asset_id": assets, "weight": [1.0 / count] * count})
     prices = pl.DataFrame(
         {
             "asset_id": assets,
             "price": [float(10 + index % 17) for index in range(count)],
         }
     )
-    lots = pl.DataFrame(
-        {"asset_id": assets, "lot_size": [100] * count}
-    )
+    lots = pl.DataFrame({"asset_id": assets, "lot_size": [100] * count})
     calls = 0
 
     def solve(*args: object, **kwargs: object) -> object:
@@ -138,13 +136,14 @@ def test_large_integer_allocation_uses_bounded_deterministic_projection(
             result.positions.filter(pl.col("asset_id") == row["asset_id"]).item(
                 0, "target_quantity"
             )
-            < 100
-            * int(np.ceil((1.0 / count * 100_000_000.0) / row["price"] / 100))
+            < 100 * int(np.ceil((1.0 / count * 100_000_000.0) / row["price"] / 100))
         )
     )
     assert result.residual_cash < minimum_lot_value
     reordered = allocate_integer_positions(
-        weights.reverse(), prices.reverse(), total_notional=100_000_000.0,
+        weights.reverse(),
+        prices.reverse(),
+        total_notional=100_000_000.0,
         lot_sizes=lots.reverse(),
     )
     assert reordered.positions.equals(result.positions)
@@ -193,13 +192,17 @@ def test_integer_allocation_preserves_solver_status_and_message(
 
 def test_integer_allocation_recovers_real_presolve_failure() -> None:
     fixture = json.loads(
-        (Path(__file__).parent / "fixtures/allocation_presolve_failure.json")
-        .read_text(encoding="utf-8")
+        (Path(__file__).parent / "fixtures/allocation_presolve_failure.json").read_text(
+            encoding="utf-8"
+        )
     )
     arrays = {
         key: np.asarray(fixture[key])
         for key in (
-            "lot_values", "maximum_lot_counts", "minimum_values", "ideal_values"
+            "lot_values",
+            "maximum_lot_counts",
+            "minimum_values",
+            "ideal_values",
         )
     }
     result = allocation_module._solve_lot_counts(

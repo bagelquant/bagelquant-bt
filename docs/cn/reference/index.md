@@ -1,11 +1,9 @@
-# 参考文档
+# API 参考
 
-`bagelquant-bt` 的操作和 API 参考。
-
-- [API](api.md)
 - [公开 API](public-api.md)
-- [交易成本](transaction-costs.md)
-- [Signal 评估](factor-evaluation.md)
-- [研究检验与比较](research-statistics.md)
-- [成交约束与 Benchmark](execution-and-benchmarks.md)
-- [内部实现](internals.md)
+- [Alpha 评估](factor-evaluation.md)
+- [交易/FIFO/续算](account-backtest.md)
+- [成本](transaction-costs.md)
+- [研究统计](research-statistics.md)
+
+另见[架构与缓存](../architecture.md)、[资源预算](../performance.md)。

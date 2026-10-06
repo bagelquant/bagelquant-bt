@@ -1,48 +1,35 @@
-# Quick Start
+# Quick start
 
-`bagelquant-bt` composes AlphaValue panels into a strongly typed signal and
-backtests only through that signal contract.
+Inputs are saved Core Nodes and explicitly aligned return rows; no upstream
+calculation or provider access occurs during evaluation.
 
 ```python
-from bagelquant_core import Domain, IdentityPredictionOperator, Node
-from bagelquant_bt import (
-    BacktestConfig,
-    EvaluationAnchor,
-    AlphaPolicy,
-    MissingSnapshotAction,
-    compose_prediction,
-    run_prediction_backtest,
-)
+from datetime import date
+import polars as pl
+from bagelquant_core import Domain, Node
+from bagelquant_bt import build_alpha_weights, evaluate_weights
 
-alpha_value = Node.from_domain(alpha_frame, domain, name="quality")
-policy = AlphaPolicy(
-    id="month_end",
-    frequency="monthly",
-    anchor=EvaluationAnchor.LAST_TRADING_DAY,
-    missing_snapshot=MissingSnapshotAction.PREVIOUS_IN_PERIOD,
+times = [date(2024, 1, 2), date(2024, 1, 3)]
+domain = Domain(calendar=times, universe=["a", "b"])
+alpha = Node.from_domain(
+    pl.DataFrame({"time": [times[0], times[0], times[1], times[1]],
+                  "asset_id": ["a", "b", "a", "b"], "value": [1., 2., 2., 1.]}),
+    domain, value_type="numeric", name="saved_alpha",
 )
-signal = compose_prediction(
-    {"quality": alpha_value},
-    IdentityPredictionOperator(),
-    calendar,
-    policy,
-    standardize_policy="z_score",
-)
-result = run_prediction_backtest(
-    signal,
-    prices,
-    calendar,
-    policy,
-    config=BacktestConfig(initial_capital=1_000_000, top_n=50),
-)
+labels = pl.DataFrame({
+    "time": [times[0], times[0], times[1], times[1]],
+    "asset_id": ["a", "b", "a", "b"], "forward_return": [0.01, 0.02, 0.01, -0.01],
+    "interval_start": [times[0], times[0], times[1], times[1]],
+    "interval_end": [times[1], times[1], date(2024, 1, 4), date(2024, 1, 4)],
+    "available_date": [times[1], times[1], date(2024, 1, 4), date(2024, 1, 4)],
+})
+weights = build_alpha_weights(alpha, method="book")
+result = evaluate_weights(weights, labels, components=("returns",),
+                          available_date=date(2024, 1, 4))
+returns = result.tables["returns"]
 ```
 
-For `ICWeightedPredictionOperator`, `ICWeightedDecayPredictionOperator`,
-`OLSPredictionOperator`, or `GLSPredictionOperator`, also pass `prices` to
-`compose_prediction`. Their rolling window and half-life count signal
-periods, not daily rows. Ordinary panels, raw DataFrames, and direct weights
-cannot be passed to `run_prediction_backtest`.
-
-`AlphaPolicy` selects evaluation observations only. Cross-sectional
-standardization is an independent `StandardizePolicy`; `"none"`, `"z_score"`,
-and `"percentile_rank"` are the canonical registry IDs.
+`evaluate_alpha(alpha, labels, ...)` uses the same labels for saved signal
+statistics. `evaluate_execution(plans, prices, initial_capital=...)` instead
+consumes stable-ID signed integer shares and explicit execution/valuation prices.
+See [public contracts](reference/public-api.md) and [costs](reference/transaction-costs.md).

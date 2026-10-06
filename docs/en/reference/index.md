@@ -1,10 +1,10 @@
 # Reference
 
-Operational and API reference for `bagelquant-bt`.
+- [Public API and typed inputs](public-api.md)
+- [Alpha evaluation](factor-evaluation.md)
+- [Execution and checkpoint continuation](account-backtest.md)
+- [Research and execution costs](transaction-costs.md)
+- [Research statistics](research-statistics.md)
 
-- [API](api.md)
-- [Public API](public-api.md)
-- [Transaction costs](transaction-costs.md)
-- [Signal evaluation](factor-evaluation.md)
-- [Research inference and comparison](research-statistics.md)
-- [Internals](internals.md)
+[Architecture](../architecture.md) describes artifact authority and caching;
+[resources](../performance.md) describes local execution budgets.

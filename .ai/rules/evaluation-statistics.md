@@ -1,59 +1,42 @@
-# Saved-value evaluation, statistical evidence and stress
+# Saved evaluation and statistical evidence
 
-These constraints describe the current numerical/API baseline. The
-[staged target](development.md#staged-refactor-target) moves reusable evaluation
-artifact storage, publication and reuse into BT APIs; application governance and
-submission authorization remain downstream. Step 1 does not implement that move.
+Evaluate saved Core numeric/prediction and weights Nodes or frozen execution
+plans. Never build/train upstream, fetch providers or submit work during passive
+reads. One pure formula owns each statistic; portfolio mechanics supply paths
+and reusable evaluation functions consume explicit saved primitives.
 
-## Diagnostics and saved inputs
+Caller-aligned one-session returns require time, asset_id, forward_return,
+interval_start, interval_end and available_date. Time is an alignment label;
+BT inserts no lag or price convention. Economic intervals are explicit,
+nonoverlapping and sequential; availability is at/after the economic end.
+Unmatured labels are unavailable, not zero. Mature missing constituents retain
+fixed Book/Spread weight with visible coverage; IC and complete quantile rules
+remain strict. Calendar gaps must not compress economic windows.
 
-- Evaluate complete saved roots/targets with explicit market inputs and selected
-  components only. Never build values, train upstream, call providers or make
-  passive reads submit computations. Callers currently persist returned results;
-  in the target BT owns its result persistence API and callers own authorization.
-- Share diagnostic weights, prepared market inputs and numerical primitives.
-  Stream bounded label windows instead of retaining wide full-history matrices.
-  Continue only verified causal prefixes; current freshness and historical
-  integrity remain separate. Failures preserve valid prior saved results.
-- Daily prediction diagnostics preserve cumulative 1/5/10/20/40/60/120-session
-  and bucket windows, centered-rank Book/Tail, deterministic quantiles, lag
-  diagnostics, PIT label maturity and frozen Newey-West/BH inference. These
-  diagnostics never become account NAV or actual holdings.
-- A missing member return contributes zero at its original Book/Tail weight,
-  with visible expected/observed coverage; never reselect or renormalize using
-  future label availability. Quantile/common-sample and IC rules remain strict.
-- Quantile-rank IC is derived from stored gross q1-to-qN returns by the public
-  BT statistic using Core's formula. Infer N from labels so historical q5 stays
-  readable. Incomplete groups, no finite group return and constant group returns
-  produce null.
-- Saved-turnover/risk comparisons require exact interval/settings/source matches.
-  Stress-only updates must not recalculate unused baseline turnover. Default and
-  custom periods consume saved primitives/realized account paths; aggregation
-  does not replay accounts or rebuild values.
+Alpha/Prediction share evaluation: Pearson/rank IC and IR, cross-sectional and
+window returns, gross-one centered-rank Book/Spread, deterministic quantiles,
+rank persistence, horizons/buckets, lag/lead-lag and rolling IC/inference.
+Default annualization is 252 and quantiles 10. Workbench explicitly supplies
+240 and its China label adapter (decision t -> adjusted t+1 to t+2 open).
+Book/Spread paths use normalized virtual NAV with proportional full-L1 costs.
 
-## Inference and capacity
+Pure saved comparisons, conditional/incremental IC, HAC/BH and Deflated Sharpe
+remain reusable BT APIs. BH includes every valid declared trial, including
+abandoned ones. Unsupported inference is unavailable with an explicit reason.
+Capacity uses strictly prior 20 observed market sessions, excluding execution
+session; zero amounts are valid, missing/negative/nonfinite amounts unavailable.
+It is a diagnostic, never a fill limit.
 
-- Own common-coordinate/conditional IC, common-finite-date saved-return
-  comparisons, two-sided HAC/BH library inference and Deflated Sharpe
-  diagnostics. Include every valid trial, including abandoned trials, in
-  multiplicity adjustment; unsupported evidence is unavailable with a reason.
-- Capacity uses explicit CNY `turnover_amount` from strictly prior 20 observed
-  market sessions, excluding execution day; it is diagnostic, never a fill limit.
-  Capacity kernel v2 accepts known zero observations, rejects negative/nonfinite/
-  missing observations, and leaves a zero denominator unavailable. Its chapter
-  identity changes without resimulating shared accounts.
+Native execution stress retains capital x2/5/10, commission x2/4, slippage x2/4,
+and delay +1/+4. Capital scales fixed sizing notional as well; minimum fees/tax
+stay fixed for rate stress. Zero slippage remains zero. Independent accounts
+share supplied read-only inputs, not cash/state. Opaque custom rules require
+caller-declared scenarios rather than inferred fee components.
 
-## Implementation stress
-
-- Preserve nine one-factor scenarios: capital x2/x5/x10, commission x2/x4,
-  slippage x2/x4, and session delay +1/+4. Scale initial capital and fixed-notional
-  capital target together so fixed-notional flows do not withdraw the increase.
-- Share prepared inputs while retaining independent accounts/checkpoints.
-  Consumers visit targets and stress accounts serially with the full native-thread
-  budget; release full account tables between scenarios. Stress chapters retain
-  only saved return paths/capacity diagnostics; full cash/position/fill tables
-  remain in the independent shared account.
-- Use one total thread/memory budget, shrink later batches/admission under
-  pressure and retain causal account dates. Resource limits are identity-neutral;
-  numerical settings remain explicit. Read horizons only from caller-supplied
-  runtime Available Date/research settings, never wall-clock guesses.
+BTStore owns evaluation paths/checkpoints/primitives/chapters and integrity.
+Workbench retains application authorization/governance and backend references.
+Publication is immutable and failures preserve valid receipts; prefix append
+must match full computation and revisit newly mature labels. Source changes
+invalidate the corresponding current result without rewriting historical bytes.
+Default/custom periods use public saved-window aggregation and cutoff-safe FIFO
+summaries; no account/value/model replay or missing-evidence creation on reads.

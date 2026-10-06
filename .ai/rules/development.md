@@ -1,89 +1,53 @@
 # BT development rules
 
-## Staged refactor target
+## Current BT 0.12 stage-4 contracts
 
-Stages 1–3 implement the workflow, Data 0.7, Core 0.11 and this package's Node
-integration. BT 0.11 requires prediction value_type at prediction entry points
-and produces weights Nodes at weight boundaries. Saved-target DataFrame entry
-points remain separate. All operators come from bagelquant_core.operator.
-Stages 4–5 transfer remaining account/evaluation persistence from Workbench;
-real database/service replacement remains stage 6 with explicit authorization.
+BT evaluates saved Core numeric/prediction Nodes (`evaluate_alpha`), saved
+weights Nodes (`evaluate_weights`) and frozen signed share plans
+(`evaluate_execution`). Portfolio construction/scheduling/account mechanics and
+pure evaluation functions are separate layers. The weight-to-share bridge uses
+actual decision-close state and the same account engine; execution never resizes
+frozen quantities. Removed policy/composition/account runners have no aliases.
 
-BT owns financial execution scheduling, accounts/backtests, evaluation/statistics and the public
-APIs for persisting, querying and reusing its account/evaluation artifacts and
-checkpoints. Core owns generic numerical/training/optimization mechanics and
-graph/numerical artifacts. Data owns neutral dataset, version, PIT and frozen-input
-APIs. Workbench retains China declarations, authored definitions, app metadata,
-governance, tasks/orchestration and Web/GUI; its metadata references backend
-receipts. Target Workbench neither implements reusable engines nor accesses
-backend private APIs, artifact files or backend database tables directly.
+BTStore owns its SQLite metadata, immutable Parquet tables, numerical identity,
+receipts, publication integrity, invalidation, recovery and cleanup APIs.
+Workbench owns app/global-version bindings, governance and backend references;
+it uses public APIs rather than BT tables/files or duplicate numerical caches.
+Core owns graphs/numerical/model artifacts; Data owns source datasets/PIT/input
+proofs. BT depends only on Core and never fetches providers or imports Data or
+Workbench. Stage 5 may clean other Workbench concerns. Database/service cutover
+is stage 6 and remains separately authorized.
 
-The dependency graph remains Data/Core independent, BT depending only on Core,
-and Workbench consuming all three. Market rules remain explicit caller inputs;
-BT never imports application/provider state. Current saved-result persistence
-and version bindings are partly in Workbench. The account/evaluation topic rules
-preserve current behavior until stages 4 and 5 transfer those mechanics.
+## Engineering and validation
 
-Workbench owns machine resource detection, global scheduling/admission and
-runtime policy. BT accepts explicit local parallel configuration for backtests
-and evaluation; it must not allocate machine-wide resources or select workers
-from available CPU/RAM. Concrete runtime changes belong to stage 4.
+Inspect tracked/untracked Git state, README, pyproject and routed owner docs.
+Preserve unrelated changes and each repository's Git metadata. Use Python 3.13,
+uv, pathlib and explicit deterministic ordering. Keep one authoritative model,
+formula, engine, execution path and artifact owner; remove dead exports/tests/
+configuration/docs together, with no unrequested compatibility/migration layers.
 
-## Preparation and boundaries
+Validate typed inputs at boundaries with actionable errors. Financial state is
+causal; outputs use bounded columnar row buffers. Prefer vectorized numerical
+kernels where causality permits. Formula changes require hand-checkable examples,
+reference comparisons and sparse/missing/duplicate/empty input cases.
 
-- Inspect `git status --short --branch` including untracked changes before editing;
-  read README, manifest and affected docs. Work in the owning repository and preserve
-  unrelated user edits. Never remove Git metadata, merge histories or absorb repos.
-- Use Python 3.13 and `uv`. Choose cross-platform paths/APIs; account for separators,
-  casing, line endings, permissions, shell syntax and environment conventions on
-  Windows/macOS. Use `pathlib`; never persist developer-specific absolute paths.
-- BT depends on Core, never Data or Workbench. Keep generic numerical primitives
-  in Core, account/evaluation mathematics and artifact APIs here, and application/
-  China market declarations downstream. Declare dependencies in the owner manifest.
+Local parallelism uses BTExecutionOptions and caller Core resource ceilings.
+No CPU/RAM probing or automatic global allocation. Resource/batch/worker settings
+are identity-neutral; numerical settings, cost rules and source receipts are not.
+Cancellation stops admission and running causal account work cooperatively.
 
-## Implementation
+Run `uv run ruff check .` and `uv run pytest` in this owner, then affected
+consumers. Full work receives independent review. Verify standalone APIs,
+immutable publication, changed-prefix rejection, append/full equivalence,
+corruption/recovery and cleanup. Tests use synthetic data and isolated temporary
+stores; never touch the real workspace data root or call providers.
 
-- Prefer the smallest complete system and existing lower-level primitives. Keep
-  one authoritative API/model/state/execution path per concern. Delete dead code
-  rather than add adapters, aliases, flags or parallel implementations.
-- Do not keep deprecated readers/routes/DSL aliases or migration shims unless
-  an explicit compatibility window is requested. Add abstractions, dependencies,
-  configuration or persisted state only for a current concrete responsibility.
-- Keep dependencies and boundaries visible. Remove a feature's exports, tests,
-  docs, configuration and generated references together; preserve real shared
-  data, recovery evidence, user work, credentials, environments and caches.
-- Use deterministic composable logic, descriptive names and typed public
-  boundaries; follow surrounding structured docstrings. Validate boundaries
-  with actionable errors and never silently swallow exceptions.
-- Use `logging`, not `print`, in library logic. Prefer vectorized Polars/NumPy;
-  row-wise loops need justification and measurement. Ordering/grouping are explicit.
-- Performance changes preserve contracts unless explicitly changed/documented.
-  Formula/metric/execution changes need hand-checkable examples and regression
-  tests; compare optimized output with simple references where practical.
-- Cover temporal alignment, costs, turnover, sparse calendars, listings,
-  delistings, suspensions, gaps, missing/duplicate keys, empty/single-asset
-  frames and non-trading dates where applicable. Use synthetic inputs and temporary
-  roots; never read/mutate the real workspace data root or consume provider quota.
+Use owning generators for generated references, catalogs, OpenAPI and types.
+Architectural changes update entrances/rules/docs and distinguish implementation
+from remaining gaps. Record per-owner actual verification and unrun checks.
 
-## Verification and delivery
-
-- Run `uv run ruff check .` and `uv run pytest` for code changes; choose focused
-  checks for docs-only work. Generate outputs from their source/generator;
-  never manually edit generated docs, schemas or API artifacts.
-- State cross-repo public contract changes. Keep edits independently coherent,
-  update bounds/versions only when required, test the owner then every affected
-  downstream consumer; report each repository separately.
-- Major architecture changes update applicable AGENTS and owner rules in the
-  same change; update root instructions if cross-repository boundaries change.
-- Do not commit caches, credentials, databases, provider data, environments,
-  build outputs, research artifacts or local task records. Use stable `main`
-  and short-lived single-purpose branches; honor session branch instructions.
-  Conventional Commit summaries are imperative and at most 72 characters.
-- Commit/push/PR/merge/release/publication/deployment/service installation,
-  real-data updates and governance transitions each require explicit request.
-  Commit components separately before explicitly authorized gitlink updates.
-  Package publication verifies version/build/registry/credentials/version absence;
-  report exact uploaded versions/artifacts.
-- Report behavior/why, repository-specific checks/results, unrun checks and reasons,
-  and contract/version/data/operational caveats. Distinguish existing failures from
-  introduced failures; never claim a check passed unless run.
+No commit/push/PR/merge/release/deploy/service/provider call/real data update or
+governance transition without explicit authorization. Never delete authored
+research, immutable historical evidence, recovery material, credentials,
+environments or ignored machine state as source cleanup. Formal task metadata
+belongs to one workspace coordinator, with disjoint subagent scopes.

@@ -1,98 +1,26 @@
-# 公开 API
+# 公开 API — BT 0.12
 
-稳定 API 从 `bagelquant_bt` 导出。0.9.4 只接受强类型 Prediction；普通 `Node`、
-裸 DataFrame 和直接 weights 均不能进入公开回测入口。
+- evaluate_alpha 接受已保存 numeric/prediction Node；evaluate_weights 接受
+  weights Node。收益需 time、asset_id、forward_return、interval_start、
+  interval_end、available_date；经济区间顺序明确且不重叠，无隐式 lag/价格规则。
+- build_alpha_weights(method="book"/"spread") 提供 gross-one/net-zero 权重；
+  每 N 日调仓需要显式 calendar/anchor，并取最新因果整体截面。
+- evaluate_execution 接受唯一 plan_id、execution_date、asset_id、signed integer
+  quantity、execution_price/valuation_price（或显式 open/close）与 initial_capital。
+  可选的订单 reference_price 优先于 market reference_price，否则理论账本使用
+  调用者的 execution price。
+- run_execution_from_weights 使用实际决策日收盘状态形成冻结 delta；需要显式
+  calendar/session_lag，decisions 的 time/status 为 rebalance/hold/unavailable。
+  reference_price_mode 默认 execution；显式 decision 冻结决策收盘参考价，
+  Workbench 选择 decision。
+- save_checkpoint/load_checkpoint、merge_execution_tables 和
+  summarize_transaction_pnl(frames, through=end) 提供续算与历史读取。
+  新发现的历史 record-date 行动需核实实际/理论 position、session 与 lot 历史。
+- ExecutionConfig 声明成本/lots/settlement/retry；ExecutionCostRule 需稳定
+  ID/version/parameters 和纯 quote，返回 ExecutionCostQuote。
+- return_statistics 与风险/统计函数复用通用公式。默认 annualization=252、
+  quantiles=10；Workbench 明确传入 240 和中国市场语义。
+- BTStore/evaluation_identity 拥有缓存/receipt；BTExecutionOptions 与
+  run_evaluation_batch 提供显式本地并行，不负责全局资源分配。
 
-## 入口函数
-
-```python
-from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, run_prediction_backtest, run_prediction_evaluation, run_prediction_horizon_diagnostics
-```
-
-- `compose_prediction(...) -> Node`：按 `AlphaPolicy` 的 cadence
-  执行 `PredictionOperator`。监督式 operator 使用本次 execution 到下一次
-  execution 的收益，并检查标签可用时间。
-- `run_prediction_backtest(...)`：依次应用 `AlphaPolicy`、
-  `ExecutionPolicy`、`WeightPolicy` 和内部 weights 引擎。
-- `run_prediction_evaluation(scheduled_signal, prices, ...)`：计算 IC、分位数、
-  lag、IC decay 和 Signal 驱动的组合结果。
-- `run_prediction_horizon_diagnostics(scheduled_signal, prices, ...)`：在不构造组合绩效的
-  前提下计算固定 session 前向收益、IC、centered-rank Book、gross-one Tail、quantile
-  结构、信号持久性、HAC 推断、BH q-value 与 staggered cohorts。Book/Tail 权重结构有效后，
-  成员标签缺失时保留原权重并把该成员贡献记为 0，同时 coverage 计数继续公开缺口。
-- `run_daily_rank_path_diagnostics(scheduled_signal, prices, config, ...) -> DailyRankPathDiagnostics`：
-  模拟每日 Book/Tail gross/net 诊断路径、Book requested/executed turnover，以及
-  初始建仓标记、`-30..30` 整数 lag 的共同样本 Book lead-lag return，并输出
-  `0/1/2/5/10/20/60` 的 Book/Tail lag 路径。
-- `rolling_window_information_coefficients` 与 `implied_signal_half_life` 公开日频图表使用的
-  因果 240-valid-observation rolling IC 与逐 lag half-life primitive。
-- `session_window_forward_returns`、`centered_rank_book_weights`、
-  `gross_one_tail_weights`、`hac_mean_test` 与
-  `non_overlapping_cohort_statistics` 公开对应的确定性 primitive。
-- `standardize_alpha_values(frame, method)` 公开确定性横截面预处理内核；z-score
-  使用固定资产顺序与逐日归约，追加未来区间或改变物理分块不会修改既有历史前缀。
-- `quantile_rank_information_coefficients(quantile_returns, *, periods=None)`：从 q1 到
-  qN 的 gross 组收益生成单调性 rank IC；可选的 `time`/`next_time` periods 会先把逐日
-  收益压缩为每个完整 execution 区间一个观测。
-
-候选预测验证由 `score_ic_validation`、`select_top_n_stable`、
-`top_n_monthly_performance` 和 `score_top_n_performance` 提供。IC 未定义或 prediction
-为常数的月份不会按零计分；有效月份不足时候选无效。Top-N 对 cutoff tie 使用 prediction
-降序、asset ID 升序，稳定选取恰好 N 只并返回 cutoff/tie 审计。换手正则目标明确定义为
-`net_sharpe - lambda * average_turnover`。
-`top_n_monthly_performance` 可以使用紧凑的比例换手成本，也可以分别接收佣金、逐资产
-最低佣金、卖出税、滑点与初始资金。
-
-`WeightPolicy` 接收 `ScheduledPrediction`，返回
-`WeightBuild(weights: Node, skipped: DataFrame)`。独立的
-`allocate_integer_positions` 接口以显式价格、预算、整手大小和冻结最低数量，把一期连续目标转换为
-整数手数仓位；至少 16 只资产的截面会先预分配连续目标附近的基准仓位，再在最后四手的有界范围内按跟踪误差
-顺序用确定性堆补齐，避免资金部署问题退化成耗时不可控的子集和 MILP。小截面仍保留精确的两阶段
-MILP。Top 50/100 日频组合也使用有界分配；预算、整手、持仓下限和单股上限仍受约束，资金部署为局部最大而非全局最优。市场专属规则与实盘报单不属于本包边界。
-
-正则化 optimizer v3 先细化标量对偶，再仅对正权重坐标投影。精确零权重保持零，
-避免求解舍入误差把本应排除的资产变成一手买入。
-
-`BacktestConfig.insolvency_action` 默认为 `"raise"`，保持严格失败语义。设为
-`"freeze_zero"` 后，资不抵债当日的有效费用封顶为可用财富，同时记录请求费用和未支付
-费用，净收益记为 `-100%`；之后 gross/net 收益与交易均冻结为零。return、lag 和
-quantile 路径会提供 `is_bankrupt` 与 `bankruptcy_event` 标记。
-
-`BacktestResult` 包含权重、收益、净值、换手、成本、执行阻塞和覆盖度。
-`PredictionEvaluationResult` 包含 Signal、execution-to-execution forward returns、
-Pearson/Spearman IC、分位数、spread、TOP N、lag、IC decay 与基准结果。
-
-## 暴露约束优化
-
-`PredictionExposureConstrainedOptimizerPolicy(concentration_penalty,
-turnover_penalty, max_weight, exposure_bounds={}, max_turnover=None)` 是独立的
-仅多头、全投资约束优化器。每个暴露列对应一个 `ExposureBounds(lower=None, upper=None)`，
-至少提供一个有限边界。调用 `build(prediction, reference_weights=..., exposures=...)`，
-传入以 `(time, asset_id)` 为键的 PIT 个股暴露；行业可使用调用方明确构造的 0/1 列。
-BT 不推断具体因子名称，也不读取市场数据。
-
-目标函数为预测收益减集中度平方惩罚与 L1 换手惩罚。换手使用完整权重变动绝对值之和，
-包含有限 Prediction 截面之外参考持仓的强制退出，不除以二；初始全投资需要换手预算一。
-约束针对目标权重，不代表整手和成交阻塞后的实际仓位始终满足约束。
-
-安装 `bagelquant-bt[optimizer]`；CVXPY/CLARABEL 仅求解时加载。暴露缺失/非有限、约束
-不可行或求解失败/不精确均携日期报错，不放宽边界、不退回等权。
-`WeightBuild.diagnostics` 返回预测尺度、目标函数分项、换手、强制退出、求解状态以及
-逐项暴露和上下界余量。原解析优化器数值行为保持不变。
-
-Portfolio Path identity v4 使用必填 `PortfolioPathIdentity.pipeline`，删除原 Combo 字段。
-调用方传入冻结链路身份；旧 v3 路径缓存不得自动采用。
-
-## 计划调仓金额下限
-
-`run_stateful_account_backtest(..., minimum_trade_notional=0.0)` 可按决策日
-收盘价过滤小额整手调整。非完整退出且不足门槛时保留现有股数；目标为零或缺失
-仍完整退出。默认行为不变，开盘跳空、现金和整手限制仍可能产生更小成交。
-调用方须将该参数纳入结果和检查点身份。空成交、持仓和实际权重表保留类型结构，
-支持全现金路径。
-
-## 异常
-
-- `BagelQuantBacktestError`：包级基础异常。
-- `BacktestConfigError`：配置无效。
-- `InputValidationError`：市场数据无效或不兼容。
+详见[交易](account-backtest.md)、[成本](transaction-costs.md)、[架构](../architecture.md)。

@@ -1,43 +1,36 @@
 # BT agent entry
 
-The refactor target for this repository is typed scheduling, saved-target
-account simulation, transaction costs, prediction evaluation, statistics,
-results/reports, Plotly and its account/evaluation artifact persistence.
-Depend on Core for typed Nodes and numerical primitives; never import
-Data or Workbench, fetch data or assume China-market rules in generic APIs.
-The staged target and current implementation baseline are distinguished in
-[development rules](.ai/rules/development.md); step 1 changes instructions only.
+BT owns portfolio mechanics, accounts, costs, evaluation/statistics and their
+artifact identity, storage, receipts, invalidation and recovery. Public modes are
+`evaluate_alpha`, `evaluate_weights` and `evaluate_execution`; the saved-weight
+execution bridge uses the same authoritative signed-share engine.
 
-Before work, read [`.ai/README.md`](.ai/README.md), mandatory development rules,
+Before work read [`.ai/README.md`](.ai/README.md), mandatory development rules,
 affected topic rules, [`README.md`](README.md), [`pyproject.toml`](pyproject.toml)
 and relevant local docs. Inspect tracked and untracked Git changes first.
-Keep this entry short; detailed owner contracts live under `.ai/rules/`.
 
-- Use Python 3.13 and `uv`; run commands from this repository.
-- Preserve unrelated work, Git metadata, credentials, environments and data.
-- Tests use synthetic inputs and isolated temporary roots; never read/mutate
-  the workspace's real data root or call real providers for validation.
-- Do not commit, push, create PRs, merge, release, deploy, install services,
-  update real data or change governance unless explicitly requested.
-- Preserve the `Node(value_type="prediction")` prediction-backtest boundary and the
-  separate explicit saved-target account APIs. Composition returns raw typed
-  predictions; express normalization explicitly downstream.
-- Evaluation consumes saved values/targets and never builds/trains upstream.
-  Actual broker connectivity, order planning and live submission are out of scope.
+- Depend only on Core. Never import Data/Workbench, fetch providers or choose
+  China rules. Saved evaluation never builds or trains an upstream graph.
+- Require caller-aligned forward returns with explicit economic interval and
+  availability dates; never add an implicit lag/price convention.
+- Keep portfolio mechanics separate from reusable evaluation functions. Maintain
+  one account loop, one numerical formula and one artifact authority per concern.
+- Workbench supplies global admission and resources; BT exposes explicit workers
+  and enforces caller budgets without probing the machine.
+- Use Python 3.13 and uv. Tests use synthetic inputs and temporary stores; never
+  touch real shared data, providers, authored work or historical receipts.
+- No commit, push, PR, merge, release, deployment, service, real data update or
+  governance transition without explicit authorization. Breaking cleanup does
+  not authorize deleting historical evidence or database/service cutover.
+- Read-only/Plan modes never write task records. Formal authorized integrated
+  work uses the workspace full-task workflow and independent review.
 
-For formal work in an integrated workspace, create/resume a root `.ai/tasks/`
-record using the workspace CLI. Discover the workspace with
-`git rev-parse --show-superproject-working-tree`. If empty, inspect checkout
-ancestors as candidates. Accept only a candidate that is its own Git root,
-declares the four component paths in `.gitmodules` and has their index gitlinks
-(mode `160000`); this checkout must match its exact declared relative owner path.
-For every candidate, also verify
-root `AGENTS.md`, `.ai/README.md`, `.ai/workflow.md`, `.ai/rules/workspace.md`
-and `scripts/ai.py` exist. Read root workflow and workspace rules; load
-cross-repository contracts only for affected topics. Never guess parent paths.
-In a standalone checkout, follow these local rules and record plan, validation
-and handoff in the conversation; do not create a component task directory.
-Plan/read-only mode never writes task records or implementation files.
+Find an integrated workspace through Git superproject metadata or verified
+ancestors: its own Git root must contain root AGENTS, .ai/README/workflow/rules,
+scripts/ai.py, .gitmodules and mode-160000 gitlinks for the four packages, and
+this checkout must match its declared owner path. Without that verified root,
+follow local rules and record progress in the conversation; never create another
+component task store.
 
-Validate code changes with `uv run ruff check .` and `uv run pytest`.
-Report affected contracts, checks/results, unrun checks and next steps honestly.
+Validate with `uv run ruff check .` and `uv run pytest`; report actual results,
+unrun checks, affected consumers and remaining migration gaps honestly.
