@@ -32,7 +32,7 @@ jobs:
       - name: Validate package
         working-directory: bagelquant-bt
         run: |
-          uv sync --locked --extra optimizer
+          uv sync --locked
           uv run --no-sync ruff check .
           uv run --no-sync python -c "from pathlib import Path; Path('.test-tmp').mkdir(parents=True, exist_ok=True)"
           uv run --no-sync python -m pytest --basetemp=.test-tmp/ci -o cache_dir=.test-tmp/cache
