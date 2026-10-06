@@ -17,8 +17,8 @@ Workbench keeps China semantics, authored definitions, application metadata,
 governance, lifecycle and orchestration, consuming backend public APIs.
 Current result persistence remains partly in Workbench pending stages 4 and 5;
 the topic rules describe that baseline, not a completed ownership transfer.
-BT documentation is collected by the website from GitHub default branches,
-independently of workspace gitlinks; edit docs here, not generated website content.
+BT docs stay in this repository. The website links to package documentation
+and does not collect or republish it.
 
 Integration discovery and standalone fallback are in [AGENTS.md](../AGENTS.md).
 After verifying an integration root, use its `.ai/workflow.md` and root task CLI.

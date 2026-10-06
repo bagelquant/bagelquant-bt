@@ -28,11 +28,11 @@ jobs:
         with:
           repository: bagelquant/bagelquant-core
           path: bagelquant-core
-          # Workspace pin 321584619e3b6c52d2d072770ce07bb47eca1706.
-          ref: 27feab46e3a0047a983d8419e962adffcc057d69
+          ref: 0c6b3ae94f8f003e7e517d7d7f483728ad319801
       - name: Validate package
         working-directory: bagelquant-bt
         run: |
           uv sync --locked --extra optimizer
           uv run --no-sync ruff check .
+          uv run --no-sync python -c "from pathlib import Path; Path('.test-tmp').mkdir(parents=True, exist_ok=True)"
           uv run --no-sync python -m pytest --basetemp=.test-tmp/ci -o cache_dir=.test-tmp/cache
