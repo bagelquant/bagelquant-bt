@@ -52,3 +52,5 @@ uv run pytest
 The stage-4 contract is breaking: removed signal/policy/account runners have no
 aliases or migration readers. Real database/service cutover remains separately
 authorized stage 6; historical/authored evidence is preserved.
+
+Supported platforms: macOS and Linux. Windows support is retired.

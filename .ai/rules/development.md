@@ -20,6 +20,8 @@ is stage 6 and remains separately authorized.
 
 ## Engineering and validation
 
+Supported platforms are macOS and Linux; Windows support is retired.
+
 Inspect tracked/untracked Git state, README, pyproject and routed owner docs.
 Preserve unrelated changes and each repository's Git metadata. Use Python 3.13,
 uv, pathlib and explicit deterministic ordering. Keep one authoritative model,

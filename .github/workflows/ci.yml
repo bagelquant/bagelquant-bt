@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     env:
       POLARS_MAX_THREADS: '4'
@@ -28,7 +28,7 @@ jobs:
         with:
           repository: bagelquant/bagelquant-core
           path: bagelquant-core
-          ref: a79d526ffbd75dab559f3025469ae58f8ca4ef2c
+          ref: ddb9af01e4c84286a419f7368f575e138ab94923
       - name: Validate package
         working-directory: bagelquant-bt
         run: |

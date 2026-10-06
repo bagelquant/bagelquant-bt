@@ -52,14 +52,7 @@ def _identity(value: Any) -> str:
 
 
 def _path(path: Path) -> str:
-    value = str(path)
-    if os.name == "nt" and not value.startswith("\\\\?\\"):
-        return (
-            "\\\\?\\UNC\\" + value[2:]
-            if value.startswith("\\\\")
-            else "\\\\?\\" + value
-        )
-    return value
+    return str(path)
 
 
 def _file_hash(path: Path) -> str:
