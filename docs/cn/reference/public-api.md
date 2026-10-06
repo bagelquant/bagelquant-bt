@@ -24,3 +24,11 @@
   run_evaluation_batch 提供显式本地并行，不负责全局资源分配。
 
 详见[交易](account-backtest.md)、[成本](transaction-costs.md)、[架构](../architecture.md)。
+
+`BTStore(meta_path, artifact_path).inspect()` 为公共只读初始化检查，返回
+`uninitialized`、`ready` 或 `incompatible` 及版本/原因。检查不创建目录或数据库，
+并验证版本、必需表及必需列；版本正确但列不完整的 schema 仍不可用。
+检查复用 Core 的公共元数据快照原语，包含已提交 WAL；SQLite 只打开私有系统
+临时副本，检查后删除，不改变原目录、数据库或 WAL/SHM。活动/hot rollback
+journal 会拒绝检查，零头失效的 PERSIST journal 可读；不恢复、不覆盖历史
+证据；空存储只能通过显式 `initialize()` 创建。

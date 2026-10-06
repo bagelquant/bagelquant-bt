@@ -53,3 +53,12 @@ governance transition without explicit authorization. Never delete authored
 research, immutable historical evidence, recovery material, credentials,
 environments or ignored machine state as source cleanup. Formal task metadata
 belongs to one workspace coordinator, with disjoint subagent scopes.
+
+BTStore.inspect is the public read-only setup probe; construction/inspection
+create no storage or recovery state and reject mismatched versions, tables or
+required columns unchanged. It reuses Core's public metadata snapshot primitive
+for committed WAL inspection without creating or changing source sidecars.
+Transient metadata copies are system-temporary, removed after inspection and
+never contain BT numerical artifacts or become an additional authority.
+Refuse active/hot rollback journals without recovery or reading uncommitted
+schema pages; invalidated zero-header PERSIST journals remain readable.

@@ -35,3 +35,14 @@
 No public evaluation fetches providers, trains/builds upstream graphs, probes
 hardware or changes governance. [Execution](account-backtest.md),
 [costs](transaction-costs.md) and [architecture](../architecture.md) define details.
+
+`BTStore(meta_path, artifact_path).inspect()` is the read-only setup check. It
+returns `uninitialized`, `ready` or `incompatible` with version/reason information.
+Readiness requires the current version, required tables and required columns.
+It uses Core's public metadata snapshot primitive to include committed WAL
+without opening the source in SQLite. Private temporary metadata copies are
+removed after inspection; source directories, database bytes and WAL/SHM remain
+unchanged. Active/hot rollback journals are refused without recovery;
+invalidated zero-header PERSIST journals remain readable. It never recovers or
+overwrites evidence.
+Initialize empty stores only through explicit `initialize()`.

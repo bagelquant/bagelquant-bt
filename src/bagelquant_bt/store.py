@@ -15,6 +15,7 @@ from typing import Any
 
 import polars as pl
 from bagelquant_core.hashing import hash_dataframe
+from bagelquant_core.inspection import open_metadata_snapshot
 
 _SCHEMA = """
 CREATE TABLE bt_store_schema(version INTEGER NOT NULL);
@@ -159,6 +160,81 @@ class BTStore:
     def __init__(self, meta_path: str | Path, artifact_path: str | Path):
         self.meta_path = Path(meta_path).resolve()
         self.artifact_path = Path(artifact_path).resolve()
+
+    def inspect(self) -> dict[str, Any]:
+        """Return schema readiness without initializing or recovering storage.
+
+        Artifact verification remains the separate explicit ``verify`` API.
+        """
+        if not self.meta_path.exists():
+            return {
+                "status": "uninitialized",
+                "schema_version": None,
+                "reason": "metadata_missing",
+            }
+        if not self.meta_path.is_file():
+            return {
+                "status": "incompatible",
+                "schema_version": None,
+                "reason": "metadata_not_file",
+            }
+        try:
+            with open_metadata_snapshot(self.meta_path) as connection:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                if not tables:
+                    return {
+                        "status": "uninitialized",
+                        "schema_version": None,
+                        "reason": "metadata_empty",
+                    }
+                required = {
+                    "bt_store_schema": {"version"},
+                    "bt_evaluations": {"id", "owner_id", "manifest_json", "created_at"},
+                    "bt_chapters": {
+                        "evaluation_id", "section", "manifest_json",
+                        "invalid_reason", "created_at",
+                    },
+                    "bt_shared": {
+                        "owner_id", "component", "input_identity", "receipt_identity",
+                        "manifest_json", "created_at",
+                    },
+                    "bt_cleanup_receipts": {"id", "manifest_json", "completed_json"},
+                }
+                if not set(required).issubset(tables) or any(
+                    not columns.issubset({
+                        row[1]
+                        for row in connection.execute(f"PRAGMA table_info({table})")
+                    })
+                    for table, columns in required.items()
+                ):
+                    return {
+                        "status": "incompatible",
+                        "schema_version": None,
+                        "reason": "schema_incompatible",
+                    }
+                versions = connection.execute(
+                    "SELECT version FROM bt_store_schema"
+                ).fetchall()
+                version = versions[0][0] if len(versions) == 1 else None
+                if version != 1:
+                    return {
+                        "status": "incompatible",
+                        "schema_version": version,
+                        "reason": "schema_incompatible",
+                    }
+                return {"status": "ready", "schema_version": version, "reason": None}
+        except (sqlite3.DatabaseError, OSError):
+            return {
+                "status": "incompatible",
+                "schema_version": None,
+                "reason": "metadata_unreadable",
+            }
 
     @contextmanager
     def _connect(self):
