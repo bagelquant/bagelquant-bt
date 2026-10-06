@@ -5,11 +5,11 @@
 `bagelquant-bt` evaluates a typed Signal against prices and applies investment
 timing and portfolio policies.
 
-- `bagelquant-core` owns `Panel`, `PredictionPanel`, signal construction, and research logic.
+- `bagelquant-core` owns `Domain`, typed `Node`, signal construction, and research logic.
 - `bagelquant-data` owns data access and storage.
 - `bagelquant-bt` owns evaluation, transaction costs, summaries, and plots.
 
-The public backtest boundary accepts `PredictionPanel` only. A plain `Panel`, raw
+The public prediction-backtest boundary accepts `Node(value_type="prediction")` only. A numeric Node, raw
 Polars `DataFrame`, or direct weights cannot enter `run_prediction_backtest`.
 
 ## DataFrame Shape
@@ -24,7 +24,7 @@ values:  price, value, or weight
 `AlphaPolicy` maps observation snapshots, `StandardizePolicy` applies one
 cross-sectional transformation, `ExecutionPolicy` maps execution sessions,
 and `WeightPolicy.build(ScheduledPrediction)` returns a `WeightBuild`
-containing a plain weights `Panel` plus skipped rows. `MarketRule` remains an
+containing a plain weights `Node` plus skipped rows. `MarketRule` remains an
 independent execution constraint. Lot sizing and live order submission are
 outside the package boundary.
 
@@ -72,4 +72,4 @@ It rejects:
 
 - duplicate `(time, asset_id)` keys
 - nonnumeric values
-- non-PredictionPanel public backtest inputs
+- non-Node public backtest inputs

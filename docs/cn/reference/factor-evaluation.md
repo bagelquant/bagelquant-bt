@@ -1,6 +1,6 @@
 # Signal 评估
 
-Signal 评估会把 `ScheduledPrediction` 中的每个 `PredictionPanel` 快照解释为截面
+Signal 评估会把 `ScheduledPrediction` 中的每个 `Node` 快照解释为截面
 prediction，数值越高代表越正向。
 
 ## 固定预测期限
@@ -86,7 +86,7 @@ mean(IC) / standard_deviation(IC) * sqrt(每年 IC 观测数)
 
 ## Signal 与 Execution Policy
 
-`AlphaPolicy.select` 从 `PredictionPanel` 选择完整截面，返回带调度、执行日期
+`AlphaPolicy.select` 从 `Node` 选择完整截面，返回带调度、执行日期
 lineage 和强类型 signal 的 `ScheduledPrediction`。`month_end` 优先选择月末最后一个
 开市交易日；若整张截面不存在，只能回退到同一自然月内最近的此前完整截面，
 否则记录 skip。单个资产绝不会从此前日期回填。
@@ -95,7 +95,7 @@ lineage 和强类型 signal 的 `ScheduledPrediction`。`month_end` 优先选择
 
 因此月频 `month_end` Policy 使用自然月末选出的值，对应其映射的 next-open execution price
 至下一次 scheduled execution price 的完整收益；尚未结束的当前月份不会进入 IC 或监督式
-Composer 的滚动窗口。
+Operator 的滚动窗口。
 
 ## 分位数组合收益
 

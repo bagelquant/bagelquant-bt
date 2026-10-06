@@ -4,7 +4,7 @@
 backtests only through that signal contract.
 
 ```python
-from bagelquant_core import Domain, IdentityPredictionComposer, Panel
+from bagelquant_core import Domain, IdentityPredictionOperator, Node
 from bagelquant_bt import (
     BacktestConfig,
     EvaluationAnchor,
@@ -14,7 +14,7 @@ from bagelquant_bt import (
     run_prediction_backtest,
 )
 
-alpha_value = Panel.from_domain(alpha_frame, domain, name="quality")
+alpha_value = Node.from_domain(alpha_frame, domain, name="quality")
 policy = AlphaPolicy(
     id="month_end",
     frequency="monthly",
@@ -23,7 +23,7 @@ policy = AlphaPolicy(
 )
 signal = compose_prediction(
     {"quality": alpha_value},
-    IdentityPredictionComposer(),
+    IdentityPredictionOperator(),
     calendar,
     policy,
     standardize_policy="z_score",
@@ -37,8 +37,8 @@ result = run_prediction_backtest(
 )
 ```
 
-For `ICWeightedPredictionComposer`, `ICWeightedDecayPredictionComposer`,
-`OLSPredictionComposer`, or `GLSPredictionComposer`, also pass `prices` to
+For `ICWeightedPredictionOperator`, `ICWeightedDecayPredictionOperator`,
+`OLSPredictionOperator`, or `GLSPredictionOperator`, also pass `prices` to
 `compose_prediction`. Their rolling window and half-life count signal
 periods, not daily rows. Ordinary panels, raw DataFrames, and direct weights
 cannot be passed to `run_prediction_backtest`.

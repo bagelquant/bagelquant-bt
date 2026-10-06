@@ -5,7 +5,7 @@
 ```python
 compose_prediction(
     alpha_values,
-    composer,
+    operator,
     calendar,
     alpha_policy,
     *,
@@ -15,13 +15,13 @@ compose_prediction(
 )
 ```
 
-`alpha_values` maps stable aliases to ordinary core `Panel` values. `AlphaPolicy`
+`alpha_values` maps stable aliases to ordinary core `Node` values. `AlphaPolicy`
 aligns evaluation-date snapshots; the independent `StandardizePolicy` then
 applies `none`, `z_score`, or `percentile_rank`. Z-score standardization uses a
 fixed asset order and per-date reduction, preserving exact historical bytes when
-the future horizon or Arrow chunk layout changes. The result is the Composer's raw typed `PredictionPanel`; BT
-does not apply a fixed post-composer normalization. IC-weighted, OLS, and GLS
-composers require prices so the package can construct
+the future horizon or Arrow chunk layout changes. The result is the Operator's raw typed `Node`; BT
+does not apply a fixed post-operator normalization. IC-weighted, OLS, and GLS
+operators require prices so the package can construct
 execution-to-next-execution labels without look-ahead.
 
 ## `run_prediction_backtest`
@@ -41,10 +41,10 @@ run_prediction_backtest(
 )
 ```
 
-The public backtest boundary requires a `PredictionPanel`. `WeightPolicy`
+The public backtest boundary requires a `Node`. `WeightPolicy`
 creates evaluation-date target weights, then `ExecutionPolicy` maps those
 weights to executable dates before invoking the private weight engine. Raw
-DataFrames, ordinary `Panel` instances, and direct weight frames raise a type
+DataFrames, ordinary `Node` instances, and direct weight frames raise a type
 error.
 
 Market-rule availability is supplied as a sparse frame with `time`,
@@ -66,6 +66,6 @@ coverage.
 
 ## Data boundaries
 
-Predictions use core `PredictionPanel(time, asset_id, value)`. Prices remain
+Predictions use core `Node(time, asset_id, value)`. Prices remain
 long-form Polars data with `time`, `asset_id`, and `price`. Weight policies emit an
-ordinary weights `Panel`; weights are deliberately not a public entry point.
+ordinary weights `Node`; weights are deliberately not a public entry point.

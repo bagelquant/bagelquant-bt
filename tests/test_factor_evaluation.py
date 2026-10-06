@@ -6,7 +6,7 @@ from datetime import date
 
 import polars as pl
 import pytest
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 from polars.testing import assert_frame_equal
 
 import bagelquant_bt.factor as factor_module
@@ -48,7 +48,9 @@ def _scheduled_signal(frame: pl.DataFrame) -> ScheduledPrediction:
     )
     return ScheduledPrediction(
         schedule=values.select("time").unique().sort("time"),
-        prediction=PredictionPanel.from_domain(values, domain, name="signal"),
+        prediction=Node.from_domain(
+            values, domain, name="signal", value_type="prediction"
+        ),
     )
 
 
@@ -63,12 +65,8 @@ def test_icir_is_annualized_with_configured_ic_observations() -> None:
     summary = summarize_ic(ic, annualization=240)
 
     expected = 2.0 * math.sqrt(240)
-    pearson_icir = summary.filter(pl.col("method") == "pearson").item(
-        0, "icir"
-    )
-    spearman_icir = summary.filter(pl.col("method") == "spearman").item(
-        0, "icir"
-    )
+    pearson_icir = summary.filter(pl.col("method") == "pearson").item(0, "icir")
+    spearman_icir = summary.filter(pl.col("method") == "spearman").item(0, "icir")
     assert pearson_icir == pytest.approx(expected)
     assert spearman_icir == pytest.approx(expected)
 
@@ -250,9 +248,7 @@ def test_batched_quantiles_match_sequential_portfolios(
             retry_blocked=retry_blocked,
         )
         expected_frames.append(
-            held_units.with_columns(
-                pl.col("gross_return").shift(-1).over("portfolio")
-            )
+            held_units.with_columns(pl.col("gross_return").shift(-1).over("portfolio"))
             .drop_nulls("gross_return")
             .select(
                 "time",
@@ -365,6 +361,8 @@ def test_sparse_batch_matches_reference_across_listing_and_price_gaps() -> None:
                 rel_tol=1e-12,
                 abs_tol=1e-12,
             )
+
+
 def test_prepared_signal_returns_validate_schedule_and_price_keys() -> None:
     prices = pl.DataFrame(
         {
@@ -553,11 +551,7 @@ def test_sparse_factor_keeps_analytics_and_trades_daily_portfolios() -> None:
 
 def test_lag_factor_counts_daily_price_sessions_for_monthly_signals() -> None:
     sessions = pl.DataFrame(
-        {
-            "time": pl.date_range(
-                date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True
-            )
-        }
+        {"time": pl.date_range(date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True)}
     ).filter(pl.col("time").dt.weekday() <= 5)
     sessions = sessions.filter(pl.col("time") != date(2024, 2, 12))
     factor = pl.DataFrame(
@@ -577,9 +571,7 @@ def test_lag_factor_counts_daily_price_sessions_for_monthly_signals() -> None:
 
 
 def test_lag_factor_matches_observation_shift_for_daily_inputs() -> None:
-    sessions = pl.DataFrame(
-        {"time": [date(2024, 1, day) for day in range(2, 7)]}
-    )
+    sessions = pl.DataFrame({"time": [date(2024, 1, day) for day in range(2, 7)]})
     factor = pl.DataFrame(
         {
             "time": [date(2024, 1, day) for day in range(2, 7)],
@@ -598,9 +590,7 @@ def test_lag_factor_matches_observation_shift_for_daily_inputs() -> None:
 
 
 def test_batched_ic_decay_matches_sequential_reference_with_missing_returns() -> None:
-    sessions = pl.DataFrame(
-        {"time": [date(2024, 1, day) for day in range(1, 7)]}
-    )
+    sessions = pl.DataFrame({"time": [date(2024, 1, day) for day in range(1, 7)]})
     factor = pl.DataFrame(
         {
             "time": [date(2024, 1, 1)] * 4 + [date(2024, 1, 3)] * 4,
@@ -664,21 +654,16 @@ def test_batched_ic_decay_matches_sequential_reference_with_missing_returns() ->
 
 def test_monthly_signal_lag_trades_daily_from_the_shifted_session() -> None:
     sessions = pl.DataFrame(
-        {
-            "time": pl.date_range(
-                date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True
-            )
-        }
+        {"time": pl.date_range(date(2024, 1, 1), date(2024, 3, 31), "1d", eager=True)}
     ).filter(pl.col("time").dt.weekday() <= 5)
     sessions = sessions.filter(pl.col("time") != date(2024, 2, 12))
-    prices = (
-        sessions.join(pl.DataFrame({"asset_id": ["a", "b"]}), how="cross")
-        .with_columns(
-            pl.when(pl.col("asset_id") == "a")
-            .then(10.0 + pl.int_range(0, pl.len()).over("asset_id") * 0.1)
-            .otherwise(10.0 - pl.int_range(0, pl.len()).over("asset_id") * 0.1)
-            .alias("price")
-        )
+    prices = sessions.join(
+        pl.DataFrame({"asset_id": ["a", "b"]}), how="cross"
+    ).with_columns(
+        pl.when(pl.col("asset_id") == "a")
+        .then(10.0 + pl.int_range(0, pl.len()).over("asset_id") * 0.1)
+        .otherwise(10.0 - pl.int_range(0, pl.len()).over("asset_id") * 0.1)
+        .alias("price")
     )
     signals = pl.DataFrame(
         {
@@ -752,8 +737,9 @@ def test_signal_evaluation_reuses_prepared_prices_and_scheduled_returns() -> Non
     assert reused.lag_returns.equals(direct.lag_returns)
 
 
-def test_prediction_evaluation_without_synthetic_diagnostics_runs_primary_path(
-) -> None:
+def test_prediction_evaluation_without_synthetic_diagnostics_runs_primary_path() -> (
+    None
+):
     prices = pl.DataFrame(
         {
             "time": ["2024-01-02", "2024-01-03", "2024-01-04"] * 2,
@@ -816,9 +802,7 @@ def test_daily_prediction_primary_path_ignores_minimum_commission() -> None:
 
     costs = result.top_n_backtest.transaction_costs.data
     assert costs.get_column("min_fee_adjustment").sum() == 0.0
-    assert -1.0 not in result.top_n_backtest.returns.get_column(
-        "net_return"
-    ).to_list()
+    assert -1.0 not in result.top_n_backtest.returns.get_column("net_return").to_list()
 
 
 def test_factor_quantile_returns_preserve_bucket_semantics_and_low_counts() -> None:
@@ -1170,12 +1154,12 @@ def test_batched_lag_bankruptcy_is_isolated_per_portfolio() -> None:
     )
 
     analysis = diagnostics["lag_analysis"].filter(pl.col("lag") == 0)
-    assert analysis.filter(pl.col("portfolio") == "spread").item(
-        0, "is_bankrupt"
-    ) is True
-    assert analysis.filter(pl.col("portfolio") == "top_n").item(
-        0, "is_bankrupt"
-    ) is False
+    assert (
+        analysis.filter(pl.col("portfolio") == "spread").item(0, "is_bankrupt") is True
+    )
+    assert (
+        analysis.filter(pl.col("portfolio") == "top_n").item(0, "is_bankrupt") is False
+    )
     spread = diagnostics["lag_returns"].filter(
         (pl.col("portfolio") == "spread") & (pl.col("lag") == 0)
     )

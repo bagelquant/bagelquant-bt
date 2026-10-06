@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import polars as pl
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 
 from .factor_analysis import partial_rank_ic
 from .horizon import SessionWindow, session_window_forward_returns
@@ -92,9 +92,9 @@ def common_prediction_ic(
                 pl.lit(True).alias("active")
             ),
         )
-        panel = PredictionPanel.from_domain(
+        panel = Node.from_domain(
             batch.select("time", "asset_id", pl.col("baseline").alias("value")), domain
-        )
+        , value_type="prediction")
         scheduled = ExecutionPolicy(
             "next_open", lag_sessions=session_lag
         ).schedule_prediction(panel, calendar)

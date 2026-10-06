@@ -58,8 +58,8 @@ The two narrower entry points remain available for independent analysis.
 independent cross-sectional preprocessing contract (`none`, `z_score`, or
 `percentile_rank`). Z-score reduction sorts each cross-section by asset and uses
 a fixed per-date kernel, so an unchanged historical prefix is byte-identical
-across Arrow chunk layouts and future-horizon extensions. Prediction composition returns the composer's raw
-`PredictionPanel`; callers may explicitly apply Core Transformers before the
+across Arrow chunk layouts and future-horizon extensions. Prediction composition returns the operator's raw
+`Node(value_type="prediction")`; callers may explicitly apply Core Operators before the
 Weight Policy boundary.
 
 On-demand factor research can use `partial_rank_ic`, `incremental_ic_summary`,

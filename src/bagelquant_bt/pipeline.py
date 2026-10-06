@@ -9,10 +9,9 @@ from datetime import date
 import polars as pl
 from bagelquant_core import (
     FamaMacBethOLSResult,
-    OLSPredictionComposer,
-    Panel,
-    PredictionComposer,
-    PredictionPanel,
+    Node,
+    OLSPredictionOperator,
+    PredictionOperator,
     PredictionTrainingContext,
     fama_macbeth_ols_prediction,
 )
@@ -36,13 +35,13 @@ from .results import BacktestResult
 class FamaMacBethOLSComposition:
     """Typed prediction plus the diagnostics from the same OLS calculation."""
 
-    prediction: PredictionPanel
+    prediction: Node
     diagnostics: FamaMacBethOLSResult
 
 
 def compose_prediction(
-    alpha_values: Mapping[str, Panel],
-    composer: PredictionComposer,
+    alpha_values: Mapping[str, Node],
+    operator: PredictionOperator,
     calendar: pl.DataFrame,
     alpha_policy: AlphaPolicy,
     *,
@@ -51,8 +50,8 @@ def compose_prediction(
     prices: pl.DataFrame | None = None,
     start: date | None = None,
     end: date | None = None,
-) -> PredictionPanel:
-    """Apply Alpha Policy, then return the Composer's raw PredictionPanel."""
+) -> Node:
+    """Apply Alpha Policy, then return the Operator's raw Node."""
 
     if not isinstance(alpha_policy, AlphaPolicy):
         raise TypeError("alpha_policy must be an AlphaPolicy")
@@ -64,7 +63,7 @@ def compose_prediction(
     )
     return compose_processed_prediction(
         aligned,
-        composer,
+        operator,
         calendar,
         standardize_policy=standardize_policy,
         execution_policy=execution_policy,
@@ -74,13 +73,13 @@ def compose_prediction(
 
 def compose_processed_prediction(
     processed: AlphaPolicyResult,
-    composer: PredictionComposer,
+    operator: PredictionOperator,
     calendar: pl.DataFrame,
     *,
     standardize_policy: StandardizePolicy | str = "none",
     execution_policy: ExecutionPolicy | str = "next_open",
     prices: pl.DataFrame | None = None,
-) -> PredictionPanel:
+) -> Node:
     """Compose AlphaPolicy-processed Panels without applying the policy again."""
 
     if not isinstance(processed, AlphaPolicyResult):
@@ -95,11 +94,11 @@ def compose_processed_prediction(
     processed = standardize.apply(processed)
     if not processed.alpha_values:
         raise ValueError("processed AlphaPolicy result contains no AlphaValues")
-    if not isinstance(composer, PredictionComposer):
-        raise TypeError("composer must be a PredictionComposer")
+    if not isinstance(operator, PredictionOperator):
+        raise TypeError("operator must be a PredictionOperator")
     panels = tuple(processed.alpha_values.values())
-    if any(not isinstance(panel, Panel) for panel in panels):
-        raise TypeError("processed alpha_values must contain Panel values")
+    if any(not isinstance(panel, Node) for panel in panels):
+        raise TypeError("processed alpha_values must contain Node values")
     policy_ids = {str(panel.metadata.get("alpha_policy", "")) for panel in panels}
     standardizations = {
         str(panel.metadata.get("standardization", "")) for panel in panels
@@ -109,10 +108,10 @@ def compose_processed_prediction(
     if len(standardizations) != 1 or "" in standardizations:
         raise ValueError("processed AlphaValues must share one standardization")
     training = None
-    if composer.supervised:
+    if operator.supervised:
         if prices is None:
             raise InputValidationError(
-                f"{composer.kind} prediction composition requires execution prices"
+                f"{operator.kind} prediction composition requires execution prices"
             )
         training = _training_context(
             processed.alpha_values,
@@ -121,26 +120,26 @@ def compose_processed_prediction(
             execution_policy,
             prices,
         )
-    graph = composer.compose(
+    graph = operator(
         *panels,
         training=training,
         name="prediction",
         metadata={
-            "prediction_composer": composer.kind,
-            "window": composer.window,
+            "prediction_operator": operator.kind,
+            "window": operator.window,
             "alpha_policy": next(iter(policy_ids)),
             "standardization": next(iter(standardizations)),
         },
     )
     result = graph.compute(dense_output=False)
-    if not isinstance(result, PredictionPanel):
-        raise AssertionError("prediction composer did not produce a PredictionPanel")
+    if not (isinstance(result, Node) and result.value_type == "prediction"):
+        raise AssertionError("prediction operator did not produce a Node")
     return result
 
 
 def compose_processed_fama_macbeth_ols(
     processed: AlphaPolicyResult,
-    composer: OLSPredictionComposer,
+    operator: OLSPredictionOperator,
     calendar: pl.DataFrame,
     *,
     standardize_policy: StandardizePolicy | str = "none",
@@ -159,13 +158,13 @@ def compose_processed_fama_macbeth_ols(
     if not isinstance(standardize, StandardizePolicy):
         raise TypeError("standardize_policy must be a StandardizePolicy")
     processed = standardize.apply(processed)
-    if not isinstance(composer, OLSPredictionComposer):
-        raise TypeError("composer must be an OLSPredictionComposer")
+    if not isinstance(operator, OLSPredictionOperator):
+        raise TypeError("operator must be an OLSPredictionOperator")
     if not processed.alpha_values:
         raise ValueError("processed AlphaPolicy result contains no AlphaValues")
     panels = tuple(processed.alpha_values.values())
-    if any(not isinstance(panel, Panel) for panel in panels):
-        raise TypeError("processed alpha_values must contain Panel values")
+    if any(not isinstance(panel, Node) for panel in panels):
+        raise TypeError("processed alpha_values must contain Node values")
     policy_ids = {str(panel.metadata.get("alpha_policy", "")) for panel in panels}
     standardizations = {
         str(panel.metadata.get("standardization", "")) for panel in panels
@@ -188,24 +187,24 @@ def compose_processed_fama_macbeth_ols(
         },
         training.targets.collect(dense=False),
         training.availability.collect(dense=False),
-        window=composer.window,
+        window=operator.window,
     )
-    prediction = PredictionPanel.from_domain(
+    prediction = Node.from_domain(
         diagnostics.prediction,
         panels[0].domain,
         name="prediction",
         metadata={
-            "prediction_composer": composer.kind,
-            "window": composer.window,
+            "prediction_operator": operator.kind,
+            "window": operator.window,
             "alpha_policy": next(iter(policy_ids)),
             "standardization": next(iter(standardizations)),
         },
-    )
+     value_type="prediction")
     return FamaMacBethOLSComposition(prediction, diagnostics)
 
 
 def run_prediction_backtest(
-    prediction: PredictionPanel,
+    prediction: Node,
     prices: pl.DataFrame,
     calendar: pl.DataFrame,
     *,
@@ -218,23 +217,21 @@ def run_prediction_backtest(
 ) -> BacktestResult:
     """Build evaluation-date weights, schedule them, then run the engine."""
 
-    if not isinstance(prediction, PredictionPanel):
-        raise TypeError("run_prediction_backtest requires a PredictionPanel")
+    if not (isinstance(prediction, Node) and prediction.value_type == "prediction"):
+        raise TypeError("run_prediction_backtest requires a Node")
     if config is None:
         raise ValueError("config is required")
     build = getattr(weight_policy, "build", None)
     if build is None:
-        raise TypeError("weight_policy must define build(PredictionPanel, ...)")
+        raise TypeError("weight_policy must define build(Node, ...)")
     result = build(
         prediction,
         prices=prices,
         config=config,
         **dict(weight_inputs or {}),
     )
-    if not isinstance(result.weights, Panel) or isinstance(
-        result.weights, PredictionPanel
-    ):
-        raise TypeError("WeightPolicy must return an ordinary weights Panel")
+    if not isinstance(result.weights, Node) or result.weights.value_type != "weights":
+        raise TypeError("WeightPolicy must return an ordinary weights Node")
     execution = (
         resolve_execution_policy(execution_policy)
         if isinstance(execution_policy, str)
@@ -256,7 +253,7 @@ def run_prediction_backtest(
 
 
 def _training_context(
-    alpha_values: Mapping[str, Panel],
+    alpha_values: Mapping[str, Node],
     schedule: pl.DataFrame,
     calendar: pl.DataFrame,
     execution_policy: ExecutionPolicy | str,
@@ -309,12 +306,12 @@ def _training_context(
     )
     domain = next(iter(alpha_values.values())).domain
     return PredictionTrainingContext(
-        Panel.from_domain(
+        Node.from_domain(
             targets.select(TIME, ASSET_ID, "value"),
             domain,
             name="forward_return",
         ),
-        Panel.from_domain(availability, domain, name="label_availability"),
+        Node.from_domain(availability, domain, name="label_availability"),
     )
 
 

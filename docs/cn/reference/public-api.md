@@ -1,6 +1,6 @@
 # 公开 API
 
-稳定 API 从 `bagelquant_bt` 导出。0.9.4 只接受强类型 Prediction；普通 `Panel`、
+稳定 API 从 `bagelquant_bt` 导出。0.9.4 只接受强类型 Prediction；普通 `Node`、
 裸 DataFrame 和直接 weights 均不能进入公开回测入口。
 
 ## 入口函数
@@ -9,8 +9,8 @@
 from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, run_prediction_backtest, run_prediction_evaluation, run_prediction_horizon_diagnostics
 ```
 
-- `compose_prediction(...) -> PredictionPanel`：按 `AlphaPolicy` 的 cadence
-  执行 `PredictionComposer`。监督式 composer 使用本次 execution 到下一次
+- `compose_prediction(...) -> Node`：按 `AlphaPolicy` 的 cadence
+  执行 `PredictionOperator`。监督式 operator 使用本次 execution 到下一次
   execution 的收益，并检查标签可用时间。
 - `run_prediction_backtest(...)`：依次应用 `AlphaPolicy`、
   `ExecutionPolicy`、`WeightPolicy` 和内部 weights 引擎。
@@ -44,7 +44,7 @@ from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, r
 最低佣金、卖出税、滑点与初始资金。
 
 `WeightPolicy` 接收 `ScheduledPrediction`，返回
-`WeightBuild(weights: Panel, skipped: DataFrame)`。独立的
+`WeightBuild(weights: Node, skipped: DataFrame)`。独立的
 `allocate_integer_positions` 接口以显式价格、预算、整手大小和冻结最低数量，把一期连续目标转换为
 整数手数仓位；至少 16 只资产的截面会先预分配连续目标附近的基准仓位，再在最后四手的有界范围内按跟踪误差
 顺序用确定性堆补齐，避免资金部署问题退化成耗时不可控的子集和 MILP。小截面仍保留精确的两阶段

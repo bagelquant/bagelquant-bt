@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import polars as pl
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 
 from ._quantiles import sort_quantile_frame
 from .benchmarks import (
@@ -676,7 +676,7 @@ def _policy_weights(
     selected = policy or EqualWeightPolicy(config.top_n)
     build = getattr(selected, "build", None)
     if build is None:
-        raise TypeError("weight_policy must define build(PredictionPanel, ...)")
+        raise TypeError("weight_policy must define build(Node, ...)")
     prediction_frame = factor.select(
         TIME,
         ASSET_ID,
@@ -687,7 +687,9 @@ def _policy_weights(
         universe=prediction_frame.get_column(ASSET_ID).unique().sort(),
     )
     output = build(
-        PredictionPanel.from_domain(prediction_frame, domain, name="prediction"),
+        Node.from_domain(
+            prediction_frame, domain, name="prediction", value_type="prediction"
+        ),
         prices=prices,
         config=config,
         **dict(inputs or {}),

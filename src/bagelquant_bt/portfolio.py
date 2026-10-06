@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from bagelquant_core import Panel, PredictionPanel
+from bagelquant_core import Node
 from bagelquant_core.optimization import (
     project_capped_simplex as _project_capped_simplex,
 )
@@ -27,7 +27,7 @@ PREDICTION_REGULARIZED_OPTIMIZER_VERSION = 3
 
 @dataclass(frozen=True, slots=True)
 class WeightBuild:
-    weights: Panel
+    weights: Node
     skipped: pl.DataFrame
     diagnostics: pl.DataFrame = field(default_factory=pl.DataFrame)
 
@@ -36,7 +36,7 @@ class WeightBuild:
 class EqualWeightPolicy:
     top_n: int
 
-    def build(self, prediction: PredictionPanel, **_: object) -> WeightBuild:
+    def build(self, prediction: Node, **_: object) -> WeightBuild:
         selected = _top_n(prediction, self.top_n)
         return WeightBuild(
             _weight_panel(_normalise(selected, "_unit"), prediction),
@@ -51,7 +51,7 @@ class FloatMarketCapWeightPolicy:
 
     def build(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         *,
         market_caps: pl.DataFrame | None = None,
         **_: object,
@@ -103,7 +103,7 @@ class TargetVolatilityPolicy:
 
     def build(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         *,
         prices: pl.DataFrame | None = None,
         config=None,
@@ -149,10 +149,10 @@ class TargetVolatilityPolicy:
         )
         skipped = scale_frame.filter(pl.col("scale").is_null()).select(TIME, "reason")
         return WeightBuild(
-            Panel.from_domain(
+            Node.from_domain(
                 weights.rename({"weight": "value"}),
                 prediction.domain,
-                name="weights",
+                name="weights", value_type="weights",
             ),
             skipped,
         )
@@ -187,15 +187,15 @@ class PredictionRegularizedOptimizerPolicy:
 
     def build(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         *,
-        reference_weights: Panel | pl.DataFrame | None = None,
+        reference_weights: Node | pl.DataFrame | None = None,
         **_: object,
     ) -> WeightBuild:
         """Optimize each evaluation date against its actual reference holdings."""
 
-        if not isinstance(prediction, PredictionPanel):
-            raise TypeError("weight policies require a PredictionPanel")
+        if not (isinstance(prediction, Node) and prediction.value_type == "prediction"):
+            raise TypeError("weight policies require a Node")
         predictions = prediction.collect(dense=True).rename({"value": "prediction"})
         references = _reference_weight_frame(reference_weights)
 
@@ -323,9 +323,9 @@ class PredictionRegularizedTargetVolatilityPolicy:
 
     def build(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         *,
-        reference_weights: Panel | pl.DataFrame | None = None,
+        reference_weights: Node | pl.DataFrame | None = None,
         risky_sleeve_returns: pl.DataFrame | None = None,
         **_: object,
     ) -> WeightBuild:
@@ -343,9 +343,9 @@ class PredictionRegularizedTargetVolatilityPolicy:
 
     def build_risky_sleeve(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         *,
-        reference_weights: Panel | pl.DataFrame | None = None,
+        reference_weights: Node | pl.DataFrame | None = None,
     ) -> WeightBuild:
         """Build the independent fully invested sleeve with the base optimizer."""
 
@@ -357,7 +357,7 @@ class PredictionRegularizedTargetVolatilityPolicy:
 
     def scale_risky_sleeve(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         risky_sleeve: WeightBuild,
         *,
         risky_sleeve_returns: pl.DataFrame | None = None,
@@ -478,11 +478,11 @@ class PredictionRegularizedTargetVolatilityPolicy:
         )
 
 
-def _top_n(prediction: PredictionPanel, top_n: int) -> pl.DataFrame:
+def _top_n(prediction: Node, top_n: int) -> pl.DataFrame:
     if top_n <= 0:
         raise ValueError("top_n must be positive")
-    if not isinstance(prediction, PredictionPanel):
-        raise TypeError("weight policies require a PredictionPanel")
+    if not (isinstance(prediction, Node) and prediction.value_type == "prediction"):
+        raise TypeError("weight policies require a Node")
     frame = validate_panel_frame(
         prediction.collect(dense=False).rename({"value": "prediction"}),
         label="predictions",
@@ -510,31 +510,31 @@ def _empty_skipped() -> pl.DataFrame:
     return pl.DataFrame(schema={TIME: pl.Date, "reason": pl.String})
 
 
-def _weight_panel(frame: pl.DataFrame, prediction: PredictionPanel) -> Panel:
-    return Panel.from_domain(
+def _weight_panel(frame: pl.DataFrame, prediction: Node) -> Node:
+    return Node.from_domain(
         frame.rename({"weight": "value"}),
         prediction.domain,
-        name="weights",
+        name="weights", value_type="weights",
     )
 
 
-def _weight_frame(weights: Panel) -> pl.DataFrame:
+def _weight_frame(weights: Node) -> pl.DataFrame:
     return weights.collect(dense=False).drop_nulls("value").rename({"value": "weight"})
 
 
 def _reference_weight_frame(
-    reference_weights: Panel | pl.DataFrame | None,
+    reference_weights: Node | pl.DataFrame | None,
 ) -> pl.DataFrame:
     if reference_weights is None:
         return pl.DataFrame(
             schema={TIME: pl.Date, ASSET_ID: pl.String, "weight": pl.Float64}
         )
-    if isinstance(reference_weights, Panel):
+    if isinstance(reference_weights, Node):
         frame = reference_weights.collect(dense=False).rename({"value": "weight"})
     elif isinstance(reference_weights, pl.DataFrame):
         frame = reference_weights
     else:
-        raise TypeError("reference_weights must be a Panel or polars DataFrame")
+        raise TypeError("reference_weights must be a Node or polars DataFrame")
     required = {TIME, ASSET_ID, "weight"}
     missing = sorted(required - set(frame.columns))
     if missing:
@@ -563,7 +563,7 @@ def _reference_weight_frame(
 
 
 def _normalize_risky_sleeve_reference(
-    reference_weights: Panel | pl.DataFrame | None,
+    reference_weights: Node | pl.DataFrame | None,
 ) -> pl.DataFrame:
     reference = _reference_weight_frame(reference_weights)
     if reference.is_empty():

@@ -12,7 +12,7 @@ from typing import Literal
 
 import numpy as np
 import polars as pl
-from bagelquant_core import Domain, Panel, PredictionPanel
+from bagelquant_core import Domain, Node
 
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME
@@ -55,7 +55,7 @@ class AlphaPolicyResult:
     """Evaluation schedule, aligned Panels, and exact source-date lineage."""
 
     schedule: pl.DataFrame
-    alpha_values: Mapping[str, Panel]
+    alpha_values: Mapping[str, Node]
     alignments: pl.DataFrame
     standardize_policy_id: str | None = None
 
@@ -65,7 +65,7 @@ class ScheduledPrediction:
     """Prediction values mapped to executable market sessions."""
 
     schedule: pl.DataFrame
-    prediction: PredictionPanel
+    prediction: Node
 
     @property
     def identity(self) -> str:
@@ -78,7 +78,7 @@ class ScheduledWeights:
     """Target weights mapped from evaluation dates to execution dates."""
 
     schedule: pl.DataFrame
-    weights: Panel
+    weights: Node
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,13 +133,13 @@ class ExecutionPolicy:
 
     def schedule_prediction(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         calendar: pl.DataFrame,
     ) -> ScheduledPrediction:
-        """Move a PredictionPanel to execution dates while retaining lineage."""
+        """Move a Node to execution dates while retaining lineage."""
 
-        if not isinstance(prediction, PredictionPanel):
-            raise TypeError("ExecutionPolicy requires a PredictionPanel")
+        if not (isinstance(prediction, Node) and prediction.value_type == "prediction"):
+            raise TypeError("ExecutionPolicy requires a Node")
         values = prediction.collect(dense=False).drop_nulls("value")
         requested = _schedule_from_panel(values)
         schedule = self.resolve(requested, calendar).with_columns(
@@ -171,7 +171,7 @@ class ExecutionPolicy:
         )
         return ScheduledPrediction(
             schedule=schedule,
-            prediction=PredictionPanel.from_domain(
+            prediction=Node.from_domain(
                 mapped,
                 _mapped_domain(executable, prediction),
                 name=prediction.name,
@@ -179,18 +179,19 @@ class ExecutionPolicy:
                     **prediction.metadata,
                     "execution_policy": self.id,
                 },
+                value_type="prediction",
             ),
         )
 
     def schedule_weights(
         self,
-        weights: Panel,
+        weights: Node,
         calendar: pl.DataFrame,
     ) -> ScheduledWeights:
         """Move ordinary target weights to execution dates."""
 
-        if not isinstance(weights, Panel) or isinstance(weights, PredictionPanel):
-            raise TypeError("ExecutionPolicy requires an ordinary weights Panel")
+        if not isinstance(weights, Node) or weights.value_type != "weights":
+            raise TypeError("ExecutionPolicy requires an ordinary weights Node")
         values = weights.collect(dense=False).drop_nulls("value")
         requested = _schedule_from_panel(values)
         schedule = self.resolve(requested, calendar)
@@ -209,7 +210,7 @@ class ExecutionPolicy:
         )
         return ScheduledWeights(
             schedule=schedule,
-            weights=Panel.from_domain(
+            weights=Node.from_domain(
                 mapped,
                 _mapped_domain(executable, weights),
                 name=weights.name,
@@ -295,7 +296,7 @@ class AlphaPolicy:
 
     def apply(
         self,
-        alpha_values: Mapping[str, Panel],
+        alpha_values: Mapping[str, Node],
         calendar: pl.DataFrame,
         *,
         start: date | None = None,
@@ -304,19 +305,20 @@ class AlphaPolicy:
         """Apply evaluation-date alignment before cross-sectional processing."""
 
         if not alpha_values:
-            raise ValueError("AlphaPolicy requires at least one AlphaValue Panel")
+            raise ValueError("AlphaPolicy requires at least one AlphaValue Node")
         if any(
-            not isinstance(value, Panel) or isinstance(value, PredictionPanel)
+            not isinstance(value, Node)
+            or (isinstance(value, Node) and value.value_type == "prediction")
             for value in alpha_values.values()
         ):
-            raise TypeError("alpha_values must contain ordinary Panel values")
+            raise TypeError("alpha_values must contain ordinary Node values")
         domains = [value.domain for value in alpha_values.values()]
         if any(not domains[0].equivalent_to(domain) for domain in domains[1:]):
             raise ValueError("AlphaValue Panels must use equivalent Domains")
         schedule = self.schedule(calendar, start=start, end=end)
         if schedule.is_empty():
             raise InputValidationError("alpha policy resolves no evaluation dates")
-        processed: dict[str, Panel] = {}
+        processed: dict[str, Node] = {}
         alignments: list[pl.DataFrame] = []
         for name, value in alpha_values.items():
             panel, alignment = self._align_panel(value, schedule)
@@ -343,8 +345,8 @@ class AlphaPolicy:
         )
 
     def _align_panel(
-        self, alpha: Panel, schedule: pl.DataFrame
-    ) -> tuple[Panel, pl.DataFrame]:
+        self, alpha: Node, schedule: pl.DataFrame
+    ) -> tuple[Node, pl.DataFrame]:
         aligned, lineage = _align_alpha(alpha, schedule, self)
         value = pl.col("value").fill_nan(None)
         finite = pl.when(value.is_finite()).then(value).otherwise(None)
@@ -354,7 +356,7 @@ class AlphaPolicy:
             universe=alpha.domain.asset_ids,
         )
         return (
-            Panel.from_domain(
+            Node.from_domain(
                 frame,
                 domain,
                 name=alpha.name,
@@ -388,11 +390,11 @@ class StandardizePolicy:
             if aligned.standardize_policy_id == self.id:
                 return aligned
             raise ValueError("AlphaPolicyResult is already standardized")
-        processed: dict[str, Panel] = {}
+        processed: dict[str, Node] = {}
         for name, alpha in aligned.alpha_values.items():
             frame = alpha.collect(dense=False)
             standardized = standardize_alpha_values(frame, self.method)
-            processed[name] = Panel.from_domain(
+            processed[name] = Node.from_domain(
                 standardized,
                 alpha.domain,
                 name=alpha.name,
@@ -560,7 +562,7 @@ def resolve_standardize_policy(policy_id: str) -> StandardizePolicy:
 
 
 def _align_alpha(
-    alpha: Panel,
+    alpha: Node,
     schedule: pl.DataFrame,
     policy: AlphaPolicy,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -639,7 +641,7 @@ def _schedule_from_panel(values: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mapped_domain(schedule: pl.DataFrame, source: Panel) -> Domain:
+def _mapped_domain(schedule: pl.DataFrame, source: Node) -> Domain:
     execution_dates = schedule.get_column("execution_date").unique().sort()
     return Domain(
         calendar=(execution_dates if len(execution_dates) else source.domain.times),

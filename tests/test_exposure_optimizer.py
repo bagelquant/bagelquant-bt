@@ -3,7 +3,7 @@ from datetime import date
 import numpy as np
 import polars as pl
 import pytest
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 
 from bagelquant_bt import (
     ExposureBounds,
@@ -17,13 +17,13 @@ DAY = date(2024, 1, 2)
 
 def prediction(values=(2.0, -2.0)):
     assets = [chr(97 + i) for i in range(len(values))]
-    return PredictionPanel.from_domain(
+    return Node.from_domain(
         pl.DataFrame(
             {"time": [DAY] * len(values), "asset_id": assets, "value": values},
             schema_overrides={"value": pl.Float64},
         ),
         Domain(calendar=[DAY], universe=assets),
-    )
+     value_type="prediction")
 
 
 def exposures(**columns):

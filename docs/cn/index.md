@@ -1,15 +1,15 @@
 # bagelquant-bt 文档
 
-`bagelquant-bt` 将 AlphaValue Panel 组合成强类型 Prediction，执行研究诊断、Weight Policy
+`bagelquant-bt` 将 AlphaValue Node 组合成强类型 Prediction，执行研究诊断、Weight Policy
 与账户回测。它不负责检索市场数据。
 
 推荐流程为：
 
 ```text
-AlphaValue Panel -> PredictionComposer -> PredictionPanel -> policies -> result
+AlphaValue Node -> PredictionOperator -> Node -> policies -> result
 ```
 
-公开预测回测只接受 Core `PredictionPanel`；价格使用按 `time`、`asset_id` 键控的 long-form
+公开预测回测只接受 Core `Node`；价格使用按 `time`、`asset_id` 键控的 long-form
 Polars 数据。整股账户引擎是独立边界，接收 target weights 和 provider-neutral 市场输入。
 
 ## 主要入口

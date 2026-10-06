@@ -1,7 +1,7 @@
 # Public API
 
 The stable public API is exported from `bagelquant_bt`. Version 0.9.4 accepts
-strongly typed predictions only; ordinary `Panel`, raw DataFrames, and direct
+strongly typed predictions only; ordinary `Node`, raw DataFrames, and direct
 weights are not public backtest inputs.
 
 ## Entry points
@@ -10,11 +10,11 @@ weights are not public backtest inputs.
 from bagelquant_bt import compose_prediction, run_daily_rank_path_diagnostics, run_prediction_backtest, run_prediction_evaluation, run_prediction_horizon_diagnostics
 ```
 
-- `compose_prediction(...) -> PredictionPanel` applies a `PredictionComposer` at the
-  cadence selected by `AlphaPolicy`. Supervised composers derive labels
+- `compose_prediction(...) -> Node` applies a `PredictionOperator` at the
+  cadence selected by `AlphaPolicy`. Supervised operators derive labels
   from one execution price to the next and enforce label-availability cutoffs.
 - `run_prediction_backtest(prediction, prices, calendar, weight_policy=..., ...)`
-  schedules a `PredictionPanel`, applies `ExecutionPolicy` and `WeightPolicy`,
+  schedules a `Node`, applies `ExecutionPolicy` and `WeightPolicy`,
   and returns `BacktestResult`.
 - `run_prediction_evaluation(scheduled_signal, prices, ...)` computes IC,
   quantiles, lag diagnostics, and signal-driven portfolio results.
@@ -63,8 +63,8 @@ cost or detailed commission, per-asset minimum fee, sell-tax, slippage, and
 initial-capital inputs.
 
 `AlphaPolicy` and `ExecutionPolicy` are separate contracts. A weight policy
-receives `PredictionPanel` and returns
-`WeightBuild(weights: Panel, skipped: DataFrame)`. The standalone
+receives `Node` and returns
+`WeightBuild(weights: Node, skipped: DataFrame)`. The standalone
 `allocate_integer_positions` helper converts one continuous target snapshot to
 whole-lot positions with explicit prices, budgets, lot sizes, and frozen
 minimums. Snapshots with at least 16 assets use the bounded deterministic

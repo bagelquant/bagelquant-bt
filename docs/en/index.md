@@ -6,10 +6,10 @@ signals. It does not retrieve market data.
 The expected workflow is:
 
 ```text
-AlphaValue Panel -> PredictionComposer -> PredictionPanel -> policies -> result
+AlphaValue Node -> PredictionOperator -> Node -> policies -> result
 ```
 
-The package is Polars-first. Public backtests require core `PredictionPanel`; prices
+The package is Polars-first. Public backtests require core `Node`; prices
 remain long-form Polars frames keyed by `time` and `asset_id`.
 
 ## Main Entry Points

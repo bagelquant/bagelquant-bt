@@ -11,7 +11,7 @@ from types import MappingProxyType
 
 import numpy as np
 import polars as pl
-from bagelquant_core import Panel, PredictionPanel
+from bagelquant_core import Node
 
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_panel_frame
@@ -97,14 +97,14 @@ class PredictionExposureConstrainedOptimizerPolicy:
 
     def build(
         self,
-        prediction: PredictionPanel,
+        prediction: Node,
         *,
-        reference_weights: Panel | pl.DataFrame | None = None,
+        reference_weights: Node | pl.DataFrame | None = None,
         exposures: pl.DataFrame | None = None,
         **_: object,
     ) -> WeightBuild:
-        if not isinstance(prediction, PredictionPanel):
-            raise TypeError("weight policies require a PredictionPanel")
+        if not (isinstance(prediction, Node) and prediction.value_type == "prediction"):
+            raise TypeError("weight policies require a Node")
         bounds = dict(sorted(self.exposure_bounds.items()))
         if bounds:
             if not isinstance(exposures, pl.DataFrame):

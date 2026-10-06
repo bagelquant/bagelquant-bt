@@ -7,18 +7,18 @@ below remain baseline facts until the owning refactor stages implement that API.
 
 ## Boundaries and scheduling
 
-- Depend on Core Panel/Prediction contracts; never import Data/Workbench or assume
+- Depend on Core Node/Prediction contracts; never import Data/Workbench or assume
   China/application-specific behavior in generic APIs. BT owns simulation and
   evaluation, not upstream value production or training.
-- `run_prediction_backtest` requires `PredictionPanel`, never a plain Panel,
+- `run_prediction_backtest` requires `Node`, never a plain Node,
   raw frame or direct weights. `ExecutionPolicy.schedule_prediction` produces
   `ScheduledPrediction` for prediction diagnostics/evaluation. The separate
   saved-target account APIs accept explicit target frames; in particular,
   `evaluate_portfolio_targets` consumes complete saved targets plus
   rebalance/hold/unavailable decisions. Do not conflate these input contracts.
-- `compose_prediction` and `compose_processed_prediction` return the Composer's
-  raw typed `PredictionPanel`. Do not add fixed/implicit normalization;
-  callers explicitly express post-composer transformations.
+- `compose_prediction` and `compose_processed_prediction` return the Operator's
+  raw typed `Node`. Do not add fixed/implicit normalization;
+  callers explicitly express post-operator transformations.
 - Prices use `(time, asset_id, price)`; Prediction/weights use Core's
   `(time, asset_id, value)`. Align snapshots to exact observed price keys.
   Executed weights at `time=t` earn the next market-session close-to-close return.

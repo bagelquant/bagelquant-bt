@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import polars as pl
 import pytest
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 
 import bagelquant_bt.horizon as horizon_module
 from bagelquant_bt import (
@@ -59,7 +59,9 @@ def _scheduled_prediction(
     )
     return ScheduledPrediction(
         schedule=schedule,
-        prediction=PredictionPanel.from_domain(frame, domain, name="prediction"),
+        prediction=Node.from_domain(
+            frame, domain, name="prediction", value_type="prediction"
+        ),
     )
 
 

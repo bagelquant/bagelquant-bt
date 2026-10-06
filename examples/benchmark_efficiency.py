@@ -25,7 +25,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 
 from bagelquant_bt import (
     AccountBacktestConfig,
@@ -338,12 +338,12 @@ def _daily_rank_path_case() -> BenchmarkMeasurement:
     )
     sessions = factor.get_column("time").unique().sort().to_list()
     assets = factor.get_column("asset_id").unique().sort().to_list()
-    prediction = PredictionPanel.from_domain(
+    prediction = Node.from_domain(
         factor.rename({"factor": "value"}),
         Domain(calendar=sessions, universe=assets),
         name="daily-rank-path-benchmark",
         metadata={"normalization": {"ddof": 0}},
-    )
+     value_type="prediction")
     scheduled = ScheduledPrediction(
         schedule=pl.DataFrame(
             {"rebalance_date": sessions, "execution_date": sessions}
@@ -389,12 +389,12 @@ def _daily_prediction_case(
     sessions = factor.get_column("time").unique().sort().to_list()
     assets = factor.get_column("asset_id").unique().sort().to_list()
     prediction_frame = factor.rename({"factor": "value"})
-    prediction = PredictionPanel.from_domain(
+    prediction = Node.from_domain(
         prediction_frame,
         Domain(calendar=sessions, universe=assets),
         name="daily-prediction-benchmark",
         metadata={"normalization": {"ddof": 0}},
-    )
+     value_type="prediction")
     scheduled = ScheduledPrediction(
         schedule=pl.DataFrame(
             {"rebalance_date": sessions, "execution_date": sessions}

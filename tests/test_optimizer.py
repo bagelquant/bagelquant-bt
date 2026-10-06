@@ -4,7 +4,7 @@ from datetime import date
 
 import polars as pl
 import pytest
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 
 from bagelquant_bt import (
     PredictionRegularizedOptimizerPolicy,
@@ -16,9 +16,9 @@ from bagelquant_bt.exceptions import InputValidationError
 def _prediction(
     values: dict[str, float | None],
     day: date = date(2024, 1, 2),
-) -> PredictionPanel:
+) -> Node:
     assets = sorted(values)
-    return PredictionPanel.from_domain(
+    return Node.from_domain(
         pl.DataFrame(
             {
                 "time": [day] * len(assets),
@@ -28,7 +28,7 @@ def _prediction(
         ),
         Domain(calendar=[day], universe=assets),
         name="prediction",
-    )
+     value_type="prediction")
 
 
 def test_optimizer_matches_hand_calculated_two_asset_solution() -> None:
@@ -175,7 +175,7 @@ def test_optimizer_matches_general_convex_solver_reference(
 
 def test_target_volatility_optimizer_scales_risky_sleeve_and_leaves_cash() -> None:
     evaluation_date = date(2024, 4, 1)
-    prediction = PredictionPanel.from_domain(
+    prediction = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [evaluation_date] * 25,
@@ -188,7 +188,7 @@ def test_target_volatility_optimizer_scales_risky_sleeve_and_leaves_cash() -> No
             universe=[f"a{index:02d}" for index in range(25)],
         ),
         name="prediction",
-    )
+     value_type="prediction")
     returns = pl.DataFrame(
         {
             "time": [date(2024, 3, day) for day in (1, 2, 3)],
@@ -299,7 +299,7 @@ def test_target_volatility_optimizer_skips_warmup_and_ignores_future_returns() -
 def test_target_volatility_shock_changes_only_later_evaluation_date() -> None:
     first = date(2024, 4, 1)
     second = date(2024, 4, 3)
-    prediction = PredictionPanel.from_domain(
+    prediction = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [first, first, second, second],
@@ -309,7 +309,7 @@ def test_target_volatility_shock_changes_only_later_evaluation_date() -> None:
         ),
         Domain(calendar=[first, second], universe=["a", "b"]),
         name="prediction",
-    )
+     value_type="prediction")
     result = PredictionRegularizedTargetVolatilityPolicy(
         concentration_penalty=10.0,
         turnover_penalty=0.0,

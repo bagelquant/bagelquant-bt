@@ -6,13 +6,12 @@ import polars as pl
 import pytest
 from bagelquant_core import (
     Domain,
-    ICWeightedDecayPredictionComposer,
-    ICWeightedPredictionComposer,
-    IdentityPredictionComposer,
-    OLSPredictionComposer,
-    Panel,
-    PredictionComposer,
-    PredictionPanel,
+    ICWeightedDecayPredictionOperator,
+    ICWeightedPredictionOperator,
+    IdentityPredictionOperator,
+    Node,
+    OLSPredictionOperator,
+    PredictionOperator,
 )
 
 from bagelquant_bt import (
@@ -26,11 +25,11 @@ from bagelquant_bt import (
 )
 
 
-def _inputs() -> tuple[pl.DataFrame, Panel, pl.DataFrame]:
+def _inputs() -> tuple[pl.DataFrame, Node, pl.DataFrame]:
     days = [date(2024, 1, 1) + timedelta(days=index) for index in range(4)]
     calendar = pl.DataFrame({"time": days})
     domain = Domain(calendar=days, universe=["a", "b"])
-    alpha = Panel.from_domain(
+    alpha = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [day for day in days for _ in range(2)],
@@ -57,7 +56,7 @@ def test_compose_and_backtest_enforce_typed_prediction_boundary() -> None:
 
     prediction = compose_prediction(
         {"alpha": alpha},
-        IdentityPredictionComposer(),
+        IdentityPredictionOperator(),
         calendar,
         policy,
         standardize_policy="z_score",
@@ -70,10 +69,10 @@ def test_compose_and_backtest_enforce_typed_prediction_boundary() -> None:
         config=BacktestConfig(initial_capital=10_000),
     )
 
-    assert isinstance(prediction, PredictionPanel)
+    assert (isinstance(prediction, Node) and prediction.value_type == "prediction")
     assert prediction.metadata["standardization"] == "z_score"
     assert result.returns.height == 2
-    with pytest.raises(TypeError, match="requires a PredictionPanel"):
+    with pytest.raises(TypeError, match="requires a Node"):
         run_prediction_backtest(  # type: ignore[arg-type]
             alpha,
             prices,
@@ -91,14 +90,14 @@ def test_processed_prediction_matches_one_step_composition_without_reapplying_po
 
     direct = compose_prediction(
         {"alpha": alpha},
-        IdentityPredictionComposer(),
+        IdentityPredictionOperator(),
         calendar,
         policy,
         standardize_policy="z_score",
     )
     cached = compose_processed_prediction(
         processed,
-        IdentityPredictionComposer(),
+        IdentityPredictionOperator(),
         calendar,
         standardize_policy="z_score",
     )
@@ -120,7 +119,7 @@ def test_composition_preserves_raw_prediction_values(
 ) -> None:
     day = date(2024, 1, 2)
     calendar = pl.DataFrame({"time": [day]})
-    alpha = Panel.from_domain(
+    alpha = Node.from_domain(
         pl.DataFrame(
             {"time": [day] * len(assets), "asset_id": assets, "value": values}
         ),
@@ -130,7 +129,7 @@ def test_composition_preserves_raw_prediction_values(
 
     prediction = compose_prediction(
         {"alpha": alpha},
-        IdentityPredictionComposer(),
+        IdentityPredictionOperator(),
         calendar,
         resolve_alpha_policy("daily"),
     )
@@ -141,7 +140,7 @@ def test_composition_preserves_raw_prediction_values(
 
 def test_alpha_policy_rejects_untyped_frames() -> None:
     calendar, _, _ = _inputs()
-    with pytest.raises(TypeError, match="ordinary Panel"):
+    with pytest.raises(TypeError, match="ordinary Node"):
         resolve_alpha_policy("daily").apply(  # type: ignore[dict-item]
             {
                 "alpha": pl.DataFrame(
@@ -157,15 +156,15 @@ def test_alpha_policy_rejects_untyped_frames() -> None:
 
 
 @pytest.mark.parametrize(
-    "composer",
+    "operator",
     [
-        ICWeightedPredictionComposer(1),
-        ICWeightedDecayPredictionComposer(window=1, half_life=6),
+        ICWeightedPredictionOperator(1),
+        ICWeightedDecayPredictionOperator(window=1, half_life=6),
     ],
     ids=("equal-period", "decayed"),
 )
 def test_monthly_supervised_composition_uses_completed_execution_periods(
-    composer: PredictionComposer,
+    operator: PredictionOperator,
 ) -> None:
     sessions = [
         date(2024, 1, 31),
@@ -180,7 +179,7 @@ def test_monthly_supervised_composition_uses_completed_execution_periods(
     assets = ["a", "b", "c"]
     calendar = pl.DataFrame({"time": sessions})
     domain = Domain(calendar=sessions, universe=assets)
-    positive = Panel.from_domain(
+    positive = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [session for session in sessions for _ in assets],
@@ -191,7 +190,7 @@ def test_monthly_supervised_composition_uses_completed_execution_periods(
         domain,
         name="positive",
     )
-    negative = Panel.from_domain(
+    negative = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [session for session in sessions for _ in assets],
@@ -217,7 +216,7 @@ def test_monthly_supervised_composition_uses_completed_execution_periods(
 
     signal = compose_prediction(
         {"positive": positive, "negative": negative},
-        composer,
+        operator,
         calendar,
         policy,
         prices=prices,
@@ -244,8 +243,8 @@ def test_processed_fama_macbeth_composition_returns_shared_diagnostics() -> None
     assets = ["a", "b", "c", "d"]
     domain = Domain(calendar=sessions, universe=assets)
 
-    def factor(name: str, values: list[float]) -> Panel:
-        return Panel.from_domain(
+    def factor(name: str, values: list[float]) -> Node:
+        return Node.from_domain(
             pl.DataFrame(
                 {
                     "time": [day for day in sessions for _ in assets],
@@ -279,17 +278,17 @@ def test_processed_fama_macbeth_composition_returns_shared_diagnostics() -> None
         start=date(2024, 1, 31),
         end=date(2024, 3, 29),
     )
-    composer = OLSPredictionComposer(window=1)
+    operator = OLSPredictionOperator(window=1)
 
     result = compose_processed_fama_macbeth_ols(
         processed,
-        composer,
+        operator,
         calendar,
         prices=prices,
     )
     reference = compose_processed_prediction(
         processed,
-        composer,
+        operator,
         calendar,
         prices=prices,
     )

@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 import polars as pl
 import pytest
-from bagelquant_core import Domain, PredictionPanel
+from bagelquant_core import Domain, Node
 from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
@@ -286,10 +286,10 @@ def test_horizon_append_reuses_prefix_and_matches_full_newly_matured_labels(
 
     def run(end, **kwargs):
         calendar = pl.DataFrame({"time": days[:end]})
-        panel = PredictionPanel.from_domain(
+        panel = Node.from_domain(
             values.filter(pl.col("time") <= days[end - 1]),
             Domain(calendar=calendar["time"], universe=assets),
-        )
+         value_type="prediction")
         signals = ExecutionPolicy("next_open").schedule_prediction(panel, calendar)
         return run_daily_prediction_sections(
             signals,

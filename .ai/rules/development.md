@@ -2,12 +2,12 @@
 
 ## Staged refactor target
 
-The sequence is AI workflow, Data, Core, BT, Workbench, then a new database and
-service restart. Step 1 records the design only; it changes no code, public API,
-schema, numerical behavior, artifacts, database or running service. Later stages
-may redesign incompatible APIs and remove obsolete code without compatibility
-shims; real data, frozen evidence and operational actions retain their own
-authorization boundaries. Concrete replacement APIs belong to their code stages.
+Stages 1–3 implement the workflow, Data 0.7, Core 0.11 and this package's Node
+integration. BT 0.11 requires prediction value_type at prediction entry points
+and produces weights Nodes at weight boundaries. Saved-target DataFrame entry
+points remain separate. All operators come from bagelquant_core.operator.
+Stages 4–5 transfer remaining account/evaluation persistence from Workbench;
+real database/service replacement remains stage 6 with explicit authorization.
 
 BT owns financial execution scheduling, accounts/backtests, evaluation/statistics and the public
 APIs for persisting, querying and reusing its account/evaluation artifacts and

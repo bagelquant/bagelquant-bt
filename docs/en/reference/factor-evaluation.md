@@ -1,6 +1,6 @@
 # Signal Evaluation
 
-Signal evaluation treats each scheduled `PredictionPanel` snapshot as
+Signal evaluation treats each scheduled `Node` snapshot as
 cross-sectional predictions. Higher values are better.
 
 ## Fixed prediction horizons
@@ -127,7 +127,7 @@ benchmarks, and lag Sharpe use the daily-return annualization setting.
 
 ## Signal date and execution policies
 
-`AlphaPolicy.select` chooses whole snapshots from a `PredictionPanel` and
+`AlphaPolicy.select` chooses whole snapshots from a `Node` and
 returns `ScheduledPrediction`, which contains the resolved schedule, execution-date
 lineage, and typed signal. `month_end` prefers the last open session, falls back
 only to an earlier whole snapshot in the same calendar month, and otherwise
@@ -142,7 +142,7 @@ period is excluded.
 For a monthly `month_end` policy, the value selected at a calendar month end is
 therefore evaluated from its mapped next-open execution price through the next
 scheduled execution price. In-progress months never enter IC or a rolling
-supervised-composer window.
+supervised-operator window.
 
 ## Quantile Returns
 

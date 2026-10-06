@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import polars as pl
 import pytest
-from bagelquant_core import Domain, IdentityPredictionComposer, Panel, PredictionPanel
+from bagelquant_core import Domain, IdentityPredictionOperator, Node
 from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
@@ -32,7 +32,7 @@ def _calendar() -> pl.DataFrame:
 def _signal_panel(
     frame: pl.DataFrame,
     calendar: pl.DataFrame | None = None,
-) -> PredictionPanel:
+) -> Node:
     values = frame.rename(
         {"prediction": "value"}
         if "prediction" in frame.columns
@@ -47,7 +47,7 @@ def _signal_panel(
         calendar=dates,
         universe=values.get_column("asset_id").unique().sort(),
     )
-    return PredictionPanel.from_domain(values, domain, name="signal")
+    return Node.from_domain(values, domain, name="signal", value_type="prediction")
 
 
 def _scheduled_signal(frame: pl.DataFrame) -> ScheduledPrediction:
@@ -127,7 +127,7 @@ def test_execution_policy_marks_rebalance_without_future_session() -> None:
 def test_daily_policy_uses_exact_open_dates_and_next_session_execution() -> None:
     sessions = [date(2024, 1, 5), date(2024, 1, 9), date(2024, 1, 10)]
     calendar = pl.DataFrame({"time": sessions, "is_open": [1, 1, 1]})
-    alpha = Panel.from_domain(
+    alpha = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [date(2024, 1, 5), date(2024, 1, 10)],
@@ -140,8 +140,8 @@ def test_daily_policy_uses_exact_open_dates_and_next_session_execution() -> None
     )
     processed = resolve_alpha_policy("daily").apply({"alpha": alpha}, calendar)
     prediction = (
-        IdentityPredictionComposer()
-        .compose(processed.alpha_values["alpha"], name="prediction")
+        IdentityPredictionOperator()
+        (processed.alpha_values["alpha"], name="prediction")
         .compute()
     )
 
@@ -181,7 +181,7 @@ def test_alpha_policy_aligns_evaluation_date_before_standardization() -> None:
         calendar=calendar.get_column("time"),
         universe=["a", "b"],
     )
-    alpha = Panel.from_domain(
+    alpha = Node.from_domain(
         pl.DataFrame(
             {
                 "time": [source_date, source_date],
@@ -254,7 +254,7 @@ def test_month_end_uses_latest_previous_snapshot_only_within_month() -> None:
     )
 
     calendar = _calendar()
-    alpha = Panel.from_domain(
+    alpha = Node.from_domain(
         predictions.rename({"prediction": "value"}),
         _signal_panel(predictions, calendar).domain,
         name="alpha",
@@ -284,7 +284,7 @@ def test_month_end_skips_period_without_any_snapshot() -> None:
     )
 
     calendar = _calendar()
-    alpha = Panel.from_domain(
+    alpha = Node.from_domain(
         predictions.rename({"prediction": "value"}),
         _signal_panel(predictions, calendar).domain,
         name="alpha",
