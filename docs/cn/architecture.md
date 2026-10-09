@@ -20,4 +20,8 @@ BT 接受明确的本地 workers/预算，不探测机器。真实服务/数据�
 
 ## Receipt 检查与选择性读取
 
-BTStore 拥有章节 receipt 和 table 完整性。`chapter(..., verify=False)` 检查已提交元数据身份，默认 `verify=True` 审计整个章节。`read_chapter(names=...)` 只校验选中的 table，同时保留逻辑身份和行数检查；发布与显式 `verify` 仍为全量校验。`read_context` 使用 Core 的有限文件证明，退出即失效，不引入第二个存储权威。显式初始化启用 WAL，元数据查询使用已提交只读事务。
+BTStore 拥有不可变章节 receipt 和 table 完整性。普通章节/选中表读取默认
+`verify=False`，使用登记描述、行数和索引 schema 检查，不重新计算字节和逻辑哈希。
+显式 `verify` 保留完整字节、逻辑内容和索引审计。发布已登记引用不需要解码；
+新数值表仍生成规范内容哈希。`index_plan/build_index` 是显式历史索引维护，
+打开存储不会回填历史或修改旧 receipt。有限审计上下文退出后证明失效。

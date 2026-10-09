@@ -32,14 +32,22 @@ def test_metadata_and_selected_reads_share_only_finite_file_proofs(
 
     store = _store(tmp_path)
     evaluation = store.begin("root", settings={}, through="2024-01-03")
-    store.publish_chapter(evaluation, "summary", {
-        "first": _frame(), "same": _frame(), "other": _frame((3., 4.)),
-    })
+    store.publish_chapter(
+        evaluation,
+        "summary",
+        {
+            "first": _frame(),
+            "same": _frame(),
+            "other": _frame((3.0, 4.0)),
+        },
+    )
     hashes = []
     original = storage._file_hash
+
     def checksum(path):
         hashes.append(path)
         return original(path)
+
     monkeypatch.setattr(storage, "_file_hash", checksum)
     with store._read_connection() as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -54,9 +62,9 @@ def test_metadata_and_selected_reads_share_only_finite_file_proofs(
         _, frames = reader.read_chapter(evaluation, "summary", names=["first", "same"])
         assert frames["first"].equals(frames["same"])
         reader.read_chapter(evaluation, "summary", names=["first"])
-        assert len(hashes) == 1
+        assert len(hashes) == 0
     reader.read_chapter(evaluation, "summary", names=["first"])
-    assert len(hashes) == 2
+    assert len(hashes) == 0
 
 
 @pytest.mark.parametrize("kind", ["evaluation", "chapter", "shared"])
@@ -173,7 +181,7 @@ def test_integrity_checks_historical_checksums_for_identical_logical_rows(tmp_pa
         "root", "account", "new", {"rows": _frame()}, expected_shared=original
     )
     assert latest["files"]["rows"]["table_id"] == reference["table_id"]
-    assert latest["files"]["rows"]["checksum"] != reference["checksum"]
+    assert latest["files"]["rows"]["checksum"] == reference["checksum"]
     assert store.read_reference(latest["files"]["rows"]).equals(_frame())
     integrity = store.verify()
     assert integrity["tables"] == 1
@@ -400,3 +408,58 @@ def test_interrupted_cleanup_resumes_exact_original_inventory(tmp_path):
     assert len(store.cleanup_plan()["candidates"]) == 1
     assert store.cleanup(plan)["deleted"] == 2
     assert store.cleanup_plan()["candidates"] == []
+
+
+def test_unregistered_conflicting_file_cannot_be_published(tmp_path):
+    from bagelquant_core.hashing import hash_dataframe
+
+    store = _store(tmp_path)
+    intended = _frame()
+    path = store._table_path(hash_dataframe(intended))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _frame((90.0, 91.0)).write_parquet(path)
+    with pytest.raises(ValueError, match=r"unregistered.*differs"):
+        store.publish_shared("root", "path", "new", {"path": intended})
+    assert store.shared_receipt("root", "path") is None
+
+
+def test_new_publication_indexes_only_new_table_in_index_free_store(tmp_path):
+    store = _store(tmp_path)
+    original = store.publish_shared("root", "path", "old", {"path": _frame()})
+    with store._connect() as db:
+        db.execute("DROP TABLE bt_table_index")
+    store.initialize()
+    assert (
+        store.describe_reference(original["files"]["path"]) == original["files"]["path"]
+    )
+    updated = store.publish_shared(
+        "root", "path", "new", {"path": _frame((3.0, 4.0))}, expected_shared=original
+    )
+    assert updated["files"]["path"] != original["files"]["path"]
+    with store._read_connection() as db:
+        assert db.execute("SELECT count(*) FROM bt_table_index").fetchone()[0] == 1
+
+
+def test_empty_index_plan_is_passive_on_uninitialized_store(tmp_path):
+    store = BTStore(tmp_path / "new" / "bt.sqlite", tmp_path / "new" / "tables")
+    assert store.index_plan()["tables"] == []
+    assert store.build_index(store.index_plan())["tables"] == 0
+    assert not store.meta_path.parent.exists()
+
+
+def test_index_maintenance_admission_returns_partial_before_full_decode(
+    tmp_path, monkeypatch
+):
+    import bagelquant_core.resources as resources
+
+    store = _store(tmp_path)
+    store.publish_shared("root", "path", "old", {"path": _frame()})
+    with store._connect() as db:
+        db.execute("DELETE FROM bt_table_index")
+    monkeypatch.setattr(resources, "admit_parquet_materialization", lambda _: False)
+    monkeypatch.setattr(
+        pl, "read_parquet", lambda *_a, **_k: pytest.fail("unadmitted table decoded")
+    )
+    result = store.build_index(store.index_plan())
+    assert result["status"] == "partial"
+    assert result["tables"] == 0 and result["unknown_tables"] == 1

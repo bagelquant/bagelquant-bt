@@ -214,20 +214,29 @@ class BTStore:
                     "bt_store_schema": {"version"},
                     "bt_evaluations": {"id", "owner_id", "manifest_json", "created_at"},
                     "bt_chapters": {
-                        "evaluation_id", "section", "manifest_json",
-                        "invalid_reason", "created_at",
+                        "evaluation_id",
+                        "section",
+                        "manifest_json",
+                        "invalid_reason",
+                        "created_at",
                     },
                     "bt_shared": {
-                        "owner_id", "component", "input_identity", "receipt_identity",
-                        "manifest_json", "created_at",
+                        "owner_id",
+                        "component",
+                        "input_identity",
+                        "receipt_identity",
+                        "manifest_json",
+                        "created_at",
                     },
                     "bt_cleanup_receipts": {"id", "manifest_json", "completed_json"},
                 }
                 if not set(required).issubset(tables) or any(
-                    not columns.issubset({
-                        row[1]
-                        for row in connection.execute(f"PRAGMA table_info({table})")
-                    })
+                    not columns.issubset(
+                        {
+                            row[1]
+                            for row in connection.execute(f"PRAGMA table_info({table})")
+                        }
+                    )
                     for table, columns in required.items()
                 ):
                     return {
@@ -294,6 +303,10 @@ class BTStore:
                         "BT metadata is incompatible; use a fresh database"
                     )
                 connection.executescript(_SCHEMA)
+                connection.execute(
+                    "CREATE TABLE bt_table_index(table_id TEXT PRIMARY KEY,"
+                    "reference_json TEXT NOT NULL,schema_json TEXT NOT NULL)"
+                )
             elif (
                 connection.execute("SELECT version FROM bt_store_schema").fetchone()[0]
                 != 1
@@ -400,13 +413,14 @@ class BTStore:
         if not isinstance(frame, pl.DataFrame):
             raise TypeError("BT tables must be Polars DataFrames")
         digest = hash_dataframe(frame)
+        registered = self._registered_table(digest)
+        if registered is not None:
+            return registered
         path = self._table_path(digest)
         path.parent.mkdir(parents=True, exist_ok=True)
         check_canceled()
-        if path.exists():
-            if hash_dataframe(pl.read_parquet(_path(path))) != digest:
-                raise ValueError("corrupt immutable BT table")
-        else:
+        existing = path.exists()
+        if not path.exists():
             temporary = path.with_name(digest + "." + uuid.uuid4().hex + ".tmp.parquet")
             try:
                 frame.write_parquet(_path(temporary), compression="lz4")
@@ -414,18 +428,186 @@ class BTStore:
                 try:
                     os.link(_path(temporary), _path(path))
                 except FileExistsError:
-                    if hash_dataframe(pl.read_parquet(_path(path))) != digest:
-                        raise ValueError(
-                            "concurrent immutable BT table is corrupt"
-                        ) from None
+                    existing = True
+                    registered = self._registered_table(digest)
+                    if registered is not None:
+                        return registered
             finally:
                 temporary.unlink(missing_ok=True)
-        return {
+        if existing:
+            # Only a registered descriptor authorizes a metadata-only hit.
+            # An orphan left by interruption must prove its canonical values.
+            try:
+                prior = pl.read_parquet(_path(path))
+            except pl.exceptions.PolarsError as error:
+                raise ValueError("unregistered BT artifact is unreadable") from error
+            if hash_dataframe(prior) != digest:
+                raise ValueError("unregistered BT artifact differs from publication")
+        reference = {
             "backend": "bt",
             "table_id": digest,
             "checksum": _file_hash(path),
             "logical_hash": digest,
             "rows": frame.height,
+        }
+        with self._connect() as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS bt_table_index(table_id TEXT PRIMARY KEY,"
+                "reference_json TEXT NOT NULL,schema_json TEXT NOT NULL)"
+            )
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+            ).fetchone():
+                connection.execute(
+                    "INSERT OR IGNORE INTO bt_table_index VALUES(?,?,?)",
+                    (
+                        digest,
+                        _json(reference),
+                        self._index_schema(reference, frame.schema),
+                    ),
+                )
+        return reference
+
+    @staticmethod
+    def _index_schema(reference, schema):
+        values = {name: str(dtype) for name, dtype in schema.items()}
+        return _json(
+            {
+                "schema": values,
+                "digest": _identity(
+                    {
+                        "version": "bt.table.index.v2",
+                        "reference": reference,
+                        "schema": values,
+                    }
+                ),
+            }
+        )
+
+    def _registered_table(self, table_id: str, *, original=False):
+        """Resolve original owner records, including index-free historical stores."""
+        with self._read_connection() as connection:
+            if (
+                not original
+                and connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone()
+            ):
+                row = connection.execute(
+                    "SELECT reference_json,schema_json FROM bt_table_index "
+                    "WHERE table_id=?",
+                    (table_id,),
+                ).fetchone()
+                if row is not None:
+                    reference, index = json.loads(row[0]), json.loads(row[1])
+                    if (
+                        reference.get("table_id") != table_id
+                        or reference.get("logical_hash") != table_id
+                    ):
+                        raise ValueError(
+                            "BT table descriptor index source binding differs"
+                        )
+                    if index.get("digest") != _identity(
+                        {
+                            "version": "bt.table.index.v2",
+                            "reference": reference,
+                            "schema": index.get("schema"),
+                        }
+                    ):
+                        raise ValueError("corrupt BT table descriptor index")
+                    return reference
+            for table in ("bt_shared", "bt_chapters"):
+                row = connection.execute(
+                    f"SELECT j.value FROM {table},json_each(manifest_json,'$.files') j "
+                    "WHERE json_extract(j.value,'$.table_id')=? LIMIT 1",
+                    (table_id,),
+                ).fetchone()
+                if row is not None:
+                    return json.loads(row[0])
+        return None
+
+    def describe_reference(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        """Resolve a registered immutable table without reading its numerical bytes."""
+        if reference.get("backend") != "bt":
+            raise ValueError("reference is not a BT table")
+        self._table_path(str(reference.get("table_id", "")))
+        if reference.get("logical_hash") != reference.get("table_id"):
+            raise ValueError("BT table logical identity differs")
+        self._table_path(str(reference.get("table_id", "")))
+        original = self._registered_table(str(reference.get("table_id", "")))
+        if original is None or original != dict(reference):
+            raise ValueError("BT table reference differs from its registered record")
+        return original
+
+    def index_plan(self) -> dict[str, Any]:
+        """Describe explicit table-descriptor maintenance from saved receipts."""
+        tables = {}
+        if not self.meta_path.is_file():
+            return {
+                "version": "bt.table.index.v2",
+                "meta_path": str(self.meta_path),
+                "tables": [],
+            }
+        with self._read_connection() as connection:
+            for table in ("bt_shared", "bt_chapters"):
+                for row in connection.execute(f"SELECT manifest_json FROM {table}"):
+                    receipt = json.loads(row[0])
+                    _verify_record(receipt, receipt["schema"])
+                    for ref in receipt["files"].values():
+                        tables[ref["table_id"]] = ref
+        return {
+            "version": "bt.table.index.v2",
+            "meta_path": str(self.meta_path),
+            "tables": [tables[key] for key in sorted(tables)],
+        }
+
+    def build_index(
+        self, plan, *, check_canceled=lambda: None, progress=lambda *_: None
+    ):
+        """Explicitly audit historical tables and register derived descriptors."""
+        if plan.get("version") != "bt.table.index.v2" or plan.get("meta_path") != str(
+            self.meta_path
+        ):
+            raise ValueError("BT index plan belongs to another authority/version")
+        if not plan["tables"]:
+            return {"status": "complete", "tables": 0, "unknown_tables": 0}
+        from bagelquant_core.resources import admit_parquet_materialization
+
+        completed, unknown = 0, 0
+        with self._connect() as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS bt_table_index(table_id TEXT PRIMARY KEY,"
+                "reference_json TEXT NOT NULL,schema_json TEXT NOT NULL)"
+            )
+        for position, ref in enumerate(plan["tables"], 1):
+            check_canceled()
+            if self._registered_table(ref["table_id"], original=True) != ref:
+                raise ValueError("BT index plan reference changed")
+            path = self._table_path(ref["table_id"])
+            if _file_hash(path) != ref["checksum"]:
+                raise ValueError("corrupt BT artifact")
+            if not admit_parquet_materialization(_path(path)):
+                unknown += 1
+                progress(position, len(plan["tables"]))
+                continue
+            frame = pl.read_parquet(_path(path))
+            if hash_dataframe(frame) != ref["table_id"]:
+                raise ValueError("BT table logical identity differs")
+            schema = self._index_schema(ref, frame.schema)
+            del frame
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                check_canceled()
+                connection.execute(
+                    "INSERT OR REPLACE INTO bt_table_index VALUES(?,?,?)",
+                    (ref["table_id"], _json(ref), schema),
+                )
+            progress(position, len(plan["tables"]))
+            completed += 1
+        return {
+            "status": "partial" if unknown else "complete",
+            "tables": completed,
+            "unknown_tables": unknown,
         }
 
     def read_reference(self, reference: Mapping[str, Any]) -> pl.DataFrame:
@@ -433,14 +615,26 @@ class BTStore:
         if self._verification is None:
             with self.read_context() as reader:
                 return reader.read_reference(reference)
-        self.verify_reference(reference)
+        reference = self.describe_reference(reference)
         path = self._table_path(str(reference.get("table_id", "")))
-        frame = pl.read_parquet(_path(path))
-        if hash_dataframe(frame) != reference.get("logical_hash"):
-            raise ValueError("BT table logical identity differs")
+        try:
+            frame = pl.read_parquet(_path(path))
+        except pl.exceptions.PolarsError as error:
+            raise ValueError("corrupt or unreadable BT artifact") from error
         if frame.height != reference.get("rows"):
             raise ValueError("BT table row count differs")
-        self.verify_reference(reference)
+        with self._read_connection() as connection:
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+            ).fetchone():
+                row = connection.execute(
+                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                    (reference["table_id"],),
+                ).fetchone()
+                if row is not None and json.loads(row[0])["schema"] != {
+                    name: str(dtype) for name, dtype in frame.schema.items()
+                }:
+                    raise ValueError("BT table typed schema differs")
         return frame
 
     def verify_reference(
@@ -449,6 +643,14 @@ class BTStore:
         """Check an opaque table without materializing its numerical values."""
         if reference.get("backend") != "bt":
             raise ValueError("reference is not a BT table")
+        original = self._registered_table(
+            str(reference.get("table_id", "")), original=True
+        )
+        indexed = self._registered_table(str(reference.get("table_id", "")))
+        if indexed != dict(reference) or (
+            original is not None and original != dict(reference)
+        ):
+            raise ValueError("BT descriptor differs from original publication")
         path = self._table_path(str(reference.get("table_id", "")))
         if reference.get("logical_hash") != reference.get("table_id"):
             raise ValueError("BT table logical identity differs")
@@ -462,11 +664,15 @@ class BTStore:
             raise ValueError("corrupt or missing BT artifact")
         verification = self._verification or ArtifactVerification()
         verification.verify(
-            path, str(reference.get("checksum")),
-            receipt=str(reference.get("table_id")), checksum=_file_hash,
+            path,
+            str(reference.get("checksum")),
+            receipt=str(reference.get("table_id")),
+            checksum=_file_hash,
         )
         if deep:
-            self.read_reference(reference)
+            frame = self.read_reference(reference)
+            if hash_dataframe(frame) != reference.get("logical_hash"):
+                raise ValueError("BT table logical identity differs")
 
     def verify_receipt(self, receipt: Mapping[str, Any]) -> None:
         """Verify all referenced tables, including those not selected for display."""
@@ -510,6 +716,7 @@ class BTStore:
         component: str,
         *,
         input_identity: str | None = None,
+        names: Sequence[str] | None = None,
     ) -> tuple[dict[str, Any], dict[str, pl.DataFrame]] | None:
         receipt = self.shared_receipt(
             owner_id, component, input_identity=input_identity
@@ -517,8 +724,31 @@ class BTStore:
         if receipt is None:
             return None
         return receipt, {
-            name: self.read_reference(ref) for name, ref in receipt["files"].items()
+            name: self.read_reference(ref)
+            for name, ref in receipt["files"].items()
+            if names is None or name in names
         }
+
+    def _publication_files(self, frames, file_references, check_canceled):
+        files = {}
+        for name in dict.fromkeys([*frames, *(file_references or {})]):
+            if not name.replace("_", "").isalnum():
+                raise ValueError("invalid BT primitive name")
+            check_canceled()
+            ref = (file_references or {}).get(name)
+            if ref is not None:
+                ref = self.describe_reference(ref)
+                if (
+                    name in frames
+                    and hash_dataframe(frames[name]) != ref["logical_hash"]
+                ):
+                    raise ValueError(
+                        "BT primitive reference does not match supplied rows"
+                    )
+                files[name] = dict(ref)
+            else:
+                files[name] = self._save_table(frames[name], check_canceled)
+        return files
 
     def publish_shared(
         self,
@@ -530,6 +760,7 @@ class BTStore:
         metadata: Mapping[str, Any] | None = None,
         sources: Mapping[str, Any] | None = None,
         expected_shared: Mapping[str, Any] | None = None,
+        file_references: Mapping[str, Mapping[str, Any]] | None = None,
         check_canceled: Callable[[], None] = lambda: None,
     ) -> dict[str, Any]:
         """Publish an immutable shared primitive set using an explicit CAS proof."""
@@ -539,10 +770,7 @@ class BTStore:
             (input_identity, "input_identity"),
         ):
             _identifier(value, name)
-        files = {
-            name: self._save_table(frame, check_canceled)
-            for name, frame in frames.items()
-        }
+        files = self._publication_files(frames, file_references, check_canceled)
         receipt = {
             "schema": "bt.shared.v1",
             "owner_id": owner_id,
@@ -583,7 +811,6 @@ class BTStore:
                     observed is not None
                     and observed["receipt_identity"] == receipt["receipt_identity"]
                 ):
-                    self.verify_receipt(observed)
                     return observed
                 raise RuntimeError("BT shared primitives changed during publication")
             previous = connection.execute(
@@ -604,7 +831,7 @@ class BTStore:
                     raise RuntimeError("immutable shared primitive identity disagrees")
                 if old["receipt_identity"] == receipt["receipt_identity"]:
                     return old
-            self.verify_receipt(receipt)
+            _verify_record(receipt, "bt.shared.v1")
             connection.execute(
                 "INSERT INTO bt_shared VALUES (?,?,?,?,?,?)",
                 (
@@ -619,7 +846,7 @@ class BTStore:
         return receipt
 
     def chapter(
-        self, evaluation_id: str, section: str, *, verify: bool = True
+        self, evaluation_id: str, section: str, *, verify: bool = False
     ) -> dict[str, Any]:
         """Read published status; optional full verification includes all tables."""
         if not self.meta_path.is_file():
@@ -679,20 +906,7 @@ class BTStore:
             "status",
         }:
             raise ValueError("chapter metadata uses reserved receipt fields")
-        files = {}
-        for name, frame in frames.items():
-            if not name.replace("_", "").isalnum():
-                raise ValueError("invalid BT primitive name")
-            check_canceled()
-            ref = (file_references or {}).get(name)
-            if ref is not None:
-                if not self.read_reference(ref).equals(frame):
-                    raise ValueError(
-                        "BT primitive reference does not match supplied rows"
-                    )
-                files[name] = dict(ref)
-            else:
-                files[name] = self._save_table(frame, check_canceled)
+        files = self._publication_files(frames, file_references, check_canceled)
         receipt = {
             **dict(metadata or {}),
             "schema": "bt.chapter.v1",
@@ -722,7 +936,7 @@ class BTStore:
                 if old["receipt_identity"] != receipt["receipt_identity"]:
                     raise RuntimeError("immutable BT chapter already differs")
                 return old
-            self.verify_receipt(receipt)
+            _verify_record(receipt, "bt.chapter.v1")
             connection.execute(
                 "INSERT INTO bt_chapters VALUES (?,?,?,NULL,?)",
                 (evaluation_id, section, _json(receipt), receipt["updated_at"]),
@@ -891,7 +1105,7 @@ class BTStore:
         for reference in tables.values():
             try:
                 if deep:
-                    self.read_reference(reference)
+                    self.verify_reference(reference, deep=True)
                 elif not self._table_path(reference["table_id"]).is_file():
                     raise ValueError("missing BT artifact")
             except (ValueError, OSError, pl.exceptions.PolarsError) as error:

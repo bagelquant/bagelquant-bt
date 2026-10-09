@@ -18,18 +18,20 @@ from .horizon import (
     DAILY_SESSION_WINDOWS,
     DAILY_SUMMARY_AUTOCORRELATION_LAGS,
     SessionWindow,
+    _centered_rank_book_weights_prepared,
+    _gross_one_tail_weights_with_membership,
+    _prepare_factor_returns,
     _quantile_membership,
+    _validate_scheduled_factor_frame,
+    _window_factor_returns_prepared,
+    _window_quantile_forward_returns_with_membership,
     build_statistical_inference,
-    centered_rank_book_weights,
-    gross_one_tail_weights,
     quantile_curve_structure,
     rolling_window_information_coefficients,
     signal_rank_persistence,
     summarize_window_ic,
     window_book_returns,
-    window_factor_returns,
     window_information_coefficients,
-    window_quantile_forward_returns,
     window_tail_returns,
 )
 from .portfolio_mechanics import (
@@ -455,6 +457,8 @@ def _alpha_window_frames(
     tail: pl.DataFrame,
     quantiles: int,
     factor_standardization: str,
+    quantile_membership: pl.DataFrame,
+    prepared_factor: pl.DataFrame,
     check_canceled: Callable[[], None],
 ) -> dict[str, pl.DataFrame]:
     """Compute one window with private frames and shared read-only inputs."""
@@ -463,8 +467,8 @@ def _alpha_window_frames(
     check_canceled()
     ic = window_information_coefficients(factor, window_labels)
     check_canceled()
-    quantile_returns = window_quantile_forward_returns(
-        factor, window_labels, quantiles=quantiles
+    quantile_returns = _window_quantile_forward_returns_with_membership(
+        quantile_membership, window_labels, quantiles=quantiles
     )
     check_canceled()
     frames = {
@@ -476,8 +480,9 @@ def _alpha_window_frames(
         "quantile_structure": quantile_curve_structure(
             quantile_returns, quantiles=quantiles
         ),
-        "factor_returns": window_factor_returns(
-            factor, window_labels, standardization=factor_standardization
+        "factor_returns": _window_factor_returns_prepared(
+            prepared_factor, window_labels,
+            complete=factor_standardization == "cross_sectional_zscore"
         ),
     }
     check_canceled()
@@ -610,11 +615,13 @@ def evaluate_alpha(
         tables["horizon_signal_persistence"] = persistence
         tables["horizon_signal_persistence_summary"] = persistence_summary
     cancel()
-    book = tail = None
+    book = tail = membership = None
     if selected - {"persistence"}:
-        book = centered_rank_book_weights(factor)
+        normalized_factor = _validate_scheduled_factor_frame(factor)
+        book = _centered_rank_book_weights_prepared(normalized_factor)
         cancel()
-        tail = gross_one_tail_weights(factor, quantiles=quantiles)
+        membership = _quantile_membership(normalized_factor, quantiles=quantiles)
+        tail = _gross_one_tail_weights_with_membership(membership, quantiles=quantiles)
     if selected & {"horizons", "rolling_ic"}:
         resolved_windows = tuple(windows)
         if not resolved_windows or any(
@@ -625,7 +632,8 @@ def evaluate_alpha(
             {(window.window_kind, window.window_id) for window in resolved_windows}
         ) != len(resolved_windows):
             raise InputValidationError("window identities must be unique")
-        assert book is not None and tail is not None
+        assert book is not None and tail is not None and membership is not None
+        prepared_factor = _prepare_factor_returns(factor, factor_standardization)
         window_options, execution = _alpha_window_execution(
             options, resolved_windows, factor, labels, sessions, book, tail
         )
@@ -642,6 +650,7 @@ def evaluate_alpha(
                 tail=tail,
                 quantiles=quantiles,
                 factor_standardization=factor_standardization,
+                quantile_membership=membership, prepared_factor=prepared_factor,
                 check_canceled=cancel,
             ),
             options=window_options,
@@ -764,7 +773,7 @@ def evaluate_alpha(
                 common, on="time", how="inner"
             )
         if "quantiles" in selected:
-            membership = _quantile_membership(factor, quantiles=quantiles)
+            assert membership is not None
             valid = membership.filter(
                 (pl.col("_count") >= quantiles) & (pl.col("_unique") >= 2)
             )

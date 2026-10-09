@@ -30,4 +30,9 @@ changing live data/services or deleting historical/authored evidence.
 
 ## Receipt inspection and selective reads
 
-BTStore owns chapter receipts and table integrity. `chapter(..., verify=False)` checks committed metadata identity; default `verify=True` audits the whole chapter. `read_chapter(names=...)` verifies only selected tables, retaining logical identity and row-count validation. Explicit `verify` and publication remain full. `read_context` uses Core's finite file proofs and expires them on exit; it creates no second storage authority. Explicit initialization enables WAL, and metadata queries use committed read-only transactions.
+BTStore owns immutable chapter receipts and table integrity. Ordinary chapter/selected
+table reads use registered metadata, row counts and indexed schema checks (`verify=False`).
+Explicit `verify` retains full byte/logical/index audits. Registered references can
+be published without decoding; new numerical frames retain canonical content hashes.
+`index_plan/build_index` is explicit historical descriptor maintenance. Opening a store
+never performs backfill or changes old receipts. Read-context audit proofs expire on exit.

@@ -58,3 +58,5 @@ Supported platforms: macOS and Linux. Windows support is retired.
 `evaluate_alpha(..., options=..., progress=...)` also uses this bounded executor
 for independent horizon windows, retaining declared order and numerical results.
 `EvaluationResult.execution` reports identity-neutral worker/memory estimates.
+
+[Calculation records](docs/en/calculation_records.md) · [计算记录](docs/cn/calculation_records.md)

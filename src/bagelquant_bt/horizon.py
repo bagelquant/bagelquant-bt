@@ -564,13 +564,17 @@ def window_factor_returns(
     raw-factor contract.
     """
 
+    prepared = _prepare_factor_returns(factor, standardization)
+    return _window_factor_returns_prepared(prepared, forward_returns,
+        complete=standardization == "cross_sectional_zscore")
+
+
+def _prepare_factor_returns(factor, standardization):
     if standardization not in {"none", "cross_sectional_zscore"}:
         raise ValueError(f"unsupported factor standardization: {standardization}")
 
     normalized = _validate_scheduled_factor_frame(factor)
-    window_groups = None
     if standardization == "cross_sectional_zscore":
-        window_groups = forward_returns.select(*_RETURN_GROUP_COLUMNS).unique()
         normalized = normalized.with_columns(
             pl.len().over("evaluation_date").alias("_factor_count"),
             pl.col("factor").mean().over("evaluation_date").alias("_factor_mean"),
@@ -585,6 +589,14 @@ def window_factor_returns(
             .otherwise(None)
             .alias("factor")
         )
+    return normalized
+
+
+def _window_factor_returns_prepared(normalized, forward_returns, *, complete):
+    """One numerical formula consuming shared, validated cross sections."""
+    window_groups = (
+        forward_returns.select(*_RETURN_GROUP_COLUMNS).unique() if complete else None
+    )
     paired = forward_returns.join(
         normalized.select("evaluation_date", ASSET_ID, "factor"),
         on=["evaluation_date", ASSET_ID],
