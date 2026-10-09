@@ -108,6 +108,7 @@ def test_active_rollback_journal_never_confers_uncommitted_readiness(
     store = BTStore(tmp_path / "meta.sqlite", tmp_path / "artifacts")
     store.initialize()
     with closing(sqlite3.connect(store.meta_path)) as connection:
+        connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("CREATE TABLE pressure(payload BLOB)")
         version = committed_version
         connection.execute("UPDATE bt_store_schema SET version=?", (version,))

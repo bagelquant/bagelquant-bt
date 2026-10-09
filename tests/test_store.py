@@ -25,6 +25,40 @@ def _frame(values=(1.0, 2.0)):
     )
 
 
+def test_metadata_and_selected_reads_share_only_finite_file_proofs(
+    tmp_path, monkeypatch
+):
+    import bagelquant_bt.store as storage
+
+    store = _store(tmp_path)
+    evaluation = store.begin("root", settings={}, through="2024-01-03")
+    store.publish_chapter(evaluation, "summary", {
+        "first": _frame(), "same": _frame(), "other": _frame((3., 4.)),
+    })
+    hashes = []
+    original = storage._file_hash
+    def checksum(path):
+        hashes.append(path)
+        return original(path)
+    monkeypatch.setattr(storage, "_file_hash", checksum)
+    with store._read_connection() as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert db.execute("PRAGMA query_only").fetchone()[0] == 1
+    with store._connect() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("DELETE FROM bt_chapters")
+        assert store.chapter(evaluation, "summary", verify=False)["status"] == "ready"
+        writer.rollback()
+    assert hashes == []
+    with store.read_context() as reader:
+        _, frames = reader.read_chapter(evaluation, "summary", names=["first", "same"])
+        assert frames["first"].equals(frames["same"])
+        reader.read_chapter(evaluation, "summary", names=["first"])
+        assert len(hashes) == 1
+    reader.read_chapter(evaluation, "summary", names=["first"])
+    assert len(hashes) == 2
+
+
 @pytest.mark.parametrize("kind", ["evaluation", "chapter", "shared"])
 def test_receipt_payload_corruption_is_detected_without_rewriting_artifacts(
     tmp_path, kind
@@ -202,7 +236,7 @@ def test_shared_cas_cancel_and_immutable_chapter_keep_prior_result(tmp_path):
     assert store.read_chapter(evaluation, "summary")[1]["path"].equals(_frame())
 
 
-def test_selective_read_rejects_unselected_corruption_and_invalidation(tmp_path):
+def test_selective_read_defers_unselected_corruption_to_audit(tmp_path):
     store = _store(tmp_path)
     evaluation = store.begin("root", settings={}, through="2024-01-03")
     receipt = store.publish_chapter(
@@ -217,11 +251,16 @@ def test_selective_read_rejects_unselected_corruption_and_invalidation(tmp_path)
     (store.artifact_path / "tables" / (ref["table_id"] + ".parquet")).write_bytes(
         b"damage"
     )
-    with pytest.raises(ValueError, match="corrupt"):
-        store.read_chapter(evaluation, "summary", names=["selected"])
+    _, frames = store.read_chapter(evaluation, "summary", names=["selected"])
+    assert frames["selected"].equals(_frame())
+    assert store.chapter(evaluation, "summary", verify=False)["status"] == "ready"
+    with pytest.raises(ValueError, match=r"corrupt|artifact"):
+        store.read_chapter(evaluation, "summary", names=["unselected"])
     assert store.verify()["status"] == "corrupt"
     assert store.invalidate(reason="source_changed", owner_id="root") == 1
     assert store.chapter(evaluation, "summary")["reason"] == "source_changed"
+    with pytest.raises(ValueError, match="source_changed"):
+        store.read_chapter(evaluation, "summary", names=["selected"])
 
 
 def test_recovery_never_adopts_orphans_and_cleanup_is_frozen_idempotent(tmp_path):

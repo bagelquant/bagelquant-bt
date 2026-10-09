@@ -27,3 +27,7 @@ Workbench owns global admission, hardware/runtime policy, China-market
 interpretation, authored definitions, governance and app/global-version metadata.
 BT exposes explicit local limits and workers. No stage-4 source cleanup authorizes
 changing live data/services or deleting historical/authored evidence.
+
+## Receipt inspection and selective reads
+
+BTStore owns chapter receipts and table integrity. `chapter(..., verify=False)` checks committed metadata identity; default `verify=True` audits the whole chapter. `read_chapter(names=...)` verifies only selected tables, retaining logical identity and row-count validation. Explicit `verify` and publication remain full. `read_context` uses Core's finite file proofs and expires them on exit; it creates no second storage authority. Explicit initialization enables WAL, and metadata queries use committed read-only transactions.

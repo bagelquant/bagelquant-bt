@@ -17,6 +17,9 @@ and relevant local docs. Inspect tracked and untracked Git changes first.
   one account loop, one numerical formula and one artifact authority per concern.
 - Workbench supplies global admission and resources; BT exposes explicit workers
   and enforces caller budgets without probing the machine.
+- Chapter metadata may report published readiness with `verify=False`; actual
+  selected table reads retain byte/logical checks and full audits cover all
+  tables. Finite read contexts expire proofs; explicit initialization enables WAL.
 - Use Python 3.13 and uv. Tests use synthetic inputs and temporary stores; never
   touch real shared data, providers, authored work or historical receipts.
 - No commit, push, PR, merge, release, deployment, service, real data update or

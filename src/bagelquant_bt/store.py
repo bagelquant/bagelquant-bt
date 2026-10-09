@@ -9,11 +9,13 @@ import sqlite3
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
+from copy import copy
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+from bagelquant_core import ArtifactVerification
 from bagelquant_core.hashing import hash_dataframe
 from bagelquant_core.inspection import open_metadata_snapshot
 
@@ -160,6 +162,18 @@ class BTStore:
     def __init__(self, meta_path: str | Path, artifact_path: str | Path):
         self.meta_path = Path(meta_path).resolve()
         self.artifact_path = Path(artifact_path).resolve()
+        self._verification: ArtifactVerification | None = None
+
+    @contextmanager
+    def read_context(self):
+        """Share checksum proofs only for this finite operation, across threads."""
+        reader = copy(self)
+        reader._verification = ArtifactVerification()
+        try:
+            yield reader
+        finally:
+            reader._verification.close()
+            reader._verification = None
 
     def inspect(self, *, runtime: bool = False) -> dict[str, Any]:
         """Return schema readiness without initializing or recovering storage.
@@ -249,6 +263,20 @@ class BTStore:
         finally:
             connection.close()
 
+    @contextmanager
+    def _read_connection(self):
+        connection = sqlite3.connect(
+            self.meta_path.as_uri() + "?mode=ro", uri=True, timeout=30
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            yield connection
+        finally:
+            connection.rollback()
+            connection.close()
+
     def initialize(self) -> None:
         """Create a fresh store; incompatible stores are never migrated."""
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,6 +299,8 @@ class BTStore:
                 != 1
             ):
                 raise RuntimeError("BT metadata is incompatible; back up and rebuild")
+        with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
 
     def begin(
         self,
@@ -311,7 +341,7 @@ class BTStore:
     def describe(self, evaluation_id: str) -> dict[str, Any] | None:
         if not self.meta_path.is_file():
             return None
-        with self._connect() as connection:
+        with self._read_connection() as connection:
             row = connection.execute(
                 "SELECT * FROM bt_evaluations WHERE id=?", (evaluation_id,)
             ).fetchone()
@@ -337,7 +367,7 @@ class BTStore:
     def history(self, owner_id: str) -> list[dict[str, Any]]:
         if not self.meta_path.is_file():
             return []
-        with self._connect() as connection:
+        with self._read_connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM bt_evaluations WHERE owner_id=? "
                 "ORDER BY created_at DESC,id",
@@ -400,6 +430,9 @@ class BTStore:
 
     def read_reference(self, reference: Mapping[str, Any]) -> pl.DataFrame:
         """Verify bytes and logical identity before decoding an opaque table ref."""
+        if self._verification is None:
+            with self.read_context() as reader:
+                return reader.read_reference(reference)
         self.verify_reference(reference)
         path = self._table_path(str(reference.get("table_id", "")))
         frame = pl.read_parquet(_path(path))
@@ -407,6 +440,7 @@ class BTStore:
             raise ValueError("BT table logical identity differs")
         if frame.height != reference.get("rows"):
             raise ValueError("BT table row count differs")
+        self.verify_reference(reference)
         return frame
 
     def verify_reference(
@@ -424,8 +458,13 @@ class BTStore:
             or reference["rows"] < 0
         ):
             raise ValueError("BT table row count is invalid")
-        if not path.is_file() or _file_hash(path) != reference.get("checksum"):
+        if not path.is_file():
             raise ValueError("corrupt or missing BT artifact")
+        verification = self._verification or ArtifactVerification()
+        verification.verify(
+            path, str(reference.get("checksum")),
+            receipt=str(reference.get("table_id")), checksum=_file_hash,
+        )
         if deep:
             self.read_reference(reference)
 
@@ -450,7 +489,7 @@ class BTStore:
             query += " AND input_identity=?"
             arguments.append(input_identity)
         query += " ORDER BY created_at DESC,receipt_identity LIMIT 1"
-        with self._connect() as connection:
+        with self._read_connection() as connection:
             row = connection.execute(query, arguments).fetchone()
         return (
             None
@@ -579,10 +618,13 @@ class BTStore:
             )
         return receipt
 
-    def chapter(self, evaluation_id: str, section: str) -> dict[str, Any]:
+    def chapter(
+        self, evaluation_id: str, section: str, *, verify: bool = True
+    ) -> dict[str, Any]:
+        """Read published status; optional full verification includes all tables."""
         if not self.meta_path.is_file():
             return {"status": "missing", "section": section}
-        with self._connect() as connection:
+        with self._read_connection() as connection:
             row = connection.execute(
                 "SELECT * FROM bt_chapters WHERE evaluation_id=? AND section=?",
                 (evaluation_id, section),
@@ -604,7 +646,8 @@ class BTStore:
                     "section": section,
                     "reason": row["invalid_reason"],
                 }
-            self.verify_receipt(receipt)
+            if verify:
+                self.verify_receipt(receipt)
         except (ValueError, OSError, pl.exceptions.PolarsError):
             return {
                 "status": "invalid",
@@ -693,7 +736,10 @@ class BTStore:
         *,
         names: Sequence[str] | None = None,
     ) -> tuple[dict[str, Any], dict[str, pl.DataFrame]]:
-        receipt = self.chapter(evaluation_id, section)
+        if self._verification is None:
+            with self.read_context() as reader:
+                return reader.read_chapter(evaluation_id, section, names=names)
+        receipt = self.chapter(evaluation_id, section, verify=False)
         if receipt["status"] != "ready":
             raise ValueError(
                 f"BT chapter unavailable: {receipt.get('reason', receipt['status'])}"
@@ -743,7 +789,7 @@ class BTStore:
         """Return committed receipts and opaque references without backend paths."""
         if not self.meta_path.is_file():
             return {"evaluations": [], "chapters": [], "shared": [], "tables": []}
-        with self._connect() as connection:
+        with self._read_connection() as connection:
             evaluations = [
                 _decode_record(
                     row,
@@ -799,7 +845,7 @@ class BTStore:
         tables = {}
         if not self.meta_path.is_file():
             return {"status": "complete", "tables": 0, "issues": []}
-        with self._connect() as connection:
+        with self._read_connection() as connection:
             for table, schema in (
                 ("bt_evaluations", "bt.evaluation.v1"),
                 ("bt_chapters", "bt.chapter.v1"),

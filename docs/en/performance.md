@@ -35,3 +35,5 @@ a hard allocation limit. `EvaluationResult.execution` reports requested/actual
 workers and byte estimates. These values are execution evidence only and must
 not enter numerical metrics or result identity. Callers use either outer target
 parallelism or inner window parallelism to avoid nested pools.
+
+Chapter inventory can use metadata-only receipts instead of opening every saved period. Selected-table reads hash each distinct selected file once per finite context, then recheck its identity after decoding. Repeated selected reads share proofs; unrelated period/table corruption remains visible to full audits and reads consuming it. Evaluation formulas, causal execution and result identity are unchanged.

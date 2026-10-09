@@ -77,3 +77,5 @@ metadata, initializing schemas, recovering storage or accepting uncommitted
 changes. Normal WAL read-mark coordination may touch SHM; durable payloads stay
 unchanged. The default `runtime=False` retains strict offline inspection and
 source/sidecar preservation for setup and installation.
+
+BTStore metadata APIs use query-only committed transactions; explicit initialization enables WAL. `chapter(..., verify=False)` checks receipt identity without artifact hashes; the default remains a full chapter verification. `read_chapter(names=...)` verifies only selected tables, including byte checksum, logical identity and row count. A finite `read_context` reuses Core-owned file proofs, rechecks file identity after decoding and expires on exit. Unselected corruption is deferred to consumption or explicit full `verify`; publication still validates all tables.

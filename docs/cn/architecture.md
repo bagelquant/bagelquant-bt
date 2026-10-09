@@ -17,3 +17,7 @@ lot/mark snapshot 和成熟事件，由 summarize_transaction_pnl 聚合，不�
 
 Workbench 拥有全局调度、资源策略、中国市场声明、研究/治理与 GUI。
 BT 接受明确的本地 workers/预算，不探测机器。真实服务/数据切换需另行授权。
+
+## Receipt 检查与选择性读取
+
+BTStore 拥有章节 receipt 和 table 完整性。`chapter(..., verify=False)` 检查已提交元数据身份，默认 `verify=True` 审计整个章节。`read_chapter(names=...)` 只校验选中的 table，同时保留逻辑身份和行数检查；发布与显式 `verify` 仍为全量校验。`read_context` 使用 Core 的有限文件证明，退出即失效，不引入第二个存储权威。显式初始化启用 WAL，元数据查询使用已提交只读事务。
