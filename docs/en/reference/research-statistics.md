@@ -22,3 +22,9 @@ execution-day observations are excluded. Nonnegative known zero is valid;
 missing/negative/nonfinite coverage or a zero denominator is unavailable. This
 is diagnostic capacity, not a fill limit. `execution_stress_scenarios` supplies
 nine native-rule one-factor cases with independent accounts.
+
+## Effective sample and downside risk
+
+`evaluation_sample(frames, start=..., end=..., minimum_history_years=None)` reports requested/effective dates, first signal/economic dates, observation counts, leading exclusions, missingness and warnings. Signal coverage is authoritative when supplied; otherwise finite saved economic observations set the start after maturity filtering. Zero returns are valid. Subsequent gaps stay in the calendar. Calendar-history thresholds are caller policy.
+
+`return_statistics` also exposes `expected_shortfall_95` (gross/net prefixes when available). It is minus the average of the worst `ceil(0.05*N)` finite returns, with at least 20 observations, not an annualized quantity. An entirely profitable sample can produce a negative ES, correctly reflecting gains in that empirical tail. Undefined metrics retain a reason. Saved research-window aggregation exposes annual/recent performance, annual IC and coverage summaries; recent means cutoff year and preceding four calendar years.

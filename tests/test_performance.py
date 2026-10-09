@@ -62,7 +62,12 @@ def test_single_constant_and_complete_samples_explain_undefined_metrics():
     assert constant["annualized_volatility_reason"] is None
     assert constant["sharpe_reason"] == "sample variance is zero"
     assert constant["calmar_reason"] == "maximum drawdown is zero"
-    complete = return_metrics([-0.02, 0.01, 0.03], 252)
+    short = return_metrics([-0.02, 0.01, 0.03], 252)
+    assert short["expected_shortfall_95"] is None
+    assert short["expected_shortfall_95_reason"] == (
+        "at least 20 finite observations required"
+    )
+    complete = return_metrics([-0.02, 0.01, 0.03] * 7, 252)
     assert complete["status"] == "complete"
     assert complete["reason"] is None
     assert all(

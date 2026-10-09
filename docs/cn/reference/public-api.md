@@ -41,3 +41,5 @@ journal 会拒绝检查，零头失效的 PERSIST journal 可读；不恢复、�
 协调读取已提交 SQLite 状态，不复制活动元数据，不初始化/恢复，不接受未提交修改。
 正常 WAL 读取协调可更新 SHM 读标记；持久化数据保持不变。默认 `runtime=False`
 继续用于 setup/安装的严格离线检查，保留源文件与 sidecar 字节。
+
+`evaluation_sample` 与 `SAMPLE_POLICY` 提供保存有效样本契约；[研究统计](research-statistics.md)定义日期、缺口与经验 ES95。

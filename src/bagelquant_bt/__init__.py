@@ -117,6 +117,7 @@ from .runtime import (
     BTExecutionOptions,
     run_evaluation_batch,
 )
+from .sample import SAMPLE_POLICY, evaluation_sample
 from .statistics import (
     OneSampleTest,
     annualized_return,
@@ -138,6 +139,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "SAMPLE_POLICY",
     "SIGNAL_PERSISTENCE_HORIZONS",
     "BTExecutionOptions",
     "BTStore",
@@ -183,6 +185,7 @@ __all__ = [
     "evaluate_execution",
     "evaluate_weights",
     "evaluation_identity",
+    "evaluation_sample",
     "execution_stress_scenarios",
     "factor_return_correlation",
     "fit_risk_factor_returns",

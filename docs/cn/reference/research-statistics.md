@@ -16,3 +16,9 @@ account_fill_turnover 使用真实 notional 和 prior equity。default/custom pe
 capacity_participation 取执行日前 20 个 session 的成交金额，不含执行日。
 已知非负零值有效；缺失/负/nonfinite 或均值为零不可用。这是 capacity 诊断，
 不是成交限制。execution_stress_scenarios 提供 9 个原生单因子场景，账本独立。
+
+## 有效样本与尾部风险
+
+`evaluation_sample(frames, start=..., end=..., minimum_history_years=None)` 返回请求／有效日期、首个信号／经济日期、观测数、前导剔除、缺失率与警告。有 signal coverage 时以其为权威；否则成熟度过滤后的有限保存经济观测决定起点。零收益有效，之后缺口保留，最低日历年要求由调用方明确提供。
+
+`return_statistics` 增加 `expected_shortfall_95`（有相应输入时带 gross/net 前缀）：最差 `ceil(0.05*N)` 个有限收益的均值取负，至少 20 个观测，不年化。全部盈利样本可以得到负 ES，表示经验尾部仍为盈利。不可定义指标保留原因。保存研究窗口聚合同时提供年度／近期收益、年度 IC 和覆盖汇总；近期为截止年及之前四个日历年。

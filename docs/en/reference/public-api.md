@@ -58,3 +58,5 @@ metadata, initializing schemas, recovering storage or accepting uncommitted
 changes. Normal WAL read-mark coordination may touch SHM; durable payloads stay
 unchanged. The default `runtime=False` retains strict offline inspection and
 source/sidecar preservation for setup and installation.
+
+`evaluation_sample` and `SAMPLE_POLICY` expose the saved effective-sample contract; [research statistics](research-statistics.md) defines dates, gaps and empirical ES95.

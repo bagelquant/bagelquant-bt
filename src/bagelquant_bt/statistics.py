@@ -58,6 +58,7 @@ def return_metrics(
         "max_drawdown",
         "calmar",
         "hit_rate",
+        "expected_shortfall_95",
     )
     result: dict[str, float | int | str | None] = dict.fromkeys(
         (*names, *(f"{name}_reason" for name in names))
@@ -69,6 +70,13 @@ def return_metrics(
         )
         result.update(status="unavailable", reason="no finite return observations")
         return result
+    if count < 20:
+        result["expected_shortfall_95_reason"] = (
+            "at least 20 finite observations required"
+        )
+    else:
+        tail_count = math.ceil(count * 0.05)
+        result["expected_shortfall_95"] = -float(np.sort(finite)[:tail_count].mean())
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         wealth = np.cumprod(1.0 + finite)
         deviation = float(finite.std(ddof=1)) if count > 1 else None

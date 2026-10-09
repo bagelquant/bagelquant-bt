@@ -40,3 +40,5 @@ unrun checks, affected consumers and remaining migration gaps honestly.
 
 Alpha horizon windows also accept this explicit budget through `evaluate_alpha`
 options; execution evidence stays separate from numerical metrics and identity.
+
+`evaluation_sample` supplies neutral effective dates/counts/missingness from saved signal/economic observations; callers supply minimum calendar-history policy. Leading unavailable history is excluded, genuine zero returns and subsequent gaps retained. Return statistics expose empirical daily ES95 with explicit sample requirements.
