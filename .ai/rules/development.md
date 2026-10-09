@@ -15,8 +15,9 @@ Workbench owns app/global-version bindings, governance and backend references;
 it uses public APIs rather than BT tables/files or duplicate numerical caches.
 Core owns graphs/numerical/model artifacts; Data owns source datasets/PIT/input
 proofs. BT depends only on Core and never fetches providers or imports Data or
-Workbench. Stage 5 may clean other Workbench concerns. Database/service cutover
-is stage 6 and remains separately authorized.
+Workbench. Stage 5 implements thin Workbench composition. Stage 6 installs
+services in Setup mode and initializes fresh stores only on explicit completion.
+Live database/service operations remain subject to the current authorization.
 
 ## Engineering and validation
 

@@ -13,7 +13,8 @@ signal/policy/account runners have no compatibility path. Core owns numerical
 values/graphs/model evidence; Data owns datasets/PIT/frozen inputs; Workbench
 composes public APIs and retains China semantics, governance, app relationships,
 backend references and global scheduler policy. Broader Workbench cleanup is
-stage 5; real database/service cutover is stage 6 with separate authorization.
+stage 5. Stage 6 provides setup-aware service installation and explicit fresh
+initialization; live operations still require authorization for the current task.
 
 Workspace discovery and standalone fallback are in [AGENTS](../AGENTS.md).
 Versioned rules and source travel through Git; ignored full-task records remain
