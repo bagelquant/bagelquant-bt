@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any
 
@@ -40,16 +40,18 @@ from .portfolio_mechanics import (
     session_calendar,
     simulate_weight_returns,
 )
+from .runtime import BTExecutionOptions, run_evaluation_batch
 from .statistics import return_statistics
 
 
 @dataclass(frozen=True, slots=True)
 class EvaluationResult:
-    """Numerical tables and metrics, with an optional resumable weight state."""
+    """Tables/metrics, optional weight state and identity-neutral execution evidence."""
 
     tables: dict[str, pl.DataFrame]
     metrics: dict[str, Any]
     checkpoint: WeightStateCheckpoint | None = None
+    execution: dict[str, Any] = field(default_factory=dict)
 
 
 def _lags(values: Sequence[int], *, negative: bool = False) -> tuple[int, ...]:
@@ -443,6 +445,89 @@ def _path_frames(
     )
 
 
+def _alpha_window_frames(
+    window: SessionWindow,
+    *,
+    factor: pl.DataFrame,
+    labels: pl.DataFrame,
+    sessions: pl.DataFrame,
+    book: pl.DataFrame,
+    tail: pl.DataFrame,
+    quantiles: int,
+    factor_standardization: str,
+    check_canceled: Callable[[], None],
+) -> dict[str, pl.DataFrame]:
+    """Compute one window with private frames and shared read-only inputs."""
+    check_canceled()
+    window_labels, coverage = _window_labels(factor, labels, sessions, window)
+    check_canceled()
+    ic = window_information_coefficients(factor, window_labels)
+    check_canceled()
+    quantile_returns = window_quantile_forward_returns(
+        factor, window_labels, quantiles=quantiles
+    )
+    check_canceled()
+    frames = {
+        "coverage": coverage,
+        "ic": ic,
+        "book_returns": window_book_returns(book, window_labels),
+        "tail_returns": window_tail_returns(tail, window_labels),
+        "quantile_forward_returns": quantile_returns,
+        "quantile_structure": quantile_curve_structure(
+            quantile_returns, quantiles=quantiles
+        ),
+        "factor_returns": window_factor_returns(
+            factor, window_labels, standardization=factor_standardization
+        ),
+    }
+    check_canceled()
+    availability = window_labels.select(*_GROUP_COLUMNS, "available_date").unique()
+    for family, frame in frames.items():
+        if family != "coverage":
+            frames[family] = frame.join(
+                availability,
+                on=list(_GROUP_COLUMNS),
+                how="left",
+                maintain_order="left",
+            )
+    check_canceled()
+    return frames
+
+
+def _alpha_window_execution(
+    options: BTExecutionOptions | None,
+    windows: Sequence[SessionWindow],
+    factor: pl.DataFrame,
+    labels: pl.DataFrame,
+    sessions: pl.DataFrame,
+    book: pl.DataFrame,
+    tail: pl.DataFrame,
+) -> tuple[BTExecutionOptions, dict[str, int]]:
+    """Reduce caller workers using conservative workspace estimates only."""
+    selected = options or BTExecutionOptions()
+    budget = selected.limits.memory_target_mib * 1024 * 1024
+    shared = sum(
+        frame.estimated_size() for frame in (factor, labels, sessions, book, tail)
+    )
+    reserved = budget // 5
+    per_window = max(
+        64 * 1024 * 1024, 8 * (factor.estimated_size() + labels.estimated_size())
+    )
+    memory_workers = max(1, (budget - reserved - shared) // per_window)
+    workers = min(selected.workers, len(windows), memory_workers)
+    # Very small panels do not amortize pool admission and per-window allocation.
+    if factor.height < 1024:
+        workers = 1
+    return replace(selected, workers=workers), {
+        "requested_workers": selected.workers,
+        "actual_workers": workers,
+        "shared_bytes": shared,
+        "per_window_bytes": per_window,
+        "reserved_bytes": reserved,
+        "memory_budget_bytes": budget,
+    }
+
+
 def evaluate_alpha(
     alpha: Node,
     forward_returns: pl.DataFrame,
@@ -459,6 +544,8 @@ def evaluate_alpha(
     alpha_return_lags: Sequence[int] = DAILY_ALPHA_RETURN_LAGS,
     rolling_observations: int = 240,
     factor_standardization: str = "cross_sectional_zscore",
+    options: BTExecutionOptions | None = None,
+    progress: Callable[[int, int | None], None] | None = None,
     check_canceled: Callable[[], None] | None = None,
 ) -> EvaluationResult:
     """Evaluate saved numeric/Prediction values without upstream production.
@@ -467,6 +554,9 @@ def evaluate_alpha(
     including for cumulative/session-bucket labels; BT never inserts an
     execution lag or reconstructs returns from market prices. Requested
     diagnostics reuse the existing financial statistics and rank primitives.
+    ``options`` bounds independent horizon windows; omitted options stay serial.
+    ``progress`` reports completed/total windows on the coordinating thread.
+    ``execution`` evidence is separate from numerical metrics and identity.
     """
 
     allowed = {
@@ -489,11 +579,14 @@ def evaluate_alpha(
         raise InputValidationError("cost_rate must be finite and nonnegative")
     if isinstance(quantiles, bool) or not isinstance(quantiles, int) or quantiles < 2:
         raise InputValidationError("quantiles must be an integer of at least two")
+    cancel = check_canceled or (lambda: None)
+    cancel()
     values = node_values(alpha, kind="alpha")
     sessions = session_calendar(calendar, default=alpha.domain.times)
     labels = normalize_forward_returns(
         forward_returns, calendar=sessions, available_date=available_date
     )
+    cancel()
     if values.select("time").unique().join(sessions, on="time", how="anti").height:
         raise InputValidationError("alpha dates are absent from calendar")
     factor = values.select(
@@ -503,9 +596,9 @@ def evaluate_alpha(
         pl.col("value").alias("factor"),
     )
     tables: dict[str, pl.DataFrame] = {}
+    execution: dict[str, Any] = {}
+    cancel()
     metrics: dict[str, Any] = {"annualization": annualization, "quantiles": quantiles}
-    if check_canceled:
-        check_canceled()
     if selected & {"horizons", "persistence"}:
         lags = _lags(persistence_lags)
         if min(lags) < 1:
@@ -516,9 +609,11 @@ def evaluate_alpha(
         tables["daily_signal_autocorrelation"] = persistence
         tables["horizon_signal_persistence"] = persistence
         tables["horizon_signal_persistence_summary"] = persistence_summary
+    cancel()
     book = tail = None
     if selected - {"persistence"}:
         book = centered_rank_book_weights(factor)
+        cancel()
         tail = gross_one_tail_weights(factor, quantiles=quantiles)
     if selected & {"horizons", "rolling_ic"}:
         resolved_windows = tuple(windows)
@@ -530,56 +625,41 @@ def evaluate_alpha(
             {(window.window_kind, window.window_id) for window in resolved_windows}
         ) != len(resolved_windows):
             raise InputValidationError("window identities must be unique")
-        families: dict[str, list[pl.DataFrame]] = {
-            name: []
-            for name in (
-                "coverage",
-                "ic",
-                "book_returns",
-                "tail_returns",
-                "quantile_forward_returns",
-                "quantile_structure",
-                "factor_returns",
-            )
+        assert book is not None and tail is not None
+        window_options, execution = _alpha_window_execution(
+            options, resolved_windows, factor, labels, sessions, book, tail
+        )
+        if progress:
+            progress(0, len(resolved_windows))
+        window_frames = run_evaluation_batch(
+            resolved_windows,
+            lambda window: _alpha_window_frames(
+                window,
+                factor=factor,
+                labels=labels,
+                sessions=sessions,
+                book=book,
+                tail=tail,
+                quantiles=quantiles,
+                factor_standardization=factor_standardization,
+                check_canceled=cancel,
+            ),
+            options=window_options,
+            check_canceled=cancel,
+            progress=progress or (lambda *_: None),
+        )
+        cancel()
+        families = {
+            name: [frames[name] for frames in window_frames]
+            for name in window_frames[0]
         }
-        for window in resolved_windows:
-            if check_canceled:
-                check_canceled()
-            window_labels, coverage = _window_labels(factor, labels, sessions, window)
-            ic = window_information_coefficients(factor, window_labels)
-            quantile_returns = window_quantile_forward_returns(
-                factor, window_labels, quantiles=quantiles
-            )
-            families["coverage"].append(coverage)
-            families["ic"].append(ic)
-            families["book_returns"].append(window_book_returns(book, window_labels))
-            families["tail_returns"].append(window_tail_returns(tail, window_labels))
-            families["quantile_forward_returns"].append(quantile_returns)
-            families["quantile_structure"].append(
-                quantile_curve_structure(quantile_returns, quantiles=quantiles)
-            )
-            families["factor_returns"].append(
-                window_factor_returns(
-                    factor, window_labels, standardization=factor_standardization
-                )
-            )
-            availability = window_labels.select(
-                *_GROUP_COLUMNS, "available_date"
-            ).unique()
-            for family in families:
-                if family != "coverage":
-                    families[family][-1] = families[family][-1].join(
-                        availability,
-                        on=list(_GROUP_COLUMNS),
-                        how="left",
-                        maintain_order="left",
-                    )
         for name, frames in families.items():
             tables[f"horizon_{name}"] = pl.concat(frames, how="diagonal_relaxed")
             if "execution_date" in tables[f"horizon_{name}"].columns:
                 tables[f"horizon_{name}"] = tables[f"horizon_{name}"].with_columns(
                     pl.col("execution_date").alias("target_start_date")
                 )
+        cancel()
         tables["horizon_ic_summary"] = summarize_window_ic(
             tables["horizon_ic"], annualization_sessions=annualization
         )
@@ -594,6 +674,7 @@ def evaluate_alpha(
             how="left",
             maintain_order="left",
         )
+        cancel()
         tables["horizon_statistical_inference"] = build_statistical_inference(
             ic=tables["horizon_ic"],
             book_returns=tables["horizon_book_returns"],
@@ -611,6 +692,7 @@ def evaluate_alpha(
         )
         metrics["ic"] = tables["horizon_ic_summary"].to_dicts()
         if "rolling_ic" in selected:
+            cancel()
             tables["daily_rolling_ic"] = rolling_window_information_coefficients(
                 tables["horizon_ic"], observations=rolling_observations
             )
@@ -626,6 +708,7 @@ def evaluate_alpha(
                 how="left",
                 maintain_order="left",
             )
+    cancel()
     if selected & {"book_tail", "turnover", "lead_lag", "alpha_return", "quantiles"}:
         assert book is not None and tail is not None
         book_values = book.filter(pl.col("book_weight").is_not_null()).select(
@@ -715,7 +798,8 @@ def evaluate_alpha(
                     )
                 )
             tables["daily_quantile_returns"] = pl.concat(frames)
-    return EvaluationResult(tables, metrics)
+    cancel()
+    return EvaluationResult(tables, metrics, execution=execution)
 
 
 __all__ = [

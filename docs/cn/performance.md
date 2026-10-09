@@ -10,3 +10,14 @@ run_evaluation_batch 限制独立任务在途数量、分配共享预算、保�
 独立场景可共享只读输入，但不得共享现金/持仓/checkpoint。
 先查已校验缓存，再准备市场数据。历史窗口只聚合保存的 primitives/快照，
 不会重建上游或重新执行账户。测试使用合成输入与独立临时根。
+
+`evaluate_alpha(..., options=..., progress=...)` 复用同一个有界池并行独立
+horizon 窗口。factor、labels、Book/Spread 只准备一次，各窗口私有结果按声明
+顺序合并，再统一做推断。未提供 options 或 factor 不满 1024 行时保持串行。
+progress 在调用线程报告 `(已完成窗口数, 总窗口数)`，从零开始；窗口阶段与
+汇总之间检查取消。调用方只能选择外层对象并行或内层窗口并行，避免嵌套池。
+
+并发估计预留调用方内存预算的 20% 加共享 frame 的 estimated_size；每窗口
+工作区取 64 MiB 与 factor+labels 大小的 8 倍中的较大值，据此减少 workers，
+最少为 1。这是保守接纳估计，不是硬内存分配限制。`EvaluationResult.execution`
+报告请求/实际 workers 与各字节估计，属于执行证据，不得加入数值 metrics/身份。

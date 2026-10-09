@@ -32,3 +32,12 @@
 临时副本，检查后删除，不改变原目录、数据库或 WAL/SHM。活动/hot rollback
 journal 会拒绝检查，零头失效的 PERSIST journal 可读；不恢复、不覆盖历史
 证据；空存储只能通过显式 `initialize()` 创建。
+
+`evaluate_alpha` 还接受 `options: BTExecutionOptions | None` 和
+`progress: Callable[[int, int | None], None] | None`，在调用方预算内并行 horizon。
+`EvaluationResult.execution` 的执行估计独立于 tables/metrics，不得加入评估身份。
+
+`BTStore.inspect(runtime=True)` 为明确的活动服务就绪检查，通过 Core 的只读事务
+协调读取已提交 SQLite 状态，不复制活动元数据，不初始化/恢复，不接受未提交修改。
+正常 WAL 读取协调可更新 SHM 读标记；持久化数据保持不变。默认 `runtime=False`
+继续用于 setup/安装的严格离线检查，保留源文件与 sidecar 字节。

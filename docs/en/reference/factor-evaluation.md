@@ -21,3 +21,9 @@ anchor. Stable asset ordering resolves ties. Lag tests use caller-declared
 calendar shifts; diagnostic negative lags are labelled research diagnostics,
 never an executable plan. Shared functions compute rolling IC, persistence,
 HAC/BH inference and risk/comparisons; applications do not copy those formulas.
+
+Explicit `options: BTExecutionOptions | None` and `progress(completed, total)`
+allow independent horizon windows to use caller-bounded parallel execution.
+Defaults stay serial; outputs retain window order, numerical formulas and
+availability. `EvaluationResult.execution` exposes worker/memory estimates
+separately from tables and metrics. See [resources](../performance.md).

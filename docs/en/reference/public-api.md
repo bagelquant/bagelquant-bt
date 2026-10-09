@@ -46,3 +46,15 @@ unchanged. Active/hot rollback journals are refused without recovery;
 invalidated zero-header PERSIST journals remain readable. It never recovers or
 overwrites evidence.
 Initialize empty stores only through explicit `initialize()`.
+
+`evaluate_alpha` additionally accepts `options: BTExecutionOptions | None` and
+`progress: Callable[[int, int | None], None] | None` for bounded horizon workers.
+`EvaluationResult.execution` carries execution-only estimates independently of
+numerical tables/metrics; never include it in evaluation identity.
+
+`BTStore.inspect(runtime=True)` is the explicit active-service readiness mode.
+It uses Core's coordinated read-only committed SQLite view without copying live
+metadata, initializing schemas, recovering storage or accepting uncommitted
+changes. Normal WAL read-mark coordination may touch SHM; durable payloads stay
+unchanged. The default `runtime=False` retains strict offline inspection and
+source/sidecar preservation for setup and installation.

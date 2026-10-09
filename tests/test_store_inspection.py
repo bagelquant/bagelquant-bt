@@ -59,12 +59,14 @@ def test_checkpointed_wal_inspection_creates_no_sidecars(tmp_path, version):
         connection.commit()
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     before = {
-        path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()
+        path.name: path.read_bytes()
+            for path in tmp_path.iterdir() if path.is_file()
     }
     assert set(before) == {"meta.sqlite"}
     assert store.inspect()["status"] == ("ready" if version == 1 else "incompatible")
     assert {
-        path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()
+        path.name: path.read_bytes()
+            for path in tmp_path.iterdir() if path.is_file()
     } == before
 
 
@@ -133,3 +135,81 @@ def test_active_rollback_journal_never_confers_uncommitted_readiness(
         assert store.inspect()["status"] == (
             "ready" if committed_version == 1 else "incompatible"
         )
+
+
+@pytest.mark.parametrize("committed_version", [1, 2])
+def test_runtime_inspection_reads_committed_schema_during_rollback_writer(
+    tmp_path, committed_version, monkeypatch
+):
+    store = BTStore(tmp_path / "meta.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    with closing(sqlite3.connect(store.meta_path)) as writer:
+        writer.execute("UPDATE bt_store_schema SET version=?", (committed_version,))
+        writer.commit()
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE bt_store_schema SET version=?", (3 - committed_version,))
+        before = {
+            path.name: path.read_bytes()
+            for path in tmp_path.iterdir() if path.is_file()
+        }
+
+        def no_copy(*args, **kwargs):
+            raise AssertionError("runtime inspection must not copy active metadata")
+
+        monkeypatch.setattr("bagelquant_core.inspection.shutil.copyfile", no_copy)
+        result = store.inspect(runtime=True)
+        assert result["status"] == (
+            "ready" if committed_version == 1 else "incompatible"
+        )
+        assert result["schema_version"] == committed_version
+        assert writer.in_transaction
+        assert writer.execute("SELECT version FROM bt_store_schema").fetchone()[0] == (
+            3 - committed_version
+        )
+        assert {
+            path.name: path.read_bytes()
+            for path in tmp_path.iterdir() if path.is_file()
+        } == before
+        writer.rollback()
+
+
+@pytest.mark.parametrize("committed_version", [1, 2])
+def test_runtime_wal_inspection_reads_committed_schema_without_copy_or_recovery(
+    tmp_path, committed_version, monkeypatch
+):
+    store = BTStore(tmp_path / "meta.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    with closing(sqlite3.connect(store.meta_path)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("UPDATE bt_store_schema SET version=?", (committed_version,))
+        writer.commit()
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE bt_store_schema SET version=?", (3 - committed_version,))
+        # Runtime SQLite may coordinate WAL read marks in SHM; durable database
+        # and WAL payload bytes must remain unchanged and uncommitted invisible.
+        before = {
+            path.name: path.read_bytes() for path in tmp_path.iterdir()
+            if path.is_file() and not path.name.endswith("-shm")
+        }
+
+        def no_copy(*args, **kwargs):
+            raise AssertionError("runtime inspection must not copy active WAL")
+
+        monkeypatch.setattr("bagelquant_core.inspection.shutil.copyfile", no_copy)
+        result = store.inspect(runtime=True)
+        assert result["status"] == (
+            "ready" if committed_version == 1 else "incompatible"
+        )
+        assert result["schema_version"] == committed_version
+        assert writer.in_transaction
+        assert {
+            path.name: path.read_bytes() for path in tmp_path.iterdir()
+            if path.is_file() and not path.name.endswith("-shm")
+        } == before
+        writer.rollback()
+
+
+def test_runtime_inspection_missing_store_never_initializes(tmp_path):
+    store = BTStore(tmp_path / "missing" / "meta.sqlite", tmp_path / "artifacts")
+    assert store.inspect(runtime=True)["status"] == "uninitialized"
+    assert list(tmp_path.iterdir()) == []

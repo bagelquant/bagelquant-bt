@@ -34,3 +34,6 @@ component task store.
 
 Validate with `uv run ruff check .` and `uv run pytest`; report actual results,
 unrun checks, affected consumers and remaining migration gaps honestly.
+
+Alpha horizon windows also accept this explicit budget through `evaluate_alpha`
+options; execution evidence stays separate from numerical metrics and identity.

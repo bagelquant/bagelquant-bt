@@ -19,3 +19,19 @@ lot snapshot; they never rebuild values or replay execution.
 Tests use synthetic inputs and isolated roots. Broad benchmarks must preserve
 causal, deterministic and typed numerical contracts and report actual measured
 limits; runtime pressure never changes mathematics.
+
+`evaluate_alpha(..., options=..., progress=...)` runs independent horizon
+windows through that same pool. It prepares factor, labels, Book and Spread once,
+then merges private window outputs in declared order before global inference.
+Omitted options and panels with fewer than 1024 factor rows remain serial.
+Progress reports `(completed, total)` windows, starting at zero, on the caller
+thread. Cancellation checks also run between window stages and summaries.
+
+Worker admission reserves 20% of the caller memory budget plus the estimated
+size of shared frames. Each window estimates at least 64 MiB or eight times
+factor-plus-label bytes, whichever is larger. This reduces requested concurrency
+to fit the estimate, with one worker as the minimum; these estimates are not
+a hard allocation limit. `EvaluationResult.execution` reports requested/actual
+workers and byte estimates. These values are execution evidence only and must
+not enter numerical metrics or result identity. Callers use either outer target
+parallelism or inner window parallelism to avoid nested pools.

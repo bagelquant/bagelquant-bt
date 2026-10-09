@@ -13,3 +13,8 @@ Book 为居中平均排名并将绝对权重归一到 1；Spread 上/下尾各 +
 报告覆盖率；IC/完整 quantile 严格处理。不得根据未来收益可用性重新选股/归一。
 稀疏 calendar 不压缩窗口。调仓用最新因果整体截面，资产顺序/排名 ties 确定。
 负 lag 是明确的研究诊断，不可当执行计划。
+
+显式 `options: BTExecutionOptions | None` 与 `progress(完成数, 总数)` 支持
+调用方预算内的独立 horizon 窗口并行。默认串行，保持窗口顺序、公式与成熟日期。
+`EvaluationResult.execution` 单独提供 worker/内存估计，不改变 tables/metrics
+或数值身份。详见[资源](../performance.md)。

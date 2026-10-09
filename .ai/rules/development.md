@@ -63,3 +63,17 @@ Transient metadata copies are system-temporary, removed after inspection and
 never contain BT numerical artifacts or become an additional authority.
 Refuse active/hot rollback journals without recovery or reading uncommitted
 schema pages; invalidated zero-header PERSIST journals remain readable.
+
+`evaluate_alpha(options=..., progress=...)` uses the same bounded batch executor
+for independent horizon windows. Shared prepared frames are read-only; each
+worker owns its output. Conservative shared/workspace estimates reduce requested
+workers, and small panels stay serial. `EvaluationResult.execution` reports
+actual workers and estimates outside numerical metrics/identity. Callers select
+outer target parallelism or inner window parallelism, never nested pools.
+
+`BTStore.inspect(runtime=True)` is the explicit active-service readiness mode.
+It uses Core's coordinated read-only committed SQLite view without copying live
+metadata, initializing schemas, recovering storage or accepting uncommitted
+changes. Normal WAL read-mark coordination may touch SHM; durable payloads stay
+unchanged. The default `runtime=False` retains strict offline inspection and
+source/sidecar preservation for setup and installation.

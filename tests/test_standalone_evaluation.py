@@ -6,6 +6,7 @@ import numpy as np
 import polars as pl
 import pytest
 from bagelquant_core import Domain, Node
+from bagelquant_core.resources import ResourceLimits
 from polars.testing import assert_frame_equal
 
 from bagelquant_bt.evaluation import (
@@ -17,6 +18,7 @@ from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.horizon import SessionWindow
 from bagelquant_bt.periods import slice_primitives
 from bagelquant_bt.portfolio_mechanics import build_alpha_weights
+from bagelquant_bt.runtime import BTExecutionOptions
 
 
 def _node(values, *, value_type="numeric", calendar=None):
@@ -613,3 +615,184 @@ def test_stability_segments_enforce_economic_and_knowledge_dates():
     )
     with pytest.raises(ValueError, match="require target_end_date and available_date"):
         stability_tables(diagnostics(ic.drop("available_date")), periods=periods)
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_alpha_parallel_windows_preserve_all_tables_metrics_and_availability(sparse):
+    values = {
+        day: {f"a{asset:03}": float((asset + index) % 17) for asset in range(160)}
+        for index, day in enumerate(DATES)
+    }
+    returns = {
+        day: {
+            asset: (None if sparse and asset == "a004" else (value - 8) / 1000)
+            for asset, value in cross.items()
+            if not (sparse and index == 2 and asset == "a003")
+        }
+        for index, (day, cross) in enumerate(values.items())
+    }
+    alpha = _node(values)
+    labels = _labels(returns, immature=(DATES[-1],) if sparse else ())
+    settings = dict(
+        quantiles=2,
+        windows=(
+            SessionWindow("bucket", "2-3D", 2, 3),
+            SessionWindow("cumulative", "1D", 1, 1),
+            SessionWindow("cumulative", "2D", 1, 2),
+        ),
+        persistence_lags=(1, 2),
+        lead_lags=(-1, 0, 1),
+        alpha_return_lags=(0, 1),
+        rolling_observations=2,
+        available_date=DATES[-1] + timedelta(days=3),
+    )
+    serial = evaluate_alpha(alpha, labels, **settings)
+    progress = []
+    parallel = evaluate_alpha(
+        alpha,
+        labels,
+        **settings,
+        options=BTExecutionOptions(
+            workers=3,
+            limits=ResourceLimits(total_threads=3, lightgbm_threads=1),
+        ),
+        progress=lambda done, total: progress.append((done, total)),
+    )
+    assert parallel.execution["actual_workers"] == 3
+    assert serial.execution["actual_workers"] == 1
+    assert progress == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert parallel.tables.keys() == serial.tables.keys()
+    for name, table in serial.tables.items():
+        assert_frame_equal(parallel.tables[name], table)
+    assert parallel.metrics == serial.metrics
+    assert parallel.tables["horizon_ic"]["window_id"].unique(
+        maintain_order=True
+    ).to_list() == ["2-3D", "1D", "2D"]
+
+
+@pytest.mark.parametrize("memory_mib, expected_workers", [(100, 1), (180, 2)])
+def test_alpha_windows_respect_memory_ceiling_and_small_panel_serial_default(
+    memory_mib, expected_workers
+):
+    windows = tuple(SessionWindow("cumulative", f"{i}D", 1, i) for i in (1, 2, 3))
+    values = {day: {f"a{i}": float(i) for i in range(160)} for day in DATES}
+    options = BTExecutionOptions(
+        workers=3,
+        limits=ResourceLimits(
+            total_threads=3, memory_target_mib=memory_mib, cache_mib=0
+        ),
+    )
+    result = evaluate_alpha(
+        _node(values),
+        _labels({day: {a: v / 10000 for a, v in cross.items()}
+                 for day, cross in values.items()}),
+        components=("rolling_ic",),
+        windows=windows,
+        quantiles=2,
+        rolling_observations=2,
+        options=options,
+    )
+    assert result.execution["actual_workers"] == expected_workers
+    assert (
+        result.execution["shared_bytes"]
+        + result.execution["reserved_bytes"]
+        + result.execution["actual_workers"] * result.execution["per_window_bytes"]
+        <= result.execution["memory_budget_bytes"]
+    )
+    small = evaluate_alpha(
+        _node({DATES[0]: {"a": 1.0, "b": 2.0}}),
+        _labels({DATES[0]: {"a": 0.01, "b": 0.02}}),
+        components=("rolling_ic",),
+        windows=windows,
+        quantiles=2,
+        options=BTExecutionOptions(workers=3, limits=ResourceLimits(total_threads=3)),
+    )
+    assert small.execution["actual_workers"] == 1
+
+
+def test_alpha_window_cancel_stops_later_admission_and_summary(monkeypatch):
+    import bagelquant_bt.evaluation as evaluation
+
+    visited = []
+    original = evaluation._alpha_window_frames
+
+    def window_frame(window, **kwargs):
+        visited.append(window.window_id)
+        return original(window, **kwargs)
+
+    def cancel():
+        if len(visited) == 1:
+            raise InterruptedError("cancel window")
+
+    def summary(*args, **kwargs):
+        raise AssertionError("must not summarize canceled windows")
+
+    monkeypatch.setattr(evaluation, "_alpha_window_frames", window_frame)
+    monkeypatch.setattr(evaluation, "summarize_window_ic", summary)
+    with pytest.raises(InterruptedError, match="cancel window"):
+        evaluate_alpha(
+            _node({DATES[0]: {"a": 1.0, "b": 2.0}}),
+            _labels({DATES[0]: {"a": 0.01, "b": 0.02}}),
+            components=("rolling_ic",),
+            windows=(
+                SessionWindow("cumulative", "1D", 1, 1),
+                SessionWindow("cumulative", "2D", 1, 2),
+            ),
+            quantiles=2,
+            check_canceled=cancel,
+        )
+    assert visited == ["1D"]
+
+
+@pytest.mark.parametrize("failure", ["cancel", "window"])
+def test_alpha_parallel_failure_never_builds_global_summary(monkeypatch, failure):
+    from threading import Event
+
+    import bagelquant_bt.evaluation as evaluation
+
+    canceled = Event()
+    original = evaluation._window_labels
+    progress = []
+
+    def labels_for_window(factor, labels, sessions, window):
+        if failure == "window" and window.window_id == "2D":
+            raise ValueError("failed window")
+        return original(factor, labels, sessions, window)
+
+    def check_canceled():
+        if canceled.is_set():
+            raise InterruptedError("canceled parallel evaluation")
+
+    def report_progress(done, total):
+        progress.append((done, total))
+        if failure == "cancel" and done == 1:
+            canceled.set()
+
+    def summary(*args, **kwargs):
+        raise AssertionError("failed evaluation must not build global summary")
+
+    monkeypatch.setattr(evaluation, "_window_labels", labels_for_window)
+    monkeypatch.setattr(evaluation, "summarize_window_ic", summary)
+    values = {day: {f"a{i}": float(i) for i in range(160)} for day in DATES}
+    returns = {day: {a: v / 10000 for a, v in cross.items()}
+               for day, cross in values.items()}
+    with pytest.raises(
+        InterruptedError if failure == "cancel" else ValueError,
+        match="canceled parallel" if failure == "cancel" else "failed window",
+    ):
+        evaluate_alpha(
+            _node(values),
+            _labels(returns),
+            components=("rolling_ic",),
+            windows=tuple(
+                SessionWindow("cumulative", f"{i}D", 1, i) for i in (1, 2, 3)
+            ),
+            quantiles=2,
+            options=BTExecutionOptions(
+                workers=2, limits=ResourceLimits(total_threads=2)
+            ),
+            check_canceled=check_canceled,
+            progress=report_progress,
+        )
+    assert progress[0] == (0, 3)
+    assert all(done < 3 for done, _ in progress)

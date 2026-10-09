@@ -54,3 +54,7 @@ aliases or migration readers. Real database/service cutover remains separately
 authorized stage 6; historical/authored evidence is preserved.
 
 Supported platforms: macOS and Linux. Windows support is retired.
+
+`evaluate_alpha(..., options=..., progress=...)` also uses this bounded executor
+for independent horizon windows, retaining declared order and numerical results.
+`EvaluationResult.execution` reports identity-neutral worker/memory estimates.

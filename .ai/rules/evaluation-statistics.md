@@ -40,3 +40,8 @@ must match full computation and revisit newly mature labels. Source changes
 invalidate the corresponding current result without rewriting historical bytes.
 Default/custom periods use public saved-window aggregation and cutoff-safe FIFO
 summaries; no account/value/model replay or missing-evidence creation on reads.
+
+Alpha horizon windows may run independently under caller execution options;
+merge frames in requested window order before global summaries, BH/HAC and
+rolling inference. Cancellation checks separate window stages and global
+aggregation. No worker mutates shared inputs or publishes artifacts.

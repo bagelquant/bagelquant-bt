@@ -161,9 +161,12 @@ class BTStore:
         self.meta_path = Path(meta_path).resolve()
         self.artifact_path = Path(artifact_path).resolve()
 
-    def inspect(self) -> dict[str, Any]:
+    def inspect(self, *, runtime: bool = False) -> dict[str, Any]:
         """Return schema readiness without initializing or recovering storage.
 
+        Offline inspection preserves source/sidecar bytes using a private copy.
+        ``runtime=True`` reads a coordinated committed SQLite transaction instead
+        of copying an actively written store. It never initializes or recovers it.
         Artifact verification remains the separate explicit ``verify`` API.
         """
         if not self.meta_path.exists():
@@ -179,7 +182,7 @@ class BTStore:
                 "reason": "metadata_not_file",
             }
         try:
-            with open_metadata_snapshot(self.meta_path) as connection:
+            with open_metadata_snapshot(self.meta_path, runtime=runtime) as connection:
                 tables = {
                     row[0]
                     for row in connection.execute(
