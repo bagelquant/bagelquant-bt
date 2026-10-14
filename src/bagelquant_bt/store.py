@@ -7,11 +7,13 @@ import json
 import os
 import sqlite3
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from copy import copy
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -154,6 +156,125 @@ def _normalize_inputs(value):
     return value
 
 
+class _FrameReadCache:
+    """Operation-local immutable frame memo, bounded by an explicit byte cap."""
+
+    def __init__(self, max_bytes):
+        self.max_bytes = max_bytes
+        self.bytes = 0
+        self.frames = OrderedDict()
+        self.lock = RLock()
+
+    def get(self, key, stamp):
+        with self.lock:
+            item = self.frames.get(key)
+            if item is None:
+                return None
+            if item[1] != stamp:
+                self.bytes -= self.frames.pop(key)[2]
+                return None
+            self.frames.move_to_end(key)
+            return item[0].clone()
+
+    def put(self, key, frame, stamp):
+        size = frame.estimated_size()
+        if size > self.max_bytes or not self.max_bytes:
+            return
+        with self.lock:
+            old = self.frames.pop(key, None)
+            if old is not None:
+                self.bytes -= old[2]
+            while self.frames and self.bytes + size > self.max_bytes:
+                _, item = self.frames.popitem(last=False)
+                self.bytes -= item[2]
+            self.frames[key] = (frame.clone(), stamp, size)
+            self.bytes += size
+
+    def close(self):
+        with self.lock:
+            self.frames.clear()
+            self.bytes = 0
+
+
+def _equal_ordered_prefix(before, current, axis):
+    """Find the first unequal complete date with one exact ordered comparison."""
+    if (
+        not before.height
+        or not before[axis].is_sorted()
+        or not current[axis].is_sorted()
+    ):
+        return None
+    common = min(before.height, current.height)
+    old_rows = before.head(common).select(pl.struct(pl.all())).to_series()
+    new_rows = current.head(common).select(pl.struct(pl.all())).to_series()
+    unequal = (~old_rows.eq_missing(new_rows)).arg_true()
+    if unequal.len():
+        position = int(unequal[0])
+        first = min(before[axis][position], current[axis][position])
+    elif before.height != current.height:
+        larger = before if before.height > common else current
+        first = larger[axis][common]
+    else:
+        return before[axis][-1]
+    prefix = before[axis].filter(before[axis] < first)
+    return prefix[-1] if prefix.len() else None
+
+
+def _table_evidence(frame, *, axes=None):
+    """Compact commutative typed row summaries, captured at publication only."""
+    from .table_composition import COORDINATES
+
+    if frame.schema.get("time") != pl.Date or not (
+        "factor_return" in frame.columns
+        or ("gross_return" in frame.columns and "asset_id" not in frame.columns)
+        or "specific_return" in frame.columns
+    ):
+        return None
+    axes = (
+        axes
+        if axes is not None
+        else [name for name in COORDINATES if name in frame.columns]
+    )
+    if len(set(axes)) != len(axes) or any(
+        name not in COORDINATES or name not in frame.columns for name in axes
+    ):
+        raise ValueError("BT summary evidence axes differ from original table columns")
+    canonical = frame.select(sorted(frame.columns))
+    rows = (
+        frame.select(axes)
+        .with_columns(
+            canonical.hash_rows(seed=0, seed_1=0, seed_2=0, seed_3=0).alias("_a"),
+            canonical.hash_rows(seed=41, seed_1=67, seed_2=97, seed_3=131).alias("_b"),
+        )
+        .group_by(axes)
+        .agg(pl.len().alias("_rows"), pl.col("_a").sum(), pl.col("_b").sum())
+        .sort(axes)
+    )
+    groups = [
+        [
+            *(str(value) if isinstance(value, date) else value for value in row[:-3]),
+            row[-3],
+            format(row[-2], "016x"),
+            format(row[-1], "016x"),
+        ]
+        for row in rows.iter_rows()
+    ]
+    factors = {}
+    if {"factor", "family"}.issubset(frame.columns):
+        for name, family, first in (
+            frame.group_by("factor", "family").agg(pl.col("time").min()).iter_rows()
+        ):
+            if name in factors and factors[name]["family"] != family:
+                return None
+            factors[name] = {"family": family, "first_seen": str(first)}
+    return {
+        "schema": "bt.reference.evidence.v1",
+        "axes": axes,
+        "groups": groups,
+        "factors": factors,
+    }
+
+
 class BTStore:
     """An explicit SQLite authority with immutable, content-addressed Parquet.
 
@@ -166,17 +287,32 @@ class BTStore:
         self.meta_path = Path(meta_path).resolve()
         self.artifact_path = Path(artifact_path).resolve()
         self._verification: ArtifactVerification | None = None
+        self._frame_cache: _FrameReadCache | None = None
 
     @contextmanager
-    def read_context(self):
-        """Share checksum proofs only for this finite operation, across threads."""
+    def read_context(self, *, cache_bytes: int = 64 * 1024 * 1024):
+        """Share proofs and a bounded frame memo for one finite operation.
+
+        The caller may lower/disable the explicit byte cap. Cached frames expire
+        on exit/failure and file-stat changes; they never establish input proof
+        or survive as another numerical authority.
+        """
+        if (
+            isinstance(cache_bytes, bool)
+            or not isinstance(cache_bytes, int)
+            or cache_bytes < 0
+        ):
+            raise ValueError("BT frame cache bytes must be a nonnegative integer")
         reader = copy(self)
         reader._verification = ArtifactVerification()
+        reader._frame_cache = _FrameReadCache(cache_bytes)
         try:
             yield reader
         finally:
             reader._verification.close()
             reader._verification = None
+            reader._frame_cache.close()
+            reader._frame_cache = None
 
     def inspect(self, *, runtime: bool = False) -> dict[str, Any]:
         """Return schema readiness without initializing or recovering storage.
@@ -485,6 +621,10 @@ class BTStore:
         payload: dict[str, Any] = {"schema": values, "columns": list(schema)}
         if frame is not None or coordinates is not None:
             payload["coordinates"] = coordinates
+        if frame is not None:
+            evidence = _table_evidence(frame)
+            if evidence is not None:
+                payload["evidence"] = evidence
         return _json(
             {
                 **payload,
@@ -497,6 +637,11 @@ class BTStore:
                         **(
                             {"coordinates": coordinates}
                             if "coordinates" in payload
+                            else {}
+                        ),
+                        **(
+                            {"evidence": payload["evidence"]}
+                            if "evidence" in payload
                             else {}
                         ),
                     }
@@ -547,6 +692,11 @@ class BTStore:
                             **(
                                 {"coordinates": index["coordinates"]}
                                 if "coordinates" in index
+                                else {}
+                            ),
+                            **(
+                                {"evidence": index["evidence"]}
+                                if "evidence" in index
                                 else {}
                             ),
                         }
@@ -604,14 +754,40 @@ class BTStore:
         frames: Mapping[str, pl.DataFrame],
         *,
         previous: Mapping[str, Mapping[str, Any]],
+        output_start: date | None = None,
+        output_end: date | None = None,
         check_canceled: Callable[[], None] = lambda: None,
     ) -> dict[str, dict[str, Any]]:
         """Retain equal historical prefixes; write only changed primitive tails.
 
-        Original tables are consumed through this owner's typed reader. No old
+        Supplying an admitted ``output_start`` declares delta frames; optional
+        ``output_end`` retains the unaffected suffix after a finite repair. This
+        owner composes original indexed references without reading old values.
+        The caller's numerical plan/source proofs establish the replaced range.
+
+        Otherwise original tables are consumed through the typed reader. No old
         artifact is rehashed or rewritten. Summary tables without a daily axis
         are published through the ordinary immutable publisher.
         """
+        if self._verification is None:
+            with self.read_context() as reader:
+                return reader.publish_continuation(
+                    frames,
+                    previous=previous,
+                    output_start=output_start,
+                    output_end=output_end,
+                    check_canceled=check_canceled,
+                )
+        if output_start is not None:
+            return self._publish_delta(
+                frames,
+                previous=previous,
+                output_start=output_start,
+                output_end=output_end,
+                check_canceled=check_canceled,
+            )
+        if output_end is not None:
+            raise ValueError("BT continuation output end requires its output start")
         references = {}
         for name, frame in frames.items():
             check_canceled()
@@ -680,28 +856,20 @@ class BTStore:
                 from .table_composition import select
 
                 before = select(old, predicates)
-                days = sorted(set(before[axis].to_list()) | set(group[axis].to_list()))
-                low, high = -1, len(days)
-                while high - low > 1:
-                    check_canceled()
-                    middle = (low + high) // 2
-                    if before.filter(pl.col(axis) <= days[middle]).equals(
-                        group.filter(pl.col(axis) <= days[middle])
-                    ):
-                        low = middle
-                    else:
-                        high = middle
-                if low >= 0:
+                boundary = _equal_ordered_prefix(before, group, axis)
+                if boundary is not None:
                     parts.append(
                         {
                             "reference": original,
                             "filters": [
                                 *predicates,
-                                {"column": axis, "operation": "le", "value": days[low]},
+                                {"column": axis, "operation": "le", "value": boundary},
                             ],
                         }
                     )
-                delta = group if low < 0 else group.filter(pl.col(axis) > days[low])
+                delta = (
+                    group if boundary is None else group.filter(pl.col(axis) > boundary)
+                )
                 if delta.height or not parts:
                     parts.append(
                         {
@@ -710,6 +878,78 @@ class BTStore:
                             )
                         }
                     )
+            references[name] = self.compose_reference(parts)
+        return references
+
+    def _publish_delta(
+        self, frames, *, previous, output_start, output_end, check_canceled
+    ):
+        if type(output_start) is not date or (
+            output_end is not None
+            and (type(output_end) is not date or output_end < output_start)
+        ):
+            raise ValueError("BT continuation needs ordered Date output bounds")
+        references = {}
+        for name, frame in frames.items():
+            check_canceled()
+            axis = next(
+                (
+                    key
+                    for key in ("evaluation_date", "time", "target_date")
+                    if frame.schema.get(key) == pl.Date
+                ),
+                None,
+            )
+            if (
+                axis is None
+                or frame[axis].null_count()
+                or (
+                    frame.height
+                    and (
+                        frame[axis].min() < output_start
+                        or (output_end is not None and frame[axis].max() > output_end)
+                    )
+                )
+            ):
+                raise ValueError(
+                    "BT delta rows must lie inside their admitted output interval"
+                )
+            parts = []
+            original = previous.get(name)
+            if original is not None:
+                parts.append(
+                    {
+                        "reference": original,
+                        "filters": [
+                            {
+                                "column": axis,
+                                "operation": "le",
+                                "value": output_start - timedelta(days=1),
+                            }
+                        ],
+                    }
+                )
+            if frame.height or original is None:
+                parts.append(
+                    {
+                        "reference": self.publish_table(
+                            frame, check_canceled=check_canceled
+                        )
+                    }
+                )
+            if original is not None and output_end is not None:
+                parts.append(
+                    {
+                        "reference": original,
+                        "filters": [
+                            {
+                                "column": axis,
+                                "operation": "ge",
+                                "value": output_end + timedelta(days=1),
+                            }
+                        ],
+                    }
+                )
             references[name] = self.compose_reference(parts)
         return references
 
@@ -826,7 +1066,158 @@ class BTStore:
             )
         return self.describe_reference(reference)
 
-    def index_plan(self) -> dict[str, Any]:
+    def reference_evidence(
+        self, reference: Mapping[str, Any], *, time_column: str = "time"
+    ) -> dict[str, Any] | None:
+        """Read compact date content and causal factor catalog from owner records.
+
+        Unknown original summaries return None. This never decodes a numerical
+        table or implicitly prepares legacy indexes.
+        """
+        _identifier(time_column, "time column")
+        return self._reference_evidence(reference, (), time_column=time_column)
+
+    def reference_interval_identity(
+        self,
+        reference: Mapping[str, Any],
+        *,
+        start: date,
+        end: date,
+        cutoff: date | None = None,
+        time_column: str = "time",
+    ) -> str | None:
+        """Fragmentation-independent typed contents in an explicit date window.
+
+        Factor availability is clipped when that column exists. A gross path
+        without it must be bounded by the caller's complete economic endpoint.
+        """
+        if (
+            type(start) is not date
+            or type(end) is not date
+            or start > end
+            or (cutoff is not None and type(cutoff) is not date)
+        ):
+            raise ValueError("BT interval identity needs ordered Date bounds")
+        _identifier(time_column, "time column")
+        evidence = self._reference_evidence(
+            reference,
+            (
+                {"column": time_column, "operation": "ge", "value": str(start)},
+                {"column": time_column, "operation": "le", "value": str(end)},
+            ),
+            cutoff=cutoff,
+            time_column=time_column,
+        )
+        return (
+            None
+            if evidence is None
+            else _identity(
+                {
+                    "schema": evidence["schema"],
+                    "time_column": time_column,
+                    "start": str(start),
+                    "end": str(end),
+                    "dates": evidence["dates"],
+                }
+            )
+        )
+
+    def _reference_evidence(
+        self, reference, predicates, *, cutoff=None, time_column="time"
+    ):
+        reference = self.describe_reference(reference)
+        parts = reference.get("parts", ({"reference": reference, "filters": []},))
+        combined, catalog, schema = {}, {}, None
+        axes = None
+        for part in parts:
+            original = self.describe_reference(part["reference"])
+            with self._read_connection() as connection:
+                row = connection.execute(
+                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                    (original["table_id"],),
+                ).fetchone()
+            index = None if row is None else json.loads(row[0])
+            evidence = None if index is None else index.get("evidence")
+            if (
+                evidence is None
+                or index["schema"].get(time_column) != "Date"
+                or time_column not in evidence["axes"]
+            ):
+                return None
+            if schema is not None and (
+                schema != index["schema"] or axes != evidence["axes"]
+            ):
+                raise ValueError("BT evidence composition schema differs")
+            schema, axes = index["schema"], evidence["axes"]
+            selected = [*part["filters"], *predicates]
+            if cutoff is not None and "available_date" in axes:
+                selected.append(
+                    {
+                        "column": "available_date",
+                        "operation": "le",
+                        "value": str(cutoff),
+                    }
+                )
+            if any(item["column"] not in axes for item in selected):
+                return None
+            for group in evidence["groups"]:
+                values = dict(zip(axes, group[:-3], strict=True))
+                keep = True
+                for item in selected:
+                    value, limit = values[item["column"]], item["value"]
+                    if hasattr(limit, "isoformat"):
+                        limit = limit.isoformat()
+                    if value is None:
+                        keep = item["column"] == "available_date" and cutoff is not None
+                    else:
+                        keep = (
+                            value == limit
+                            if item["operation"] == "eq"
+                            else value >= limit
+                            if item["operation"] == "ge"
+                            else value <= limit
+                        )
+                    if not keep:
+                        break
+                if keep:
+                    key = tuple(group[:-3])
+                    prior = combined.setdefault(key, [0, 0, 0])
+                    prior[0] += group[-3]
+                    prior[1] = (prior[1] + int(group[-2], 16)) % (1 << 64)
+                    prior[2] = (prior[2] + int(group[-1], 16)) % (1 << 64)
+            for name, item in evidence["factors"].items():
+                if name in catalog and catalog[name]["family"] != item["family"]:
+                    raise ValueError("BT factor catalogue family differs")
+                if (
+                    name not in catalog
+                    or item["first_seen"] < catalog[name]["first_seen"]
+                ):
+                    catalog[name] = dict(item)
+        by_date = {}
+        if axes is None:
+            return None
+        for key, value in sorted(combined.items(), key=lambda item: _json(item[0])):
+            day = key[axes.index(time_column)]
+            by_date.setdefault(day, []).append(
+                [*key, value[0], format(value[1], "016x"), format(value[2], "016x")]
+            )
+        return {
+            "schema": schema,
+            "time_column": time_column,
+            "factors": catalog,
+            "dates": {
+                day: _identity({"axes": axes, "groups": values})
+                for day, values in by_date.items()
+            },
+        }
+
+    def index_plan(
+        self,
+        *,
+        evidence: bool = False,
+        references: Sequence[Mapping[str, Any]] | None = None,
+        time_column: str = "time",
+    ) -> dict[str, Any]:
         """Describe explicit table-descriptor maintenance from saved receipts."""
         tables = {}
         if not self.meta_path.is_file():
@@ -845,6 +1236,39 @@ class BTStore:
                         for part in ref.get("parts", ()):
                             original = part["reference"]
                             tables[original["table_id"]] = original
+        if references is not None:
+            requested = set()
+            for ref in references:
+                requested.add(ref["table_id"])
+                requested.update(
+                    part["reference"]["table_id"] for part in ref.get("parts", ())
+                )
+            tables = {key: ref for key, ref in tables.items() if key in requested}
+        if evidence:
+            with self._read_connection() as connection:
+                needed = {}
+                has_index = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone()
+                for key, ref in tables.items():
+                    if ref.get("format") == "concat":
+                        continue
+                    row = (
+                        connection.execute(
+                            "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                            (key,),
+                        ).fetchone()
+                        if has_index
+                        else None
+                    )
+                    index = None if row is None else json.loads(row[0])
+                    if (
+                        index is None
+                        or "evidence" not in index
+                        or time_column not in index["evidence"]["axes"]
+                    ):
+                        needed[key] = ref
+                tables = needed
         return {
             "version": "bt.table.index.v2",
             "meta_path": str(self.meta_path),
@@ -1007,6 +1431,36 @@ class BTStore:
             return self._empty_indexed_table(
                 index["schema"], columns=index.get("columns")
             )
+        key = (
+            reference["table_id"],
+            _json(predicates),
+            None if coordinates is None else hash_dataframe(coordinates),
+        )
+        leaf = reference.get("format") != "concat"
+        stamp = self._reference_stamp(reference) if leaf else None
+        cached = (
+            self._frame_cache.get(key, stamp)
+            if leaf and self._frame_cache is not None
+            else None
+        )
+        if cached is not None:
+            return cached
+        if (
+            leaf
+            and self._frame_cache is not None
+            and (predicates or coordinates is not None)
+        ):
+            full = self._frame_cache.get(
+                (reference["table_id"], _json([]), None), stamp
+            )
+            if full is not None:
+                frame = select(full, predicates)
+                if coordinates is not None:
+                    frame = select_keys(frame, coordinates)
+                if frame.height != expected:
+                    raise ValueError("BT selected memo row count differs")
+                self._frame_cache.put(key, frame, stamp)
+                return frame
         if reference.get("format") == "concat":
             frames = []
             for part in reference["parts"]:
@@ -1054,7 +1508,34 @@ class BTStore:
                     name: str(dtype) for name, dtype in frame.schema.items()
                 }:
                     raise ValueError("BT table typed schema differs")
+        if self._frame_cache is not None:
+            if self._reference_stamp(reference) != stamp:
+                raise ValueError("BT artifact changed during read")
+            self._frame_cache.put(key, frame, stamp)
         return frame
+
+    def _reference_stamp(self, reference):
+        leaves = (
+            (part["reference"] for part in reference["parts"])
+            if reference.get("format") == "concat"
+            else (reference,)
+        )
+        result = []
+        try:
+            for leaf in leaves:
+                stat = self._table_path(leaf["table_id"]).stat()
+                result.append(
+                    (
+                        leaf["table_id"],
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ctime_ns,
+                        stat.st_ino,
+                    )
+                )
+        except OSError as error:
+            raise ValueError("missing or unreadable BT artifact") from error
+        return tuple(result)
 
     @staticmethod
     def _empty_indexed_table(schema, *, columns=None):
@@ -1217,6 +1698,13 @@ class BTStore:
                 actual = coordinates(frame.select(columns))
             if recorded is not None and recorded != actual:
                 raise ValueError("BT coordinate index differs from original table rows")
+            index = json.loads(row[0])
+            if "evidence" in index and index["evidence"] != _table_evidence(
+                frame, axes=index["evidence"]["axes"]
+            ):
+                raise ValueError(
+                    "BT numerical summary evidence differs from original table rows"
+                )
 
     def verify_receipt(self, receipt: Mapping[str, Any]) -> None:
         """Verify all referenced tables, including those not selected for display."""

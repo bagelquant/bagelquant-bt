@@ -42,6 +42,27 @@ old numerical bytes, rather than compare/decode complete historical frames.
 The host declares causal diagnostic population policy; a current-day observed
 coordinate union need not equal a retired rectangular monthly population.
 
+Risk-profile policy `rolling_risk_profile.v2` uses the factor population visible
+on each economic date. Future industries cannot add historical zero-exposure
+rows or constant-factor counts. Newly visible industries retain structural-zero
+training history; ridge, complete-case rules and next-session maturity stay
+unchanged. `plan_risk_profile_update` checks registered prefix metadata before
+reading bounded gross/factor inputs and saved specific-return halos. Append only
+revisits pending maturity and new dates. A fixed-population input repair widens
+at most regression_window + volatility_window - 1 sessions, selects a proved
+preceding checkpoint and preserves the later unaffected references.
+The saved residual halo may come from the latest original result after proving
+its complete source prefix before the affected date against current inputs;
+an earlier checkpoint alone does not attest residuals beyond its boundary.
+Unknown impact/state, changed population outside that scope or simultaneous repair and
+append require explicit planning; they never authorize full historical replay.
+
+BT stores compact date/availability typed-row summaries and first-seen factor
+catalogues in optional digest-bound table indexes at publication. Public
+`reference_evidence`/`reference_interval_identity` read those records only;
+missing summaries require explicit `index_plan(evidence=True)` maintenance.
+Maintenance audits original bytes and never republishes numerical results.
+
 `alpha_update_plan` accepts an EvaluationResult or its saved state mapping and
 source-owned affected date intervals. It plans before reading primitive tables,
 widening the affected date by requested horizon/persistence/lag dependencies and

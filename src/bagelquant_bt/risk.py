@@ -6,14 +6,20 @@ These analytics accept numerical inputs, never resolve data or create accounts.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
 import numpy as np
 import polars as pl
 
 from .inputs import validate_prices
+from .risk_profile_update import (
+    RiskProfileUpdatePlan,
+    plan_risk_profile_update,
+    risk_profile_policy,
+)
 
 
 def risk_interval_returns(prices: pl.DataFrame, calendar: pl.DataFrame) -> pl.DataFrame:
@@ -167,6 +173,8 @@ class RollingRiskProfile:
     returns: pl.DataFrame
     exposures: pl.DataFrame
     diagnostics: pl.DataFrame
+    state: dict[str, Any] = field(default_factory=dict)
+    solve_count: int = 0
 
 
 def rolling_risk_profile(
@@ -178,30 +186,174 @@ def rolling_risk_profile(
     volatility_window: int = 120,
     annualization: int = 240,
     ridge: float = 1.0,
+    previous: RollingRiskProfile | None = None,
+    plan: RiskProfileUpdatePlan | None = None,
+    output_start: date | None = None,
+    input_proof: Callable[[date, date, date | None], str | None] | None = None,
+    previous_input_proof: Callable[[date, date, date | None], str | None] | None = None,
+    check_canceled: Callable[[], None] | None = None,
 ) -> RollingRiskProfile:
     """Attribute one Gross path using only previously matured observations.
 
     ``returns`` has time/gross_return. Factors have time/available_date/factor/
     family/factor_return. Calendar gaps are never compressed into valid rows.
     A factor absent before its first historical appearance is inactive (zero);
-    an explicit null factor return always means unavailable.
+    an explicit null factor return always means unavailable. Factors enter the
+    output population only at their first causal appearance (policy v2).
+
+    A previous result needs its compact original state and only the saved
+    specific-return halo, not historical regressions/exposures. Gross/factor
+    inputs may be restricted to ``plan.read_start``. Continuation emits only the
+    planned output delta; publish it with the original BT-owned references.
     """
-    if regression_window < 2 or volatility_window < 2 or ridge <= 0:
-        raise ValueError("invalid risk profile windows or ridge penalty")
+    policy = risk_profile_policy(
+        regression_window, volatility_window, annualization, ridge
+    )
+    cancel = check_canceled or (lambda: None)
+    cancel()
+    if (
+        returns.schema.get("time") != pl.Date
+        or factor_returns.schema.get("time") != pl.Date
+    ):
+        raise ValueError("risk profile inputs require Date interval coordinates")
     if returns.get_column("time").n_unique() != returns.height:
         raise ValueError("duplicate return interval")
     if factor_returns.unique(["time", "factor"]).height != factor_returns.height:
         raise ValueError("duplicate factor interval")
-    sessions = sorted(set(calendar))
-    if sessions != list(calendar):
-        raise ValueError("calendar must be sorted and unique")
-    rows = {r["time"]: r for r in returns.iter_rows(named=True)}
-    factor_names = sorted(factor_returns.get_column("factor").unique().to_list())
-    factor_index = {name: i for i, name in enumerate(factor_names)}
-    families = dict(factor_returns.select("factor", "family").unique().iter_rows())
-    first_seen = dict(
-        factor_returns.group_by("factor").agg(pl.col("time").min()).iter_rows()
+    if len(calendar) == 0:
+        raise ValueError("risk profile needs a nonempty calendar")
+    if plan is None:
+        plan = plan_risk_profile_update(
+            None if previous is None else previous.state,
+            calendar=calendar,
+            through=calendar[-1],
+            input_proof=input_proof,
+            regression_window=regression_window,
+            volatility_window=volatility_window,
+            annualization=annualization,
+            ridge=ridge,
+        )
+    if plan.policy != policy or tuple(calendar) != plan.calendar:
+        raise ValueError("risk profile plan differs from its numerical policy/calendar")
+    if plan.mode == "blocked":
+        raise ValueError(plan.reason)
+    if previous is not None:
+        state = previous.state
+        proof = previous_input_proof or input_proof
+        if (
+            state.get("policy") != policy
+            or proof is None
+            or state.get("input_prefix") is None
+            or input_proof is None
+            or input_proof(
+                date.fromisoformat(state["calendar_start"]),
+                date.fromisoformat(state["proof_through"]),
+                date.fromisoformat(state["cutoff"]),
+            )
+            != state["input_prefix"]
+            or proof(
+                date.fromisoformat(state["calendar_start"]),
+                date.fromisoformat(state["proof_through"]),
+                date.fromisoformat(state["cutoff"]),
+            )
+            != state["input_prefix"]
+        ):
+            raise ValueError(
+                "risk profile continuation needs original policy/state/"
+                "source-prefix proof"
+            )
+    if plan.complete:
+        if previous is None:
+            raise ValueError("risk profile completed plan needs its original state")
+        return _risk_profile_result([], [], [], dict(previous.state), 0)
+    if plan.output_start is None or plan.read_start is None or plan.output_end is None:
+        raise ValueError(
+            "risk profile execution requires an admitted output/input window"
+        )
+    if output_start is not None and output_start != plan.output_start:
+        raise ValueError("risk profile output start differs from its admitted plan")
+    if previous is None and plan.mode != "initialize":
+        raise ValueError(
+            "risk profile continuation needs the selected original checkpoint"
+        )
+    admitted = [day for day in calendar if day <= plan.through]
+    global_positions = {day: i for i, day in enumerate(admitted)}
+    if plan.mode == "repair":
+        before = global_positions[plan.output_start] - 1
+        if (
+            before < 0
+            or previous_input_proof is None
+            or input_proof(admitted[0], admitted[before], plan.through) is None
+            or input_proof(admitted[0], admitted[before], plan.through)
+            != previous_input_proof(admitted[0], admitted[before], plan.through)
+        ):
+            raise ValueError(
+                "risk profile repair needs original source equality "
+                "for its saved halo"
+            )
+    first_position = global_positions[plan.read_start]
+    last_position = global_positions[plan.output_end]
+    sessions = admitted[first_position : min(last_position + 2, len(admitted))]
+    output_position = global_positions[plan.output_start] - first_position
+    rows = {
+        r["time"]: r
+        for r in returns.filter(
+            pl.col("time").is_between(plan.read_start, plan.output_end)
+        ).iter_rows(named=True)
+    }
+    factor_returns = factor_returns.filter(
+        pl.col("time").is_between(plan.read_start, plan.output_end)
     )
+    retained_state = plan.retained_state or (
+        None if previous is None else previous.state
+    )
+    catalog = (
+        {}
+        if retained_state is None
+        else {name: dict(item) for name, item in retained_state["factors"].items()}
+    )
+    for name, family, first_seen_date in (
+        factor_returns.group_by("factor")
+        .agg(
+            pl.col("family").n_unique().alias("family_count"),
+            pl.col("family").first(),
+            pl.col("time").min().alias("first_seen"),
+        )
+        .filter(pl.col("family_count") == 1)
+        .select("factor", "family", "first_seen")
+        .iter_rows()
+    ):
+        if name in catalog:
+            if catalog[name]["family"] != family:
+                raise ValueError(
+                    "risk factor family changed; explicitly rebuild "
+                    "its numerical definition"
+                )
+            catalog[name]["first_seen"] = min(
+                catalog[name]["first_seen"], str(first_seen_date)
+            )
+        else:
+            catalog[name] = {"family": family, "first_seen": str(first_seen_date)}
+    if (
+        factor_returns["factor"].n_unique()
+        != factor_returns.select("factor", "family").unique().height
+    ):
+        raise ValueError("risk factors require one immutable family per factor")
+    if (
+        plan.mode == "repair"
+        and plan.output_end < admitted[-1]
+        and catalog != retained_state["factors"]
+    ):
+        raise ValueError(
+            "risk factor population changed; explicitly plan "
+            "its complete affected suffix"
+        )
+    factor_names = sorted(catalog)
+    factor_index = {name: i for i, name in enumerate(factor_names)}
+    families = {name: item["family"] for name, item in catalog.items()}
+    first_seen = {
+        name: date.fromisoformat(item["first_seen"]) for name, item in catalog.items()
+    }
     by_time: dict[date, dict[str, dict]] = {}
     for row in factor_returns.iter_rows(named=True):
         by_time.setdefault(row["time"], {})[row["factor"]] = row
@@ -228,14 +380,48 @@ def rolling_risk_profile(
         if dates and len(set(dates)) == 1 and len(dates) == len(factors):
             available[i] = max(dates)
     specific = np.full(n, np.nan)
+    if previous is not None:
+        origin = previous.state.get("output_origin")
+        expected = {
+            day
+            for day in admitted
+            if plan.specific_start <= day < plan.output_start
+            and origin is not None
+            and day >= date.fromisoformat(origin)
+        }
+        retained = previous.returns.filter(pl.col("time").is_in(sorted(expected)))
+        if (
+            retained["time"].n_unique() != retained.height
+            or set(retained["time"]) != expected
+        ):
+            raise ValueError(
+                "risk profile specific-return halo is incomplete; "
+                "restore original state"
+            )
+        local_positions = {day: i for i, day in enumerate(sessions)}
+        for day, value in retained.select("time", "specific_return").iter_rows():
+            if day in local_positions and value is not None:
+                specific[local_positions[day]] = value
     output, exposures, diagnostics = [], [], []
     first, last = (min(rows), max(rows)) if rows else (None, None)
+    solves = 0
     for i, day in enumerate(sessions):
-        if first is None or day < first or day > last:
+        cancel()
+        if (
+            i < output_position
+            or day > plan.output_end
+            or first is None
+            or day < first
+            or day > last
+        ):
             continue
+        visible = [j for j, name in enumerate(factor_names) if first_seen[name] <= day]
+        active_names = [factor_names[j] for j in visible]
+        active_count = len(visible)
         reason, r_squared = None, None
         start = max(0, i - regression_window)
-        history_x, history_y = x[start:i], y[start:i]
+        history_x, history_y = x[start:i, :][:, visible], y[start:i]
+        current_x = x[i, visible]
         valid = np.isfinite(history_x).all(axis=1) & np.isfinite(history_y)
         matured = np.array(
             [
@@ -244,11 +430,11 @@ def rolling_risk_profile(
             ],
             dtype=bool,
         )
-        sample_count = int((valid & matured).sum()) if k else 0
+        sample_count = int((valid & matured).sum()) if active_count else 0
         constant_count = 0
-        if i < regression_window:
+        if first_position + i < regression_window:
             reason = "regression_warmup"
-        elif not k or not np.isfinite(x[i]).all():
+        elif not active_count or not np.isfinite(current_x).all():
             reason = "factor_return_unavailable"
         elif not np.isfinite(y[i]) or i + 1 >= n:
             reason = "return_unavailable"
@@ -266,8 +452,12 @@ def rolling_risk_profile(
                     history_x[:, identifiable] - mean[identifiable]
                 ) / scale[identifiable]
                 centered_y = history_y - history_y.mean()
-                fitted = np.linalg.solve(z.T @ z + ridge * np.eye(k), z.T @ centered_y)
-                beta = np.zeros(k)
+                cancel()
+                solves += 1
+                fitted = np.linalg.solve(
+                    z.T @ z + ridge * np.eye(active_count), z.T @ centered_y
+                )
+                beta = np.zeros(active_count)
                 beta[identifiable] = fitted[identifiable] / scale[identifiable]
                 residual = centered_y - z @ fitted
                 denominator = float(centered_y @ centered_y)
@@ -276,9 +466,9 @@ def rolling_risk_profile(
                     if denominator > 0
                     else None
                 )
-                contributions = beta * x[i]
+                contributions = beta * current_x
                 specific[i] = y[i] - contributions.sum()
-                for j, name in enumerate(factor_names):
+                for j, name in enumerate(active_names):
                     exposures.append(
                         {
                             "time": day,
@@ -291,7 +481,7 @@ def rolling_risk_profile(
                     )
 
         def volatility(values: np.ndarray, i: int = i) -> float | None:
-            if i + 1 < volatility_window:
+            if first_position + i + 1 < volatility_window or i + 1 < volatility_window:
                 return None
             sample = values[i + 1 - volatility_window : i + 1]
             return (
@@ -323,6 +513,48 @@ def rolling_risk_profile(
                 "ridge": ridge,
             }
         )
+    complete_positions = [
+        i
+        for i, day in enumerate(sessions[:-1])
+        if np.isfinite(y[i])
+        and any(first_seen[name] <= day for name in factor_names)
+        and np.isfinite(
+            x[i, [j for j, name in enumerate(factor_names) if first_seen[name] <= day]]
+        ).all()
+        and available[i] == sessions[i + 1]
+    ]
+    pending_position = (
+        complete_positions[-1] + 1 if complete_positions else output_position
+    )
+    origin = None if first is None else str(first)
+    if previous is not None and previous.state.get("output_origin"):
+        origin = min(
+            origin or previous.state["output_origin"], previous.state["output_origin"]
+        )
+    proof_through = sessions[pending_position - 1] if pending_position else admitted[0]
+    if plan.mode == "repair" and plan.output_end < admitted[-1]:
+        proof_through = date.fromisoformat(retained_state["proof_through"])
+    state = {
+        "policy": policy,
+        "calendar_start": str(admitted[0]),
+        "through": str(admitted[-1]),
+        "cutoff": str(plan.through),
+        "output_origin": origin,
+        "pending_output_start": str(sessions[pending_position]),
+        "factors": catalog,
+        "proof_through": str(proof_through),
+        "input_prefix": None
+        if input_proof is None
+        else input_proof(admitted[0], proof_through, plan.through),
+    }
+    if plan.mode == "repair" and plan.output_end < admitted[-1]:
+        state["pending_output_start"] = retained_state["pending_output_start"]
+        state["output_origin"] = retained_state["output_origin"]
+    cancel()
+    return _risk_profile_result(output, exposures, diagnostics, state, solves)
+
+
+def _risk_profile_result(output, exposures, diagnostics, state, solves):
     return RollingRiskProfile(
         pl.DataFrame(
             output,
@@ -358,6 +590,8 @@ def rolling_risk_profile(
                 "ridge": pl.Float64,
             },
         ),
+        state,
+        solves,
     )
 
 

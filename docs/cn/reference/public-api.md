@@ -1,5 +1,39 @@
 # 公开 API — BT 0.12
 
+`plan_risk_profile_update(previous_state, *, calendar, through,
+affected_intervals=(), preceding=(), input_proof=None, ...)` 从登记元数据规划
+初始化、追加、局部修复或 up_to_date；缺失安全状态/前缀则 blocked。
+计划包含 read_start/read_end、output_start/output_end、specific_start 与
+previous_index。`rolling_risk_profile(..., previous=selected, plan=plan,
+input_proof=...)` 返回三张增量表、compact state 与身份无关的 solve_count。
+默认只读取此前 240 会话输入和 119 会话已保存 specific_return；不重跑历史回归。
+state 保存 policy、calendar_start、through/cutoff、output_origin、
+pending_output_start、proof_through、factors 和 input_prefix。
+`rolling_risk_profile.v2` 仅输出当日因果可见的因子；岭回归和成熟规则保持原公式。
+固定因子集合修订按回归/波动窗口扩展有限范围，同时修复和追加需分别规划。
+修复的 previous_input_proof 绑定最新原始输入 receipts，校验受影响日期之前的
+完整输入前缀；较早 checkpoint 本身不能证明其边界之后的 residual halo。
+
+`BTStore.reference_evidence(reference)` 返回 schema、factors（family/first_seen）
+及 dates 内容 token；`reference_interval_identity(..., start, end, cutoff=None)`
+按日期/可得时间合并紧凑 typed-row 摘要，独立于文件分段，无数值读取。
+旧索引缺失摘要返回 None；显式 `index_plan(evidence=True, references=[...])`
+和 `build_index` 审计原字节并登记摘要，不改 receipt、不重算数值。
+新发布在消费帧时生成摘要，不将逐行 hash 数组放入 SQLite。
+
+两个 reference 方法支持 `time_column="time"`；Gross 可显式选
+`time_column="interval_start"`，按原始经济起点生成证明，仍绑定原 signal time、
+interval_end 和真实 available_date。interval_start/end 是支持有界读取的 Date
+索引轴。旧摘要缺失该轴返回 None；显式 `index_plan(evidence=True,
+time_column="interval_start", references=[...])` 维护原表索引。调用方用真实保存的
+经济区间对齐数值输入；BT 不猜测执行 lag、不盲目平移源日期。
+
+`publish_continuation(delta_frames, previous=refs, output_start=...,
+output_end=...)` 仅凭元数据组合原前缀、增量及可选未受影响后缀。
+不传输出边界的完整帧续算仅一次有序比较定位首个差异。
+`read_context(cache_bytes=...)` 的数值帧 memo 默认上限 64 MiB；0 关闭，
+退出/失败立即清除，文件状态变化失效，不能替代输入证明或完整审计。
+
 `alpha_update_plan(previous, *, calendar, available_date, affected_intervals=(),
 preceding=(), ..., input_proof=None)` 仅依据元数据规划追加和受影响后缀并选择原始前置
 checkpoint；无安全状态时返回明确恢复计划，通过同一 evaluate_alpha 引擎继续执行。

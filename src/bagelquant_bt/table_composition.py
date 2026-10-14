@@ -6,6 +6,8 @@ import polars as pl
 
 COORDINATES = (
     "time",
+    "interval_start",
+    "interval_end",
     "checkpoint_date",
     "available_date",
     "asset_id",

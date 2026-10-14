@@ -59,4 +59,10 @@ Supported platforms: macOS and Linux. Windows support is retired.
 for independent horizon windows, retaining declared order and numerical results.
 `EvaluationResult.execution` reports identity-neutral worker/memory estimates.
 
+Risk-profile policy v2 uses the daily causal factor population.
+`plan_risk_profile_update` admits only new/matured or bounded affected outputs;
+`rolling_risk_profile(previous=...)` consumes saved specific-return halos instead
+of repeating historical regressions. Compact owner input proofs and BT-owned
+delta publication preserve immutable history. See [public API](docs/en/reference/public-api.md).
+
 [Calculation records](docs/en/calculation_records.md) · [计算记录](docs/cn/calculation_records.md)

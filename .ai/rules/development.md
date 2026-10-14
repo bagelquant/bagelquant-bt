@@ -85,3 +85,14 @@ Explicit `verify` retains full byte/logical/index checks and expiring context pr
 `publish_shared/publish_chapter(file_references=...)` resolve registered original descriptors;
 new frames retain canonical hashes, and unregistered conflicting files require canonical proof.
 Optional table descriptor maintenance uses public `index_plan/build_index`; no implicit backfill.
+`read_context(cache_bytes=...)` bounds an operation-local decoded-frame memo
+(64 MiB default, zero disables it). It expires on exit/failure, rechecks source
+file stats and never substitutes for registered evidence or explicit full audits.
+Continuation compares ordered rows once when supplied full frames; admitted
+output_start/output_end delta publication composes original prefix/suffix
+references entirely from owner metadata, without scanning historical values.
+Saved return `time` may be a caller's signal label. Public reference evidence
+and interval identity accept an explicit `time_column` (default time); interval_start
+and interval_end are indexed Date axes. Callers align numerical inputs from their
+actual saved economic intervals, never a guessed date shift. Missing captured
+economic-axis summaries require explicit original-reference index maintenance.

@@ -1,5 +1,46 @@
 # Public API — BT 0.12
 
+`plan_risk_profile_update(previous_state, *, calendar, through,
+affected_intervals=(), preceding=(), input_proof=None, ...)` returns a
+`RiskProfileUpdatePlan` with mode, read_start/read_end, output_start/output_end,
+specific_start and previous_index. Unknown state/prefix yields blocked work.
+`rolling_risk_profile(..., previous=selected, plan=plan, input_proof=...)`
+returns delta returns/exposures/diagnostics, compact state and an identity-neutral
+solve_count. The default 240-session regression needs only its input halo and
+119 saved specific returns. State retains policy, calendar_start, through/cutoff,
+output_origin, pending_output_start, proof_through, factors and input_prefix.
+Factor names become visible causally under `RISK_PROFILE_POLICY`; unchanged ridge
+and maturity formulas own both initialization and continuation. Fixed-population
+repair uses a proved preceding state and a finite regression/volatility halo.
+Supply `previous_input_proof` from the latest original input receipts to attest
+the complete prefix before a repair, including its saved specific-return halo.
+Simultaneous repair/append needs separate admitted plans.
+
+`BTStore.reference_evidence(reference)` returns registered typed schema,
+factor/family/first-seen catalogue and date-content tokens.
+`reference_interval_identity(reference, start=..., end=..., cutoff=...)` combines
+compact date/availability summaries independently of artifact fragmentation,
+without reading values. Unknown old summaries return None; explicit
+`index_plan(evidence=True, references=[...])`/`build_index` adds them by auditing
+original bytes, preserving receipts and results. New publication captures them
+while consuming the admitted frame; no row-hash arrays are stored.
+
+Both reference methods accept `time_column="time"`; an explicit
+`time_column="interval_start"` groups/clips saved Gross source rows by their
+economic start while retaining the original signal label, interval end and
+availability in the proof. `interval_start`/`interval_end` are indexed Date axes
+for bounded `read_reference(filters=...)`. Missing original axis summaries return
+None and need explicit `index_plan(evidence=True, time_column="interval_start",
+references=[...])` maintenance. A caller maps the actual saved economic interval
+to numerical time; BT does not invent an execution lag or shift source dates.
+
+`BTStore.publish_continuation(delta_frames, previous=references,
+output_start=..., output_end=...)` composes the original prefix, delta and optional
+unaffected suffix without decoding history. Omit bounds for complete-frame
+continuation, which locates the first exact ordered mismatch in one pass.
+`read_context(cache_bytes=...)` shares a finite decoded-frame memo under an
+explicit 64 MiB default cap; zero disables caching and exit/failure clears it.
+
 `alpha_update_plan(previous, *, calendar, available_date, affected_intervals=(),
 preceding=(), ..., input_proof=None)` plans metadata-only append/affected-suffix
 work and selects a retained original checkpoint. It returns a blocked recovery

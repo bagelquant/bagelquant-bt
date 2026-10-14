@@ -17,6 +17,10 @@ tail reads, retains cumulative state and publishes original daily references.
 `plan_risk_factor_update` plans only newly mature/affected daily fits from
 metadata; `evaluate_risk_factor_returns` owns WLS, maturity and price carry.
 Core owns style-exposure graphs; BTStore owns fit/diagnostic/state receipts.
+Risk profile policy v2 admits only causally visible factors and uses metadata-only
+`plan_risk_profile_update` plus the same `rolling_risk_profile(previous=...)`
+formula for bounded daily updates. Saved specific-return halos and immutable
+delta references belong to BT; unknown prefix/state never triggers history replay.
 
 Before work read [`.ai/README.md`](.ai/README.md), mandatory development rules,
 affected topic rules, [`README.md`](README.md), [`pyproject.toml`](pyproject.toml)

@@ -115,6 +115,11 @@ from .risk import (
     risk_interval_returns,
     rolling_risk_profile,
 )
+from .risk_profile_update import (
+    RISK_PROFILE_POLICY,
+    RiskProfileUpdatePlan,
+    plan_risk_profile_update,
+)
 from .risk_update import (
     RISK_UPDATE_POLICY,
     RiskFactorResult,
@@ -148,6 +153,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "RISK_PROFILE_POLICY",
     "RISK_UPDATE_POLICY",
     "SAMPLE_POLICY",
     "SIGNAL_PERSISTENCE_HORIZONS",
@@ -169,6 +175,7 @@ __all__ = [
     "PredictionHorizonDiagnostics",
     "RiskFactorResult",
     "RiskFactorUpdatePlan",
+    "RiskProfileUpdatePlan",
     "RollingRiskProfile",
     "SessionWindow",
     "SharedInputEvidence",
@@ -222,6 +229,7 @@ __all__ = [
     "one_sample_t_test",
     "partial_rank_ic",
     "plan_risk_factor_update",
+    "plan_risk_profile_update",
     "prepare_price_data",
     "quantile_curve_structure",
     "quantile_rank_information_coefficients",
