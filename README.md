@@ -42,7 +42,8 @@ and machine policy.
 
 See [quick start](docs/en/quick-start.md), [public API](docs/en/reference/public-api.md),
 [execution](docs/en/reference/account-backtest.md), [costs](docs/en/reference/transaction-costs.md),
-and [中文文档](docs/cn/index.md). AI contributors start with [AGENTS.md](AGENTS.md).
+and [research statistics](docs/en/reference/research-statistics.md).
+AI contributors start with [AGENTS.md](AGENTS.md).
 
 ```bash
 uv run ruff check .
@@ -65,4 +66,4 @@ Risk-profile policy v2 uses the daily causal factor population.
 of repeating historical regressions. Compact owner input proofs and BT-owned
 delta publication preserve immutable history. See [public API](docs/en/reference/public-api.md).
 
-[Calculation records](docs/en/calculation_records.md) · [计算记录](docs/cn/calculation_records.md)
+[Calculation records](docs/en/calculation_records.md)

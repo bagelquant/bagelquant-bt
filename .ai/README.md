@@ -23,3 +23,8 @@ Workspace discovery and standalone fallback are in [AGENTS](../AGENTS.md).
 Versioned rules and source travel through Git; ignored full-task records remain
 in the verified workspace's .ai/tasks. Historical task plans are evidence, not
 current API authority. Package docs remain owned here and are not website input.
+
+Active authored documentation and new AI records use English. Public behavior,
+formula, metric, PIT/data or workflow changes update relevant owner docs and
+private wiki pages in the same task; integrated tasks record wiki impact, page
+UUIDs and verification. Read the verified workspace `.ai/rules/wiki.md`.
