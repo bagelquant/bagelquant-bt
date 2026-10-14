@@ -8,7 +8,6 @@ from bagelquant_bt import (
     fit_risk_factor_returns,
     link_risk_contributions,
     rolling_risk_profile,
-    standardize_risk_descriptor,
 )
 
 
@@ -153,7 +152,6 @@ def test_null_breaks_linked_path_and_constant_descriptor_is_unavailable():
     assert next_alpha["cumulative_contribution"][0] == pytest.approx(
         returns.filter(pl.col("time") == days[301])["gross_return"][0]
     )
-    assert np.isnan(standardize_risk_descriptor(np.ones(5))).all()
 
 
 def test_rank_deficiency_is_reported_without_fabricated_factor_returns():

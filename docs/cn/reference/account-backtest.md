@@ -27,3 +27,28 @@ lot/mark snapshot 和成熟事件。不能把最新 open_lots/transaction_pnl �
 旧窗口，不能读未来价格/成交或回放账户。每个 session/order/planning 支持取消。
 
 每个计划的 target/actual return 等于该计划归因 P&L 除以其已成交金额；金额收益和费用列单独展示。账户收益率按权益/NAV 计算。
+
+原生增量调用通过 input_evidence 提供本次完整消费范围，prefix_evidence 提供旧
+checkpoint 原范围的当前来源证明。每个 channel 使用 SharedInputEvidence，显式空输入
+也必须完整：weights/decisions（或 transactions）、prices、calendar、availability、
+lot_sizes、actions、action_coverage。validate_execution_continuation 可直接检查保存的
+checkpoint 元数据，在数值读取前比较 scope、schema、selector、coordinates、traces 和
+content token。来源 receipt 可变化；金融配置、capital、lag、reference mode 保持绑定。
+annualization 只影响报告。bt.execution.inputs.v1 是账户自己的协议；旧 signal 维护
+不能授予账户续算状态。缺失旧账户权威证据时必须显式维护原输入，不能从当前输入猜造。
+selector 包含 asset_starts 时，每个旧资产的首次消费日期必须保留；新增资产从 checkpoint
+之后开始消费，其此前未读价格不会扩大为已消费账户历史。
+
+证明通过后，只提供新日期的价格、目标、决策、可交易性、覆盖和冻结订单，加完整且覆盖
+未来执行/结算的 calendar。checkpoint 保存 marks、pending plans、未来行动及累计计划归因。
+新获知旧 record-date 行动只读取对应的原 position/lot/session 日期；影响已完成历史的行动
+从此前有效 checkpoint 修复后缀。结果 transaction_pnl 是累计归因，不重读旧 fills/matches；
+turnover 通过同一 account_fill_turnover 公式用前一 checkpoint equity 和新成交计算。
+
+BTStore.execution_references(frames, previous=..., through=...) 选择原 daily/event 前缀并
+拼接新增引用，替换小型 lot/P&L/checkpoint snapshot，再由带 expected_shared 的
+publish_shared(file_references=...) 发布。更早 checkpoint 同样支持 suffix repair，旧 receipt
+和文件保持不变。read_reference(filters=...) 依据已登记坐标剪枝不相关 concat leaf，并将
+Date/String/Integer 的 eq/ge/le 谓词推入 Parquet；旧索引缺失需显式 index_plan/build_index。
+原生索引保留原列顺序及已登记坐标类型，包括稀疏或全空日期键。verify_reference(deep=True)
+对照原表核验索引；maintain_reference 显式补登记原事实，保留历史 receipt 和文件内容。

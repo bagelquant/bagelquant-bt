@@ -12,12 +12,15 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from bagelquant_core import ArtifactVerification
 from bagelquant_core.hashing import hash_dataframe
 from bagelquant_core.inspection import open_metadata_snapshot
+
+if TYPE_CHECKING:
+    from .input_maintenance import SharedInputEvidence
 
 _SCHEMA = """
 CREATE TABLE bt_store_schema(version INTEGER NOT NULL);
@@ -80,7 +83,7 @@ def _identifier(value: str, name: str) -> str:
     return value
 
 
-def _verify_record(record: Mapping[str, Any], schema: str, **keys) -> None:
+def _verify_record(record: Mapping[str, Any], schema: str | None, **keys) -> None:
     """Validate the immutable payload and its stored SQLite coordinates."""
     if not isinstance(record, Mapping):
         raise ValueError("BT receipt must be an object")
@@ -415,6 +418,10 @@ class BTStore:
         digest = hash_dataframe(frame)
         registered = self._registered_table(digest)
         if registered is not None:
+            if not self._table_path(digest).is_file():
+                raise ValueError(
+                    "Registered BT artifact is missing; explicit recovery is required"
+                )
             return registered
         path = self._table_path(digest)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -463,22 +470,35 @@ class BTStore:
                     (
                         digest,
                         _json(reference),
-                        self._index_schema(reference, frame.schema),
+                        self._index_schema(reference, frame.schema, frame=frame),
                     ),
                 )
         return reference
 
     @staticmethod
-    def _index_schema(reference, schema):
+    def _index_schema(reference, schema, *, frame=None, coordinates=None):
         values = {name: str(dtype) for name, dtype in schema.items()}
+        if frame is not None:
+            from .table_composition import coordinates as describe_coordinates
+
+            coordinates = describe_coordinates(frame)
+        payload: dict[str, Any] = {"schema": values, "columns": list(schema)}
+        if frame is not None or coordinates is not None:
+            payload["coordinates"] = coordinates
         return _json(
             {
-                "schema": values,
+                **payload,
                 "digest": _identity(
                     {
                         "version": "bt.table.index.v2",
                         "reference": reference,
                         "schema": values,
+                        "columns": payload["columns"],
+                        **(
+                            {"coordinates": coordinates}
+                            if "coordinates" in payload
+                            else {}
+                        ),
                     }
                 ),
             }
@@ -500,6 +520,13 @@ class BTStore:
                 ).fetchone()
                 if row is not None:
                     reference, index = json.loads(row[0]), json.loads(row[1])
+                    if "columns" in index and (
+                        not isinstance(index["columns"], list)
+                        or any(not isinstance(name, str) for name in index["columns"])
+                        or len(set(index["columns"])) != len(index["columns"])
+                        or set(index["columns"]) != set(index.get("schema", {}))
+                    ):
+                        raise ValueError("corrupt BT original-column index")
                     if (
                         reference.get("table_id") != table_id
                         or reference.get("logical_hash") != table_id
@@ -512,18 +539,32 @@ class BTStore:
                             "version": "bt.table.index.v2",
                             "reference": reference,
                             "schema": index.get("schema"),
+                            **(
+                                {"columns": index["columns"]}
+                                if "columns" in index
+                                else {}
+                            ),
+                            **(
+                                {"coordinates": index["coordinates"]}
+                                if "coordinates" in index
+                                else {}
+                            ),
                         }
                     ):
                         raise ValueError("corrupt BT table descriptor index")
                     return reference
             for table in ("bt_shared", "bt_chapters"):
                 row = connection.execute(
-                    f"SELECT j.value FROM {table},json_each(manifest_json,'$.files') j "
-                    "WHERE json_extract(j.value,'$.table_id')=? LIMIT 1",
+                    f"SELECT manifest_json,j.value FROM {table},"
+                    "json_tree(manifest_json,'$.files') j "
+                    "WHERE j.type='object' AND "
+                    "json_extract(j.value,'$.table_id')=? LIMIT 1",
                     (table_id,),
                 ).fetchone()
                 if row is not None:
-                    return json.loads(row[0])
+                    receipt = json.loads(row[0])
+                    _verify_record(receipt, receipt["schema"])
+                    return json.loads(row[1])
         return None
 
     def describe_reference(self, reference: Mapping[str, Any]) -> dict[str, Any]:
@@ -533,11 +574,257 @@ class BTStore:
         self._table_path(str(reference.get("table_id", "")))
         if reference.get("logical_hash") != reference.get("table_id"):
             raise ValueError("BT table logical identity differs")
+        if reference.get("format") == "concat":
+            if (
+                reference["table_id"]
+                != _identity({"format": "concat", "parts": reference["parts"]})
+                or reference["checksum"] != reference["table_id"]
+                or any(
+                    part["reference"].get("format") is not None
+                    for part in reference["parts"]
+                )
+                or reference["rows"] != sum(part["rows"] for part in reference["parts"])
+            ):
+                raise ValueError("BT composition metadata identity differs")
         self._table_path(str(reference.get("table_id", "")))
         original = self._registered_table(str(reference.get("table_id", "")))
         if original is None or original != dict(reference):
             raise ValueError("BT table reference differs from its registered record")
         return original
+
+    def publish_table(
+        self, frame: pl.DataFrame, *, check_canceled=lambda: None
+    ) -> dict[str, Any]:
+        """Publish one new primitive through the same immutable table authority."""
+        check_canceled()
+        return self._save_table(frame, check_canceled)
+
+    def publish_continuation(
+        self,
+        frames: Mapping[str, pl.DataFrame],
+        *,
+        previous: Mapping[str, Mapping[str, Any]],
+        check_canceled: Callable[[], None] = lambda: None,
+    ) -> dict[str, dict[str, Any]]:
+        """Retain equal historical prefixes; write only changed primitive tails.
+
+        Original tables are consumed through this owner's typed reader. No old
+        artifact is rehashed or rewritten. Summary tables without a daily axis
+        are published through the ordinary immutable publisher.
+        """
+        references = {}
+        for name, frame in frames.items():
+            check_canceled()
+            original = previous.get(name)
+            if original is None:
+                references[name] = self.publish_table(
+                    frame, check_canceled=check_canceled
+                )
+                continue
+            old = self.read_reference(original)
+            if old.equals(frame):
+                references[name] = self.describe_reference(original)
+                continue
+            axis = next(
+                (
+                    key
+                    for key in ("evaluation_date", "time", "target_date")
+                    if frame.schema.get(key) == pl.Date
+                ),
+                None,
+            )
+            if (
+                axis is None
+                or frame.schema != old.schema
+                or frame[axis].null_count()
+                or old[axis].null_count()
+            ):
+                references[name] = self.publish_table(
+                    frame, check_canceled=check_canceled
+                )
+                continue
+            grouping = (
+                [
+                    key
+                    for key in ("window_kind", "window_id", "method")
+                    if key in frame.columns
+                ]
+                if "window_id" in frame.columns
+                else ["path_kind", "lag"]
+                if "path_kind" in frame.columns and "lag" in frame.columns
+                else ["lag"]
+                if "lag" in frame.columns
+                else ["quantile"]
+                if "quantile" in frame.columns
+                else []
+            )
+            while True:
+                groups = (
+                    frame.partition_by(grouping, maintain_order=True)
+                    if grouping and frame.height
+                    else [frame]
+                )
+                if pl.concat(groups).equals(frame):
+                    break
+                grouping = grouping[:-1]
+            parts = []
+            for group in groups:
+                predicates = (
+                    [
+                        {"column": key, "operation": "eq", "value": group[key][0]}
+                        for key in grouping
+                    ]
+                    if group.height
+                    else []
+                )
+                from .table_composition import select
+
+                before = select(old, predicates)
+                days = sorted(set(before[axis].to_list()) | set(group[axis].to_list()))
+                low, high = -1, len(days)
+                while high - low > 1:
+                    check_canceled()
+                    middle = (low + high) // 2
+                    if before.filter(pl.col(axis) <= days[middle]).equals(
+                        group.filter(pl.col(axis) <= days[middle])
+                    ):
+                        low = middle
+                    else:
+                        high = middle
+                if low >= 0:
+                    parts.append(
+                        {
+                            "reference": original,
+                            "filters": [
+                                *predicates,
+                                {"column": axis, "operation": "le", "value": days[low]},
+                            ],
+                        }
+                    )
+                delta = group if low < 0 else group.filter(pl.col(axis) > days[low])
+                if delta.height or not parts:
+                    parts.append(
+                        {
+                            "reference": self.publish_table(
+                                delta, check_canceled=check_canceled
+                            )
+                        }
+                    )
+            references[name] = self.compose_reference(parts)
+        return references
+
+    def compose_reference(self, parts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """Select/concatenate registered tables using only owner coordinate facts.
+
+        Each part has an original ``reference`` and optional coordinate
+        ``filters`` (column/operation/value; eq/ge/le). Existing concatenations
+        are flattened. No numerical file is read, hashed or rewritten.
+        """
+        from .table_composition import (
+            COORDINATES,
+            combine_coordinates,
+            filters,
+            selected_coordinates,
+        )
+
+        selected, schema, facts = [], None, []
+        complete_facts = True
+        for part in parts:
+            reference = self.describe_reference(part["reference"])
+            with self._read_connection() as connection:
+                if not connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone():
+                    raise ValueError(
+                        "BT composition needs explicit table-index maintenance"
+                    )
+                row = connection.execute(
+                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                    (reference["table_id"],),
+                ).fetchone()
+            if row is None:
+                raise ValueError(
+                    "BT composition needs explicit table-index maintenance"
+                )
+            index = json.loads(row[0])
+            if "columns" not in index:
+                raise ValueError(
+                    "BT composition needs explicit original-column index maintenance"
+                )
+            if schema is None:
+                schema = {
+                    name: index["schema"][name]
+                    for name in index.get("columns", index["schema"])
+                }
+            elif schema != index["schema"]:
+                raise ValueError("BT composition table schemas differ")
+            predicates = filters(
+                part.get("filters", ()),
+                {
+                    key: value
+                    for key, value in index["schema"].items()
+                    if key in COORDINATES
+                },
+            )
+            members = reference.get("parts", [{"reference": reference, "filters": []}])
+            for member in members:
+                original = self.describe_reference(member["reference"])
+                combined = [*member["filters"], *predicates]
+                with self._read_connection() as connection:
+                    original_index = connection.execute(
+                        "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                        (original["table_id"],),
+                    ).fetchone()
+                if original_index is None:
+                    raise ValueError(
+                        "BT composition needs explicit coordinate-index maintenance"
+                    )
+                axis = selected_coordinates(
+                    json.loads(original_index[0]).get("coordinates"),
+                    combined,
+                    schema=json.loads(original_index[0])["schema"],
+                )
+                rows = (
+                    original["rows"]
+                    if not combined
+                    else sum(item["_rows"] for item in axis)
+                )
+                if axis is None:
+                    complete_facts = False
+                else:
+                    facts.extend(axis)
+                if rows or not selected:
+                    selected.append(
+                        {"reference": original, "filters": combined, "rows": rows}
+                    )
+        if schema is None:
+            raise ValueError("BT composition needs at least one registered table")
+        payload = {"format": "concat", "parts": selected}
+        identity = _identity(payload)
+        reference = {
+            "backend": "bt",
+            "table_id": identity,
+            "logical_hash": identity,
+            "checksum": identity,
+            "rows": sum(item["rows"] for item in selected),
+            **payload,
+        }
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO bt_table_index VALUES(?,?,?)",
+                (
+                    identity,
+                    _json(reference),
+                    self._index_schema(
+                        reference,
+                        schema,
+                        coordinates=combine_coordinates(facts, schema=schema)
+                        if complete_facts
+                        else None,
+                    ),
+                ),
+            )
+        return self.describe_reference(reference)
 
     def index_plan(self) -> dict[str, Any]:
         """Describe explicit table-descriptor maintenance from saved receipts."""
@@ -555,11 +842,37 @@ class BTStore:
                     _verify_record(receipt, receipt["schema"])
                     for ref in receipt["files"].values():
                         tables[ref["table_id"]] = ref
+                        for part in ref.get("parts", ()):
+                            original = part["reference"]
+                            tables[original["table_id"]] = original
         return {
             "version": "bt.table.index.v2",
             "meta_path": str(self.meta_path),
             "tables": [tables[key] for key in sorted(tables)],
         }
+
+    def maintain_reference(
+        self, reference: Mapping[str, Any], *, check_canceled=lambda: None
+    ) -> dict[str, Any]:
+        """Explicitly audit/index one retained registered table and its leaves.
+
+        This maintenance entry does not publish a replacement receipt or change
+        original bytes. Ordinary selected reads never call it implicitly.
+        """
+        reference = self.describe_reference(reference)
+        originals = [part["reference"] for part in reference.get("parts", ())]
+        # Original leaves precede concatenations so bounded typed selection has
+        # native coordinate authority when the composed index is rebuilt.
+        tables = {item["table_id"]: item for item in originals}
+        tables[reference["table_id"]] = reference
+        return self.build_index(
+            {
+                "version": "bt.table.index.v2",
+                "meta_path": str(self.meta_path),
+                "tables": list(tables.values()),
+            },
+            check_canceled=check_canceled,
+        )
 
     def build_index(
         self, plan, *, check_canceled=lambda: None, progress=lambda *_: None
@@ -583,17 +896,29 @@ class BTStore:
             check_canceled()
             if self._registered_table(ref["table_id"], original=True) != ref:
                 raise ValueError("BT index plan reference changed")
-            path = self._table_path(ref["table_id"])
-            if _file_hash(path) != ref["checksum"]:
-                raise ValueError("corrupt BT artifact")
-            if not admit_parquet_materialization(_path(path)):
+            paths = (
+                [
+                    self._table_path(part["reference"]["table_id"])
+                    for part in ref["parts"]
+                ]
+                if ref.get("format") == "concat"
+                else [self._table_path(ref["table_id"])]
+            )
+            if not all(admit_parquet_materialization(_path(path)) for path in paths):
                 unknown += 1
                 progress(position, len(plan["tables"]))
                 continue
-            frame = pl.read_parquet(_path(path))
-            if hash_dataframe(frame) != ref["table_id"]:
-                raise ValueError("BT table logical identity differs")
-            schema = self._index_schema(ref, frame.schema)
+            if ref.get("format") == "concat":
+                self.verify_reference(ref, deep=True)
+                frame = self.read_reference(ref)
+            else:
+                path = paths[0]
+                if _file_hash(path) != ref["checksum"]:
+                    raise ValueError("corrupt BT artifact")
+                frame = pl.read_parquet(_path(path))
+                if hash_dataframe(frame) != ref["table_id"]:
+                    raise ValueError("BT table logical identity differs")
+            schema = self._index_schema(ref, frame.schema, frame=frame)
             del frame
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -610,18 +935,112 @@ class BTStore:
             "unknown_tables": unknown,
         }
 
-    def read_reference(self, reference: Mapping[str, Any]) -> pl.DataFrame:
-        """Verify bytes and logical identity before decoding an opaque table ref."""
+    def read_reference(
+        self,
+        reference: Mapping[str, Any],
+        *,
+        filters: Sequence[Mapping[str, Any]] = (),
+        coordinates: pl.DataFrame | None = None,
+    ) -> pl.DataFrame:
+        """Read registered typed rows with indexed pruning and Parquet pushdown.
+
+        Date/String/Integer coordinate predicates use eq/ge/le. Disjoint
+        original leaves are skipped before opening a numerical file. Missing
+        coordinate authority requires explicit index maintenance; this reader
+        never implicitly decodes history to establish a selection.
+        """
         if self._verification is None:
             with self.read_context() as reader:
-                return reader.read_reference(reference)
+                return reader.read_reference(
+                    reference, filters=filters, coordinates=coordinates
+                )
         reference = self.describe_reference(reference)
+        from .table_composition import (
+            COORDINATES,
+            admit_coordinates,
+            select,
+            select_keys,
+            selected_coordinates,
+            selected_keys,
+        )
+        from .table_composition import filters as admit_filters
+
+        with self._read_connection() as connection:
+            index_row = (
+                connection.execute(
+                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                    (reference["table_id"],),
+                ).fetchone()
+                if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone()
+                else None
+            )
+        index = None if index_row is None else json.loads(index_row[0])
+        if (filters or coordinates is not None) and index is None:
+            raise ValueError(
+                "BT selected reads need explicit coordinate-index maintenance"
+            )
+        predicates = (
+            []
+            if not filters
+            else admit_filters(
+                filters,
+                {
+                    key: dtype
+                    for key, dtype in index["schema"].items()
+                    if key in COORDINATES
+                },
+            )
+        )
+        expected = reference["rows"]
+        if coordinates is not None:
+            coordinates = admit_coordinates(coordinates, index["schema"])
+        if predicates or coordinates is not None:
+            facts = selected_coordinates(
+                index.get("coordinates"), predicates, schema=index["schema"]
+            )
+            if coordinates is not None:
+                facts = selected_keys(facts, coordinates, schema=index["schema"])
+            expected = sum(item["_rows"] for item in facts)
+        if (predicates or coordinates is not None) and expected == 0:
+            return self._empty_indexed_table(
+                index["schema"], columns=index.get("columns")
+            )
+        if reference.get("format") == "concat":
+            frames = []
+            for part in reference["parts"]:
+                combined = [*part["filters"], *predicates]
+                selected = self.read_reference(
+                    part["reference"], filters=combined, coordinates=coordinates
+                )
+                if selected.height:
+                    frames.append(selected)
+            if frames:
+                columns = frames[0].columns
+                frame = pl.concat([item.select(columns) for item in frames])
+                if frame.height != expected:
+                    raise ValueError("BT composed table selected row count differs")
+                return frame
+            if index is None:
+                raise ValueError(
+                    "BT empty selection needs explicit table-index maintenance"
+                )
+            return self._empty_indexed_table(
+                index["schema"], columns=index.get("columns")
+            )
         path = self._table_path(str(reference.get("table_id", "")))
         try:
-            frame = pl.read_parquet(_path(path))
+            if predicates or coordinates is not None:
+                selected = select(pl.scan_parquet(_path(path)), predicates)
+                if coordinates is not None:
+                    selected = select_keys(selected, coordinates)
+                frame = selected.collect()
+            else:
+                frame = pl.read_parquet(_path(path))
         except pl.exceptions.PolarsError as error:
             raise ValueError("corrupt or unreadable BT artifact") from error
-        if frame.height != reference.get("rows"):
+        if frame.height != expected:
             raise ValueError("BT table row count differs")
         with self._read_connection() as connection:
             if connection.execute(
@@ -637,12 +1056,106 @@ class BTStore:
                     raise ValueError("BT table typed schema differs")
         return frame
 
+    @staticmethod
+    def _empty_indexed_table(schema, *, columns=None):
+        if columns is None:
+            raise ValueError(
+                "BT empty selection needs explicit original-column index maintenance"
+            )
+        try:
+            return pl.DataFrame(
+                schema={key: getattr(pl, schema[key]) for key in (columns or schema)}
+            )
+        except (AttributeError, TypeError) as error:
+            raise ValueError(
+                "BT selection needs a supported registered typed schema"
+            ) from error
+
+    def execution_references(
+        self,
+        frames: Mapping[str, pl.DataFrame],
+        *,
+        previous: Mapping[str, Mapping[str, Any]],
+        through: date,
+        check_canceled: Callable[[], None] = lambda: None,
+    ) -> dict[str, dict[str, Any]]:
+        """Append native execution tails without decoding or rewriting history.
+
+        Current lot/P&L snapshots and checkpoint frames replace their previous
+        references. Every daily/event table must be strictly after the restored
+        boundary. The engine's cumulative checkpoint owns financial summaries.
+        """
+        snapshots = {"open_lots", "ideal_open_lots", "transaction_pnl"}
+        result = dict(previous)
+        for name, frame in frames.items():
+            check_canceled()
+            original = previous.get(name)
+            if original is None or name in snapshots or "checkpoint_" in name:
+                result[name] = self.publish_table(frame, check_canceled=check_canceled)
+                continue
+            axis = (
+                "exit_date"
+                if name == "fifo_matches"
+                else ("execution_date" if name == "transaction_plans" else "time")
+            )
+            if axis not in frame.columns or frame.schema[axis] != pl.Date:
+                raise ValueError(
+                    f"execution continuation table {name} lacks its dated axis"
+                )
+            if frame[axis].null_count() or frame.filter(pl.col(axis) <= through).height:
+                raise ValueError(
+                    f"execution continuation table {name} overlaps completed history"
+                )
+            if frame.is_empty():
+                result[name] = self.compose_reference(
+                    [
+                        {
+                            "reference": original,
+                            "filters": [
+                                {"column": axis, "operation": "le", "value": through}
+                            ],
+                        }
+                    ]
+                )
+                continue
+            tail = self.publish_table(frame, check_canceled=check_canceled)
+            try:
+                result[name] = self.compose_reference(
+                    [
+                        {
+                            "reference": original,
+                            "filters": [
+                                {"column": axis, "operation": "le", "value": through}
+                            ],
+                        },
+                        {"reference": tail},
+                    ]
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"execution continuation table {name}: {error}"
+                ) from error
+        return result
+
     def verify_reference(
         self, reference: Mapping[str, Any], *, deep: bool = False
     ) -> None:
         """Check an opaque table without materializing its numerical values."""
         if reference.get("backend") != "bt":
             raise ValueError("reference is not a BT table")
+        if reference.get("format") == "concat":
+            reference = self.describe_reference(reference)
+            if (
+                _identity({"format": "concat", "parts": reference["parts"]})
+                != reference["table_id"]
+                or sum(part["rows"] for part in reference["parts"]) != reference["rows"]
+            ):
+                raise ValueError("BT composition identity differs")
+            for part in reference["parts"]:
+                self.verify_reference(part["reference"], deep=deep)
+            if deep:
+                self._verify_coordinates(reference, self.read_reference(reference))
+            return
         original = self._registered_table(
             str(reference.get("table_id", "")), original=True
         )
@@ -673,10 +1186,46 @@ class BTStore:
             frame = self.read_reference(reference)
             if hash_dataframe(frame) != reference.get("logical_hash"):
                 raise ValueError("BT table logical identity differs")
+            self._verify_coordinates(reference, frame)
+
+    def _verify_coordinates(self, reference, frame):
+        from .table_composition import coordinates
+
+        with self._read_connection() as connection:
+            row = (
+                connection.execute(
+                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                    (reference["table_id"],),
+                ).fetchone()
+                if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone()
+                else None
+            )
+        if row is not None:
+            index = json.loads(row[0])
+            if "columns" in index and index["columns"] != frame.columns:
+                raise ValueError(
+                    "BT original-column index differs from original table columns"
+                )
+            actual = coordinates(frame)
+            recorded = index.get("coordinates")
+            if recorded:
+                columns = [name for name in recorded[0] if name != "_rows"]
+                if any(name not in frame.columns for name in columns):
+                    raise ValueError("BT coordinate index names absent table columns")
+                actual = coordinates(frame.select(columns))
+            if recorded is not None and recorded != actual:
+                raise ValueError("BT coordinate index differs from original table rows")
 
     def verify_receipt(self, receipt: Mapping[str, Any]) -> None:
         """Verify all referenced tables, including those not selected for display."""
         _verify_record(receipt, receipt.get("schema"))
+        if receipt.get("schema") == "bt.shared.v1":
+            from .input_maintenance import verify_binding
+
+            with self._read_connection() as connection:
+                verify_binding(connection, receipt)
         for reference in receipt.get("files", {}).values():
             self.verify_reference(reference)
 
@@ -697,17 +1246,67 @@ class BTStore:
         query += " ORDER BY created_at DESC,receipt_identity LIMIT 1"
         with self._read_connection() as connection:
             row = connection.execute(query, arguments).fetchone()
-        return (
-            None
-            if row is None
-            else _decode_record(
-                row,
-                "bt.shared.v1",
-                owner_id=row["owner_id"],
-                component=row["component"],
-                input_identity=row["input_identity"],
-                receipt_identity=row["receipt_identity"],
+            receipt = (
+                None
+                if row is None
+                else _decode_record(
+                    row,
+                    "bt.shared.v1",
+                    owner_id=row["owner_id"],
+                    component=row["component"],
+                    input_identity=row["input_identity"],
+                    receipt_identity=row["receipt_identity"],
+                )
             )
+            if receipt is not None:
+                from .input_maintenance import verify_binding
+
+                verify_binding(connection, receipt)
+        return receipt
+
+    def maintain_shared_inputs(
+        self,
+        owner_id: str,
+        *,
+        original: Mapping[str, Any],
+        original_inputs: Mapping[str, Any],
+        replacement_inputs: Mapping[str, Any],
+        settings: Mapping[str, Any],
+        kernel: str,
+        scope: Mapping[str, Any],
+        consumed: Mapping[str, Mapping[str, SharedInputEvidence]],
+        original_request: Mapping[str, str],
+        report_reference: str,
+        report_sha256: str,
+        sources: Mapping[str, Any],
+        check_canceled: Callable[[], None] = lambda: None,
+    ) -> dict[str, Any]:
+        """Bind proven unchanged legacy signal primitives at the same boundary.
+
+        Complete source-owned typed projections and the original execution
+        report are required. A caller may use a published source-readiness
+        report for ordinary same-boundary reuse once original authority has
+        been explicitly restored. No numerical values are decoded or computed;
+        missing coverage may be explicitly initialized separately. This grants
+        no append, group upgrade or causal continuation state.
+        """
+        from .input_maintenance import maintain
+
+        return maintain(
+            self,
+            owner_id,
+            original=original,
+            original_inputs=original_inputs,
+            replacement_inputs=replacement_inputs,
+            settings=settings,
+            kernel=kernel,
+            scope=scope,
+            consumed=consumed,
+            original_request=original_request,
+            report_reference=report_reference,
+            report_sha256=report_sha256,
+            sources=sources,
+            check_canceled=check_canceled,
         )
 
     def shared_evaluation(
@@ -729,15 +1328,26 @@ class BTStore:
             if names is None or name in names
         }
 
-    def _publication_files(self, frames, file_references, check_canceled):
+    def _publication_files(
+        self,
+        frames: Mapping[str, pl.DataFrame],
+        file_references: Mapping[str, Mapping[str, Any]] | None,
+        check_canceled,
+    ):
         files = {}
-        for name in dict.fromkeys([*frames, *(file_references or {})]):
+        names: list[str] = [*frames, *(file_references or {})]
+        for name in dict.fromkeys(names):
             if not name.replace("_", "").isalnum():
                 raise ValueError("invalid BT primitive name")
             check_canceled()
             ref = (file_references or {}).get(name)
             if ref is not None:
                 ref = self.describe_reference(ref)
+                if name in frames and ref.get("format") == "concat":
+                    raise ValueError(
+                        "Composed BT publication accepts references only; "
+                        "omit the supplied frame"
+                    )
                 if (
                     name in frames
                     and hash_dataframe(frames[name]) != ref["logical_hash"]
@@ -749,6 +1359,22 @@ class BTStore:
             else:
                 files[name] = self._save_table(frames[name], check_canceled)
         return files
+
+    def _require_publication_files(self, files):
+        """Fence artifact existence against cleanup under the metadata writer."""
+        for reference in files.values():
+            originals = (
+                [part["reference"] for part in reference["parts"]]
+                if reference.get("format") == "concat"
+                else [reference]
+            )
+            if any(
+                not self._table_path(original["table_id"]).is_file()
+                for original in originals
+            ):
+                raise ValueError(
+                    "BT publication artifact is missing; explicit recovery is required"
+                )
 
     def publish_shared(
         self,
@@ -762,6 +1388,7 @@ class BTStore:
         expected_shared: Mapping[str, Any] | None = None,
         file_references: Mapping[str, Mapping[str, Any]] | None = None,
         check_canceled: Callable[[], None] = lambda: None,
+        _maintenance_admission: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Publish an immutable shared primitive set using an explicit CAS proof."""
         for value, name in (
@@ -786,6 +1413,39 @@ class BTStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             check_canceled()
+            self._require_publication_files(files)
+            from .input_maintenance import verify_binding
+
+            binding = receipt["metadata"].get("primitive_only_input_binding")
+            if binding is not None and _maintenance_admission != binding:
+                admitted = connection.execute(
+                    "SELECT * FROM bt_shared WHERE owner_id=? AND component=? "
+                    "AND json_extract(manifest_json,"
+                    "'$.metadata.primitive_only_input_binding.identity')=? LIMIT 1",
+                    (owner_id, component, binding.get("identity")),
+                ).fetchone()
+                authority = (
+                    None
+                    if admitted is None
+                    else _decode_record(
+                        admitted,
+                        "bt.shared.v1",
+                        owner_id=owner_id,
+                        component=component,
+                        input_identity=admitted["input_identity"],
+                        receipt_identity=admitted["receipt_identity"],
+                    )
+                )
+                if (
+                    authority is None
+                    or authority["metadata"].get("primitive_only_input_binding")
+                    != binding
+                ):
+                    raise ValueError(
+                        "Primitive binding requires maintain_shared_inputs admission"
+                    )
+                verify_binding(connection, authority)
+            verify_binding(connection, receipt)
             row = connection.execute(
                 "SELECT * FROM bt_shared WHERE owner_id=? AND component=? "
                 "ORDER BY created_at DESC,receipt_identity LIMIT 1",
@@ -921,6 +1581,7 @@ class BTStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             check_canceled()
+            self._require_publication_files(files)
             previous = connection.execute(
                 "SELECT * FROM bt_chapters WHERE evaluation_id=? AND section=?",
                 (evaluation_id, section),
@@ -1046,6 +1707,10 @@ class BTStore:
             for receipt in [*chapters, *shared]
             for ref in receipt["files"].values()
         }
+        for reference in list(tables.values()):
+            for part in reference.get("parts", ()):
+                original = part["reference"]
+                tables[original["table_id"]] = original
         return {
             "evaluations": evaluations,
             "chapters": chapters,
@@ -1106,8 +1771,17 @@ class BTStore:
             try:
                 if deep:
                     self.verify_reference(reference, deep=True)
-                elif not self._table_path(reference["table_id"]).is_file():
-                    raise ValueError("missing BT artifact")
+                else:
+                    selected = (
+                        [part["reference"] for part in reference.get("parts", ())]
+                        if reference.get("format") == "concat"
+                        else [reference]
+                    )
+                    if any(
+                        not self._table_path(item["table_id"]).is_file()
+                        for item in selected
+                    ):
+                        raise ValueError("missing BT artifact")
             except (ValueError, OSError, pl.exceptions.PolarsError) as error:
                 issues.append({"table_id": reference["table_id"], "reason": str(error)})
         return {
@@ -1243,6 +1917,13 @@ class BTStore:
                     ):
                         raise RuntimeError("BT cleanup candidate changed")
                     path.unlink()
+                if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone():
+                    connection.execute(
+                        "DELETE FROM bt_table_index WHERE table_id=?",
+                        (candidate["table_id"],),
+                    )
                 completed.append(candidate["table_id"])
                 connection.execute(
                     "UPDATE bt_cleanup_receipts SET completed_json=? WHERE id=?",

@@ -382,3 +382,112 @@ def test_rolling_ic_uses_240_valid_causal_observations() -> None:
     expected = [float(index) for index in range(241) if index != 100]
     assert first["rolling_ic"] == pytest.approx(sum(expected) / 240.0)
     assert first["rolling_observations"] == 240
+
+
+def test_rolling_ic_append_preserves_prefix_and_bounds_actual_kernel(monkeypatch):
+    from polars.testing import assert_frame_equal
+
+    import bagelquant_bt.horizon as horizon
+
+    sessions = [date(2024, 1, 1) + timedelta(days=index) for index in range(303)]
+    frames = []
+    for width in (1, 2):
+        frames.append(
+            pl.DataFrame(
+                {
+                    "evaluation_date": sessions,
+                    "window_kind": ["cumulative"] * len(sessions),
+                    "window_id": [f"cumulative_{width}d"] * len(sessions),
+                    "start_session": [1] * len(sessions),
+                    "end_session": [width] * len(sessions),
+                    "pearson_ic": [
+                        None if index % 7 == 0 else float(index % 11) / 11
+                        for index in range(303)
+                    ],
+                    "spearman_ic": [
+                        float("nan") if index % 5 == 0 else float(index % 13) / 13
+                        for index in range(303)
+                    ],
+                }
+            )
+        )
+    ic = pl.concat(frames)
+    previous = rolling_window_information_coefficients(
+        ic.filter(pl.col("evaluation_date") <= sessions[299]), observations=20
+    )
+    reference = rolling_window_information_coefficients(ic, observations=20)
+    actual = []
+    kernel = horizon._rolling_ic_values
+
+    def counted(values, **kwargs):
+        actual.append(values)
+        return kernel(values, **kwargs)
+
+    monkeypatch.setattr(horizon, "_rolling_ic_values", counted)
+    updated = rolling_window_information_coefficients(
+        ic, observations=20, previous=previous, previous_observations=20
+    )
+    assert_frame_equal(updated, reference)
+    assert_frame_equal(
+        updated.filter(pl.col("evaluation_date") <= sessions[299]), previous
+    )
+    assert len(actual) == 1
+    assert max(actual[0].group_by("window_id", "method").len()["len"]) <= 23
+    actual.clear()
+    assert_frame_equal(
+        rolling_window_information_coefficients(
+            ic, observations=20, previous=updated, previous_observations=20
+        ),
+        updated,
+    )
+    assert actual[0].is_empty()
+    assert_frame_equal(
+        rolling_window_information_coefficients(
+            ic.head(0), observations=20, previous=updated, previous_observations=20
+        ),
+        updated,
+    )
+    with pytest.raises(ValueError, match="policy differs"):
+        rolling_window_information_coefficients(
+            ic, observations=21, previous=previous, previous_observations=20
+        )
+    with pytest.raises(ValueError, match="observation halo"):
+        rolling_window_information_coefficients(
+            ic.filter(pl.col("evaluation_date") > sessions[299]),
+            observations=20,
+            previous=previous,
+            previous_observations=20,
+        )
+
+
+def test_rolling_ic_finite_halo_matches_reference_to_numerical_tolerance():
+    import random
+
+    from polars.testing import assert_frame_equal
+
+    random_source = random.Random(0)
+    sessions = [date(2024, 1, 1) + timedelta(days=index) for index in range(163)]
+    ic = pl.DataFrame(
+        {
+            "evaluation_date": sessions,
+            "window_kind": ["cumulative"] * 163,
+            "window_id": ["cumulative_1d"] * 163,
+            "start_session": [1] * 163,
+            "end_session": [1] * 163,
+            "pearson_ic": [random_source.uniform(-1, 1) for _ in sessions],
+            "spearman_ic": [random_source.uniform(-1, 1) for _ in sessions],
+        }
+    )
+    previous = rolling_window_information_coefficients(ic.head(151), observations=13)
+    updated = rolling_window_information_coefficients(
+        ic, observations=13, previous=previous, previous_observations=13
+    )
+    reference = rolling_window_information_coefficients(ic, observations=13)
+    assert_frame_equal(
+        updated, reference, check_exact=False, abs_tol=1e-12, rel_tol=1e-12
+    )
+    assert_frame_equal(
+        updated.filter(pl.col("evaluation_date") <= sessions[150]),
+        previous,
+        check_exact=True,
+    )

@@ -1,9 +1,58 @@
 # Saved evaluation and statistical evidence
 
+Explicit `BTStore.maintain_shared_inputs` admits retained legacy signal primitives
+only at their original observation and maturity boundaries. It requires an
+immutable original execution request, numerical identity reproduction, a source
+report reference/SHA256 and complete typed value, Domain, price, calendar and
+label projections through `SharedInputEvidence`. Source owners attest exact
+consumed content (including empty coordinates, null/nonfinite values and traces);
+BT checks scope/equality and retained authority, not external source semantics.
+Ordinary receipt reads and the closing writer validate the registered original
+chain before cache reuse. Preserve all old files, groups and numerical metadata;
+an independently missing `daily_signal_coverage` may be initialized once. This
+admission grants neither append nor group upgrades and cannot manufacture native
+scope or continuation state. Unknown projections require explicit maintenance.
+
 Evaluate saved Core numeric/prediction and weights Nodes or frozen execution
 plans. Never build/train upstream, fetch providers or submit work during passive
 reads. One pure formula owns each statistic; portfolio mechanics supply paths
 and reusable evaluation functions consume explicit saved primitives.
+
+Calculation changes require metadata-only prerequisites and actual incremental
+new/affected daily work. Reuse historical primitives, chapters and causal state;
+revisit newly mature horizon tails and propagate input revisions locally before
+deriving current summaries from saved primitives/state. New enclosing receipts,
+cutoffs and unrelated counters never justify replaying all daily statistics or
+accounts. Full computation is initialization or a relevant numerical definition
+change. Missing impact/prefix evidence must be an actionable plan/maintenance
+requirement. Prove append/repair equality to a full reference and instrument
+historical daily/account calls; an incremental action name is not acceptance.
+
+Daily risk fitting uses `plan_risk_factor_update` and the same
+`evaluate_risk_factor_returns` formula for initialization, append and repair.
+Plan before loading exposures/prices; `windows(sessions=32)` bounds independent
+fit batches. Decision t uses next-session-open to following-session-open,
+maturing at the following session. Preserve null/complete-case exclusion,
+normalized sqrt(cap) WLS, cap-constrained industry coefficients, rank checks
+and sorted industry/asset ordering. A preceding price carry retains actual
+observation dates, including suspended assets; never invent observation dates.
+Core owns exposure numerical artifacts; BTStore owns returns, diagnostics and
+carry/state via shared receipts. Append registered delta references and preserve
+old numerical bytes, rather than compare/decode complete historical frames.
+The host declares causal diagnostic population policy; a current-day observed
+coordinate union need not equal a retired rectangular monthly population.
+
+`alpha_update_plan` accepts an EvaluationResult or its saved state mapping and
+source-owned affected date intervals. It plans before reading primitive tables,
+widening the affected date by requested horizon/persistence/lag dependencies and
+selecting the latest preceding receipt with matching numerical policy/components.
+An optional source proof callback validates complete old-cutoff prefixes using
+metadata; `evaluate_alpha(previous=selected)` revalidates them when consuming.
+No safe preceding state yields a blocked recovery plan, never full-history replay.
+Save `pending_horizon_start` alongside path state so arbitrarily delayed labels
+retain their original read scope even in metadata-only planning. Callers publish
+suffix compositions from the selected original receipt, retaining old files and
+the immutable receipt chain; never append repaired values to the latest stale one.
 
 Caller-aligned one-session returns require time, asset_id, forward_return,
 interval_start, interval_end and available_date. Time is an alignment label;

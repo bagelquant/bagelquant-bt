@@ -28,7 +28,7 @@ jobs:
         with:
           repository: bagelquant/bagelquant-core
           path: bagelquant-core
-          ref: 3649b0b0e1750e31ccb7ca8aa8d076e50763bf0f
+          ref: 17e7a5bba0b1f0dce9acf3a255e125b9204acaf1
       - name: Validate package
         working-directory: bagelquant-bt
         run: |

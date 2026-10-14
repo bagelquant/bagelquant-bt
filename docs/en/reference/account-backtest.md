@@ -37,3 +37,40 @@ steps. `merge_execution_tables` appends verified history and replaces snapshots;
 snapshot and mature events, never future fills or final holdings. No read replay.
 
 For each plan, target/actual return equals the corresponding attributed P&L divided by that plan's filled notional; the money P&L and fee columns remain separately inspectable. Account returns use equity/NAV.
+
+Native incremental callers supply `input_evidence` for the complete current
+consumed range and `prefix_evidence` for each original checkpoint channel scope.
+Both use `SharedInputEvidence`, including complete empty channels: weights and
+decisions (or transactions), prices, calendar, availability, lot sizes, actions
+and action coverage. `validate_execution_continuation(checkpoint_metadata, ...)`
+checks these records before any numerical read. Source receipts may advance;
+original content, schema, selectors, coordinates and traces must remain equal.
+The `bt.execution.inputs.v1` binding separately records financial settings,
+capital, lag and reference mode. Annualization stays report-only. Legacy signal
+maintenance does not create this account authority; unknown old account evidence
+requires explicit original-input checkpoint maintenance.
+When a selector includes `asset_starts`, continuation preserves every original
+asset's first consumed date. A newly admitted asset starts after the checkpoint;
+its earlier unconsumed prices do not become historical account inputs.
+
+Proven continuation supplies strictly new numerical rows plus the complete
+calendar covering frozen execution/settlement dates. Checkpoints keep marks,
+pending plans, future actions and cumulative per-plan attribution. Newly known
+old-record actions require exact original position/lot/session dates; an effect
+inside completed history requires a preceding checkpoint and suffix repair.
+`result.tables["transaction_pnl"]` is cumulative without reading old fills or
+matches. `result.tables["turnover"]` uses only new fills/values and preceding
+checkpoint equity through `account_fill_turnover`.
+
+Save tails through `BTStore.execution_references(frames, previous=..., through=...)`
+and `publish_shared(file_references=..., expected_shared=...)`. Daily/event tables
+retain their original prefix references, while lot/P&L/checkpoint snapshots
+publish fresh small frames. The same boundary selection supports suffix repair.
+`read_reference(reference, filters=[{"column": "time", "operation": "eq",
+"value": cutoff}])` reads selected registered rows with leaf pruning and Parquet
+predicate pushdown; indexed asset/ledger dates may be combined. Missing legacy
+coordinate authority requires explicit `index_plan/build_index` maintenance.
+Native indexes preserve original column order and registered coordinate types,
+including sparse and all-null date keys. `verify_reference(deep=True)` compares
+the index against the original table; `maintain_reference` explicitly registers
+missing original facts without changing historical receipts or bytes.

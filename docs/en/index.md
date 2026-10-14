@@ -8,6 +8,7 @@ Core owns value/model computation and Data owns data and PIT evidence.
 - [Architecture and artifact ownership](architecture.md)
 - [Workers and resource limits](performance.md)
 - [Public API](reference/public-api.md)
+- [Daily risk update planning and state](risk-updates.md)
 - [Alpha evaluation](reference/factor-evaluation.md)
 - [Execution and FIFO](reference/account-backtest.md)
 - [Costs](reference/transaction-costs.md)

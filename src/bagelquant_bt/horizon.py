@@ -565,8 +565,9 @@ def window_factor_returns(
     """
 
     prepared = _prepare_factor_returns(factor, standardization)
-    return _window_factor_returns_prepared(prepared, forward_returns,
-        complete=standardization == "cross_sectional_zscore")
+    return _window_factor_returns_prepared(
+        prepared, forward_returns, complete=standardization == "cross_sectional_zscore"
+    )
 
 
 def _prepare_factor_returns(factor, standardization):
@@ -647,6 +648,7 @@ def signal_rank_persistence(
     calendar: pl.DataFrame,
     horizons: Sequence[int] = SIGNAL_PERSISTENCE_HORIZONS,
     progress: DailyDiagnosticProgress | None = None,
+    target_start: date | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Calculate same-universe rank autocorrelation and a grid half-life band."""
 
@@ -665,7 +667,7 @@ def signal_rank_persistence(
         "target_date": pl.Date,
         "horizon_sessions": pl.Int64,
         "rank_autocorrelation": pl.Float64,
-        "sample_size": pl.Int64,
+        "sample_size": pl.UInt32,
     }
     session_ordinals = pl.DataFrame(
         {
@@ -686,6 +688,11 @@ def signal_rank_persistence(
         pl.col("factor").alias("future_factor"),
         pl.col("_session_ordinal").alias("_target_ordinal"),
     )
+    if target_start is not None:
+        future = future.filter(pl.col("target_date") > target_start)
+        position = sessions.index(target_start) if target_start in sessions else 0
+        first = sessions[max(0, position - max(resolved_horizons))]
+        current = current.filter(pl.col("evaluation_date") >= first)
     date_chunks: list[tuple[int, int]] = []
     chunk_start: int | None = None
     chunk_end: int | None = None
@@ -997,12 +1004,17 @@ def rolling_window_information_coefficients(
     ic: pl.DataFrame,
     *,
     observations: int = DAILY_ROLLING_IC_OBSERVATIONS,
+    previous: pl.DataFrame | None = None,
+    previous_observations: int | None = None,
 ) -> pl.DataFrame:
     """Calculate causal rolling IC means over a fixed count of valid values.
 
     Null IC observations do not consume the window.  A value is published only
     on a date with a finite IC and only after ``observations`` valid values are
     available for that exact window and method.
+    ``previous`` retains proven completed observations per window/method. The
+    caller must prove that completed IC inputs are unchanged. Only new dates
+    and at most ``observations`` preceding finite values enter the rolling kernel.
     """
 
     if observations < 1:
@@ -1016,8 +1028,27 @@ def rolling_window_information_coefficients(
     missing = sorted(required - set(ic.columns))
     if missing:
         raise ValueError(f"IC series is missing required columns: {missing}")
+    if previous is not None:
+        if previous_observations != observations:
+            raise ValueError(
+                "Previous rolling IC observation policy differs or is unknown"
+            )
+        missing_previous = set(_rolling_ic_schema()) - set(previous.columns)
+        if missing_previous:
+            raise ValueError(
+                f"Previous rolling IC is missing columns: {sorted(missing_previous)}"
+            )
+        if previous.filter(
+            pl.col("rolling_ic").is_not_null()
+            & (pl.col("rolling_observations") != observations)
+        ).height:
+            raise ValueError("Previous rolling IC observation policy differs")
     if ic.is_empty():
-        return pl.DataFrame(schema=_rolling_ic_schema())
+        return (
+            pl.DataFrame(schema=_rolling_ic_schema())
+            if previous is None
+            else previous.clone()
+        )
     group_columns = [*_WINDOW_COLUMNS, "method"]
     keys = ["evaluation_date", *group_columns]
     long = (
@@ -1040,39 +1071,83 @@ def rolling_window_information_coefficients(
             pl.col("_value").is_finite().fill_null(False).alias("_is_valid"),
         )
         .sort([*group_columns, "evaluation_date"])
-        .with_columns(
-            pl.col("_is_valid")
-            .cast(pl.Int64)
-            .cum_sum()
-            .over(*group_columns)
-            .clip(upper_bound=observations)
-            .alias("rolling_observations")
-        )
     )
-    rolling = (
-        long.filter("_is_valid")
-        .with_columns(
-            pl.col("_value")
-            .rolling_mean(
-                window_size=observations,
-                min_samples=observations,
+    if previous is not None:
+        missing = set(_rolling_ic_schema()) - set(previous.columns)
+        if missing:
+            raise ValueError(
+                f"Previous rolling IC is missing columns: {sorted(missing)}"
             )
-            .over(*group_columns)
-            .alias("rolling_ic")
+        boundaries = previous.group_by(group_columns).agg(
+            pl.col("evaluation_date").max().alias("_previous_through"),
+            pl.col("rolling_observations").max().alias("_required_warm"),
         )
-        .select(*keys, "rolling_ic")
-    )
-    return (
-        long.join(rolling, on=keys, how="left")
-        .select(
-            "evaluation_date",
-            *_WINDOW_COLUMNS,
-            "method",
-            "rolling_ic",
-            "rolling_observations",
+        long = long.join(
+            boundaries, on=group_columns, how="left", maintain_order="left"
         )
-        .sort(["window_kind", "end_session", "method", "evaluation_date"])
+        fresh = long.filter(
+            pl.col("_previous_through").is_null()
+            | (pl.col("evaluation_date") > pl.col("_previous_through"))
+        )
+        warm = long.filter(
+            pl.col("_is_valid")
+            & (pl.col("evaluation_date") <= pl.col("_previous_through"))
+        )
+        warm = (
+            warm.group_by(group_columns, maintain_order=True)
+            .tail(observations)
+            .select(fresh.columns)
+        )
+        active = fresh.select(group_columns).unique()
+        required_warm = boundaries.join(active, on=group_columns, how="semi").join(
+            warm.group_by(group_columns).len(), on=group_columns, how="left"
+        )
+        if required_warm.filter(
+            pl.col("len").fill_null(0) < pl.col("_required_warm")
+        ).height:
+            raise ValueError(
+                "Rolling IC continuation requires the original finite observation halo"
+            )
+        long = pl.concat([warm.join(active, on=group_columns, how="semi"), fresh]).sort(
+            [*group_columns, "evaluation_date"]
+        )
+    long = long.with_columns(
+        pl.col("_is_valid")
+        .cast(pl.Int64)
+        .cum_sum()
+        .over(*group_columns)
+        .clip(upper_bound=observations)
+        .alias("rolling_observations")
     )
+    rolling = _rolling_ic_values(long.filter("_is_valid"), observations=observations)
+    result = long.join(rolling, on=keys, how="left")
+    if previous is not None:
+        result = result.filter(
+            pl.col("_previous_through").is_null()
+            | (pl.col("evaluation_date") > pl.col("_previous_through"))
+        )
+    result = result.select(
+        "evaluation_date",
+        *_WINDOW_COLUMNS,
+        "method",
+        "rolling_ic",
+        "rolling_observations",
+    ).sort(["window_kind", "end_session", "method", "evaluation_date"])
+    if previous is not None:
+        result = pl.concat([previous.select(result.columns), result]).sort(
+            ["window_kind", "end_session", "method", "evaluation_date"]
+        )
+    return result
+
+
+def _rolling_ic_values(values: pl.DataFrame, *, observations: int) -> pl.DataFrame:
+    groups = [*_WINDOW_COLUMNS, "method"]
+    return values.with_columns(
+        pl.col("_value")
+        .rolling_mean(window_size=observations, min_samples=observations)
+        .over(*groups)
+        .alias("rolling_ic")
+    ).select("evaluation_date", *groups, "rolling_ic")
 
 
 def implied_signal_half_life(

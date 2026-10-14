@@ -1,5 +1,13 @@
 # Architecture and artifact authority
 
+Legacy same-boundary signal input maintenance uses public
+`BTStore.maintain_shared_inputs` with complete source-owner `SharedInputEvidence`
+and an immutable original execution report. BT owns admission and retained
+receipt validation; external source semantics remain source-owned. This preserves
+old numerical files and grants no native continuation scope/state. Missing
+signal coverage may be initialized once; append remains an explicit state/proof
+requirement. See [Alpha evaluation](reference/factor-evaluation.md).
+
 Portfolio mechanics construct weights, select caller-declared schedules, drift
 positions, freeze shares and simulate accounts. Pure evaluation functions consume
 those results for IC, returns, risk, inference and comparisons. The signed-share
@@ -36,3 +44,25 @@ Explicit `verify` retains full byte/logical/index audits. Registered references 
 be published without decoding; new numerical frames retain canonical content hashes.
 `index_plan/build_index` is explicit historical descriptor maintenance. Opening a store
 never performs backfill or changes old receipts. Read-context audit proofs expire on exit.
+
+## Incremental signal evaluation
+
+`alpha_input_start` plans the earliest required value/price date from saved path
+state, pending horizon maturities and selected components. `evaluate_alpha`
+accepts that bounded input together with complete immutable prefix proofs;
+`previous_input_proof` proves the previous, possibly narrower, component scope.
+Adding components initializes only their missing primitive families and preserves
+existing financial paths. Missing continuation state requires explicit maintenance.
+The caller retains complete calendars and the original numerical settings.
+
+Daily rolling IC accepts saved proven observations, reuses its old output prefix
+and runs only fresh dates plus the required finite observation halo per method
+and horizon. Null/NaN dates do not consume a valid observation. Continuation
+requires unchanged observation settings and the original finite IC halo; an
+empty update preserves the saved output. Floating rolling means are compared
+to the full reference at 1e-12 tolerance because restarting their bounded sum
+can differ by rounding at the last bit. The saved prefix remains exact. Summaries may
+aggregate saved primitives. `publish_continuation` retains original indexed
+table fragments and publishes new tails. Current composition still reads saved
+typed fragments to validate the combined tables; this remaining I/O is distinct
+from replaying historical daily statistics.

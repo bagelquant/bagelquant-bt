@@ -57,6 +57,44 @@ verifies canonical historical/settings/calendar prefix proofs before continuing.
 Newly known actions with old record dates require verified actual/ideal position,
 lot and complete session history; never substitute current holdings.
 
+Native source-bound continuation uses `input_evidence`/`prefix_evidence` on the
+same public engine, with `SharedInputEvidence` for every consumed channel,
+including explicit empty inputs. `validate_execution_continuation` accepts
+checkpoint metadata and runs before numerical reads. Source receipt changes are
+neutral only when original complete scope/schema/selectors/traces/content tokens
+match; financial settings, capital, lag and reference selection remain bound.
+Annualization alone is not financial account rebuilding authority. The separate
+`bt.execution.inputs.v1` checkpoint binding grants no legacy signal-maintenance
+authority. Unknown legacy account source binding/cumulative state requires
+explicit original-input maintenance; never invent it from current inputs.
+
+After admission, supply strictly new prices/targets/decisions/availability/coverage,
+new frozen plans, the complete proven calendar and action delta. Saved marks,
+pending plans, settlement and active future actions continue from checkpoint.
+New old-record actions read only their exact original positions/lot/session
+dates; past effective effects require repair from a preceding checkpoint.
+The native cumulative per-plan summary retains filled notional/cost/realized
+income and recomputes current unrealized attribution from active lots. Daily
+turnover uses preceding checkpoint equity and new fills through the same formula.
+
+`BTStore.execution_references` retains indexed daily/event prefixes through the
+restored boundary, appends only new tail tables and replaces small snapshots and
+checkpoint frames. Earlier checkpoints repair a suffix while preserving prior
+receipts/files. `read_reference(filters=...)` uses registered coordinate counts,
+skips disjoint concat leaves and pushes predicates into Parquet. Missing indexes
+require explicit `index_plan/build_index`, without implicit historical reads.
+Exact multi-column `coordinates` use registered typed nonnull keys, metadata
+pruning and Parquet axis predicates followed by an exact semi join; empty keys
+open no numerical files. Native date indexes include checkpoint_date and
+available_date. Explicit maintain_reference audits/indexes an original table
+and leaves without modifying its receipt or bytes. Static consumed lot rules
+remain checkpoint state; changing one used asset's rule blocks continuation.
+An `asset_starts` selector retains each asset's original first consumed date;
+new assets begin strictly after the restored checkpoint and never widen old
+price/availability coordinates. Deep reference audits compare indexed column
+order against the original table. Sparse coordinate metadata uses registered
+types, including all-null date axes, without sample-based type inference.
+
 Use public codec, merge_execution_tables and summarize_transaction_pnl. Historical
 summaries use the cutoff's saved lot/mark snapshot and mature events, never the
 latest open-lot/per-plan table. Period reads do not replay accounts or write caches.

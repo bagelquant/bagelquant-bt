@@ -1,5 +1,41 @@
 # Public API — BT 0.12
 
+`alpha_update_plan(previous, *, calendar, available_date, affected_intervals=(),
+preceding=(), ..., input_proof=None)` plans metadata-only append/affected-suffix
+work and selects a retained original checkpoint. It returns a blocked recovery
+plan when unchanged historical work cannot be safely reused; execution continues
+through `evaluate_alpha(previous=selected)` and the existing weight engine.
+
+`SharedInputEvidence` and `BTStore.maintain_shared_inputs(owner_id, ...)` provide
+explicit same-boundary input maintenance for retained legacy signal primitives.
+Supply original/replacement input identity bodies, the original receipt/request,
+settings/kernel, scoped read windows, all five complete source-owned typed
+projections and an immutable report reference/SHA256. BT publishes registered
+references only and checks the original authority at reuse and publication.
+This preserves groups/files and grants no append or causal continuation state;
+see [Alpha evaluation](factor-evaluation.md) for scope and limitations.
+
+Alpha continuation accepts `previous` and a three-boundary `input_proof`.
+`EvaluationResult.state` retains path checkpoints and the prefix policy. See
+[Alpha evaluation](factor-evaluation.md) for the proof contract and current
+performance limits. `BTStore.publish_table`, `compose_reference` and
+`publish_continuation` compose registered originals and changed daily tails
+through the same immutable authority. Composed publication uses references only;
+original-byte audits remain explicit.
+
+Native execution also accepts `input_evidence` and `prefix_evidence` mappings of
+complete `SharedInputEvidence` channels. `validate_execution_continuation`
+checks original checkpoint metadata before numerical inputs are read. The
+versioned account binding and cumulative summary are distinct from legacy signal
+maintenance. `BTStore.execution_references` saves account tails and checkpoint
+snapshots without decoding old daily tables; `read_reference(filters=...)`
+prunes indexed leaves and pushes eq/ge/le coordinate predicates into Parquet.
+`read_reference(coordinates=typed_keys)` selects exact Date/String/Integer key
+tuples (including asset/available-date pairs); empty keys open no value files.
+Native indexes also cover checkpoint_date and available_date. Missing coordinate
+authority requires explicit `maintain_reference`, preserving original bytes.
+See [execution](account-backtest.md) for required channels and failure modes.
+
 - `evaluate_alpha(alpha, forward_returns, ...)` accepts a saved Core numeric or
   prediction Node. `evaluate_weights(weights, forward_returns, ...)` accepts a
   saved weights Node. Both return tables/metrics and the weight mode a checkpoint.

@@ -14,12 +14,19 @@ from .portfolio_mechanics import normalize_forward_returns, session_calendar
 
 
 def account_fill_turnover(
-    fills: pl.DataFrame, account_value: pl.DataFrame, *, initial_capital: float
+    fills: pl.DataFrame,
+    account_value: pl.DataFrame,
+    *,
+    initial_capital: float,
+    previous_equity: float | None = None,
 ) -> pl.DataFrame:
     """Gross absolute filled notional divided by strictly previous close equity."""
     previous = account_value.sort("time").select(
         "time",
-        pl.col("equity").shift(1).fill_null(initial_capital).alias("previous_equity"),
+        pl.col("equity")
+        .shift(1)
+        .fill_null(initial_capital if previous_equity is None else previous_equity)
+        .alias("previous_equity"),
     )
     traded = fills.group_by("time").agg(
         pl.col("notional").abs().sum().alias("traded_notional")

@@ -23,6 +23,8 @@ from . import account as _account
 from .account import AccountBacktestConfig, AccountStateCheckpoint
 from .config import TransactionCostConfig
 from .exceptions import InputValidationError
+from .execution_inputs import bind_execution_inputs, validate_execution_continuation
+from .input_maintenance import SharedInputEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +140,10 @@ class ExecutionStateCheckpoint:
     prefix_hash: str
     entitlement_lots: pl.DataFrame
     corporate_pnl: pl.DataFrame
+    source_binding: Mapping[str, Any] | None = None
+    transaction_summary: pl.DataFrame | None = None
+    active_actions: pl.DataFrame | None = None
+    lot_rules: pl.DataFrame | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,12 +272,14 @@ _LOT_HISTORY_SCHEMA = {"time": pl.Date, **_LOT_SCHEMA, "mark_price": pl.Float64}
 
 def _frame(rows, schema=None) -> pl.DataFrame:
     if isinstance(rows, _account._AccountRows):
-        return rows.frame(empty_schema=schema)
-    return (
-        pl.DataFrame(rows, infer_schema_length=None)
-        if rows
-        else pl.DataFrame(schema=schema)
-    )
+        frame = rows.frame(empty_schema=schema)
+    else:
+        frame = (
+            pl.DataFrame(rows, infer_schema_length=None)
+            if rows
+            else pl.DataFrame(schema=schema)
+        )
+    return frame if schema is None else frame.cast(schema)
 
 
 def _transaction_cost(config: ExecutionConfig) -> TransactionCostConfig:
@@ -643,6 +651,8 @@ def evaluate_execution(
     historical_sessions: pl.DataFrame | None = None,
     historical_open_lots: pl.DataFrame | None = None,
     historical_ideal_open_lots: pl.DataFrame | None = None,
+    input_evidence: Mapping[str, SharedInputEvidence] | None = None,
+    prefix_evidence: Mapping[str, SharedInputEvidence] | None = None,
     check_canceled: Callable[[], None] = lambda: None,
     progress: Callable[[int, int], None] = lambda *_: None,
 ) -> ExecutionEvaluationResult:
@@ -650,14 +660,25 @@ def evaluate_execution(
 
     Sell orders execute first, then buys, ordered by asset and stable plan ID.
     Actual fills can be reduced; fee-free reference orders execute completely.
-    Historical inputs must be supplied again when resuming a checkpoint so
-    its causal prefix can be verified before any continuation is returned.
+    Source-owned complete evidence admits strictly new numerical inputs. Without
+    it, standalone row-hash continuation requires the historical inputs again.
     """
+    config = config or ExecutionConfig()
+    _admit_source_prefix(
+        checkpoint,
+        prefix_evidence,
+        input_evidence,
+        initial_capital=initial_capital,
+        config=config,
+        mode="transactions",
+        session_lag=0,
+        reference_price_mode="execution",
+    )
     return _run(
         _plans(transactions),
         _market(market_prices),
         initial_capital=initial_capital,
-        config=config or ExecutionConfig(),
+        config=config,
         checkpoint=checkpoint,
         calendar=calendar,
         execution_availability=execution_availability,
@@ -670,6 +691,8 @@ def evaluate_execution(
         historical_sessions=historical_sessions,
         historical_open_lots=historical_open_lots,
         historical_ideal_open_lots=historical_ideal_open_lots,
+        input_evidence=input_evidence,
+        prefix_evidence=prefix_evidence,
         check_canceled=check_canceled,
         progress=progress,
     )
@@ -696,6 +719,8 @@ def run_execution_from_weights(
     historical_sessions: pl.DataFrame | None = None,
     historical_open_lots: pl.DataFrame | None = None,
     historical_ideal_open_lots: pl.DataFrame | None = None,
+    input_evidence: Mapping[str, SharedInputEvidence] | None = None,
+    prefix_evidence: Mapping[str, SharedInputEvidence] | None = None,
     check_canceled: Callable[[], None] = lambda: None,
     progress: Callable[[int, int], None] = lambda *_: None,
 ) -> ExecutionEvaluationResult:
@@ -708,6 +733,17 @@ def run_execution_from_weights(
         raise InputValidationError("weight decisions require an explicit positive lag")
     if reference_price_mode not in {"execution", "decision"}:
         raise InputValidationError("reference_price_mode must be execution or decision")
+    config = config or ExecutionConfig()
+    _admit_source_prefix(
+        checkpoint,
+        prefix_evidence,
+        input_evidence,
+        initial_capital=initial_capital,
+        config=config,
+        mode="weights",
+        session_lag=session_lag,
+        reference_price_mode=reference_price_mode,
+    )
     value = "weight" if "weight" in weights.columns else "value"
     targets = _account._validate_target_weights(weights.rename({value: "weight"}))
     if not {"time", "status"} <= set(decisions.columns):
@@ -739,7 +775,6 @@ def run_execution_from_weights(
         day[0]: frame.drop("time")
         for day, frame in targets.partition_by("time", as_dict=True).items()
     }
-    config = config or ExecutionConfig()
     return _run(
         pl.DataFrame(schema=_PLAN_SCHEMA),
         _market(market_prices),
@@ -762,9 +797,41 @@ def run_execution_from_weights(
         historical_sessions=historical_sessions,
         historical_open_lots=historical_open_lots,
         historical_ideal_open_lots=historical_ideal_open_lots,
+        input_evidence=input_evidence,
+        prefix_evidence=prefix_evidence,
+        session_lag=session_lag,
         check_canceled=check_canceled,
         progress=progress,
     )
+
+
+def _admit_source_prefix(checkpoint, prefix_evidence, input_evidence, **settings):
+    if checkpoint is None:
+        if prefix_evidence is not None:
+            raise InputValidationError(
+                "execution prefix evidence requires a checkpoint"
+            )
+        return
+    if checkpoint.source_binding is not None or input_evidence is not None:
+        if input_evidence is None:
+            raise InputValidationError(
+                "native execution continuation needs current source evidence"
+            )
+        validate_execution_continuation(
+            checkpoint, prefix_evidence=prefix_evidence, **settings
+        )
+        if any(
+            value is None
+            for value in (
+                checkpoint.transaction_summary,
+                checkpoint.active_actions,
+                checkpoint.lot_rules,
+            )
+        ):
+            raise InputValidationError(
+                "execution checkpoint lacks cumulative state; "
+                "explicit maintenance is required"
+            )
 
 
 def _run(
@@ -789,6 +856,9 @@ def _run(
     historical_sessions=None,
     historical_open_lots=None,
     historical_ideal_open_lots=None,
+    input_evidence=None,
+    prefix_evidence=None,
+    session_lag=0,
     check_canceled=lambda: None,
     progress=lambda *_: None,
     reference_price_mode="execution",
@@ -804,6 +874,19 @@ def _run(
     cutoff = available_date or prices["time"].max()
     if cutoff is None:
         raise InputValidationError("execution requires market sessions")
+    source_binding = (
+        None
+        if input_evidence is None
+        else bind_execution_inputs(
+            input_evidence,
+            through=cutoff,
+            initial_capital=initial_capital,
+            config=config,
+            mode="transactions" if weight_targets is None else "weights",
+            session_lag=session_lag,
+            reference_price_mode=reference_price_mode,
+        )
+    )
     historical = sessions_frame.filter(pl.col("time") <= cutoff)
     sessions = historical["time"].to_list()
     all_sessions = sessions_frame["time"].to_list()
@@ -813,6 +896,130 @@ def _run(
         raise InputValidationError("transaction dates must belong to the calendar")
     prices = prices.filter(pl.col("time") <= cutoff)
     actions = _account._validate_corporate_actions(corporate_actions)
+    source_continuation = checkpoint is not None and source_binding is not None
+    if source_continuation:
+        if cutoff <= checkpoint.time:
+            raise InputValidationError(
+                "native execution requires a new observation boundary"
+            )
+        if plans.height and (
+            plans.filter(pl.col("execution_date") <= checkpoint.time).height
+            or plans.filter(pl.col("decision_date") <= checkpoint.time).height
+            or plans.filter(
+                pl.col("plan_id").is_in(
+                    [
+                        *checkpoint.processed_plan_ids,
+                        *checkpoint.pending_transactions["plan_id"].to_list(),
+                    ]
+                )
+            ).height
+        ):
+            raise InputValidationError(
+                "native execution transactions must be new frozen plans"
+            )
+        for name, current in source_binding["channels"].items():
+            before = checkpoint.source_binding["channels"][name]
+            before_selector, current_selector = (
+                dict(before["selector"]),
+                dict(current["selector"]),
+            )
+            prior_assets = before_selector.pop("assets", None)
+            new_assets = current_selector.pop("assets", None)
+            prior_starts = before_selector.pop("asset_starts", None)
+            new_starts = current_selector.pop("asset_starts", None)
+            asset_expansion = (prior_assets is None and new_assets is None) or (
+                isinstance(prior_assets, list)
+                and isinstance(new_assets, list)
+                and set(prior_assets) <= set(new_assets)
+            )
+            if prior_starts is None and new_starts is None:
+                starts_preserved = True
+            else:
+                starts_preserved = (
+                    isinstance(prior_starts, dict)
+                    and isinstance(new_starts, dict)
+                    and isinstance(prior_assets, list)
+                    and isinstance(new_assets, list)
+                    and set(prior_starts) == set(prior_assets)
+                    and set(new_starts) == set(new_assets)
+                    and all(
+                        new_starts.get(asset) == value
+                        for asset, value in prior_starts.items()
+                    )
+                )
+                if starts_preserved:
+                    try:
+                        starts_preserved = all(
+                            date.fromisoformat(value).isoformat() == value
+                            and checkpoint.time < date.fromisoformat(value) <= cutoff
+                            for asset, value in new_starts.items()
+                            if asset not in prior_starts
+                        )
+                    except (TypeError, ValueError):
+                        starts_preserved = False
+            if (
+                current["start"] != before["start"]
+                or current["schema"] != before["schema"]
+                or before_selector != current_selector
+                or not asset_expansion
+                or not starts_preserved
+                or current["trace_columns"] != before["trace_columns"]
+                or current["end"] < before["end"]
+            ):
+                raise InputValidationError(
+                    f"native execution {name} consumed scope changed"
+                )
+        for name, frame in (
+            ("prices", prices),
+            ("weights", weight_evidence),
+            ("decisions", decision_evidence),
+            ("availability", execution_availability),
+            ("action_coverage", corporate_action_coverage),
+        ):
+            if (
+                frame is not None
+                and "time" in frame.columns
+                and frame.filter(pl.col("time") <= checkpoint.time).height
+            ):
+                raise InputValidationError(
+                    f"native execution {name} inputs must be a strict tail"
+                )
+        sessions = [day for day in sessions if day > checkpoint.time]
+        active = checkpoint.active_actions
+        supplied = {row["action_id"]: row for row in actions.to_dicts()}
+        for original in active.to_dicts():
+            if (
+                original["action_id"] in supplied
+                and supplied[original["action_id"]] != original
+            ):
+                raise InputValidationError("checkpoint active corporate action changed")
+            supplied.setdefault(original["action_id"], original)
+        actions = pl.DataFrame(list(supplied.values()), schema=actions.schema)
+        known = (
+            set(checkpoint.actual.entitlements["action_id"].to_list())
+            if ("action_id" in checkpoint.actual.entitlements.columns)
+            else set()
+        )
+        newly_known = actions.filter(~pl.col("action_id").is_in(sorted(known)))
+        if newly_known.filter(pl.col("ex_date") <= checkpoint.time).height:
+            raise InputValidationError(
+                "new historical corporate effects require repair "
+                "from a preceding checkpoint"
+            )
+        record_dates = set(
+            newly_known.filter(pl.col("record_date") <= checkpoint.time)[
+                "record_date"
+            ].to_list()
+        ) & set(all_sessions)
+        if record_dates and (
+            historical_sessions is None
+            or not (record_dates | {checkpoint.time})
+            <= set(historical_sessions["time"].to_list())
+        ):
+            raise InputValidationError(
+                "checkpoint requires complete verified record-date "
+                "position history and sessions"
+            )
     if corporate_action_coverage is not None:
         _account._validate_corporate_action_coverage(
             corporate_action_coverage, sessions
@@ -841,6 +1048,29 @@ def _run(
         ):
             raise InputValidationError("lot sizes need unique assets and integer sizes")
     lotsizes = _account._lot_size_lookup(lot_sizes, config.default_buy_lot_size)
+    if source_continuation:
+        # Static asset rules are consumed again for every future plan. A date
+        # prefix alone cannot authorize changing a previously used asset's lot.
+        previous_sizes = _account._lot_size_lookup(
+            checkpoint.lot_rules, config.default_buy_lot_size
+        )
+        consumed_assets = set()
+        for frame in (
+            checkpoint.actual.positions,
+            checkpoint.ideal.positions,
+            checkpoint.pending_transactions,
+            checkpoint.transaction_summary,
+        ):
+            if "asset_id" in frame.columns:
+                consumed_assets.update(frame["asset_id"].to_list())
+        if any(
+            previous_sizes.get(asset, config.default_buy_lot_size)
+            != lotsizes.get(asset, config.default_buy_lot_size)
+            for asset in consumed_assets
+        ):
+            raise InputValidationError(
+                "execution continuation changed a consumed asset's lot rule"
+            )
     prices_by_day = _account._price_lookup(prices)
     if "reference_price" in prices.columns:
         for row in prices.select("time", "asset_id", "reference_price").to_dicts():
@@ -893,7 +1123,7 @@ def _run(
     if checkpoint is not None:
         if checkpoint.initial_capital != initial_capital:
             raise InputValidationError("checkpoint initial capital differs")
-        if checkpoint.prefix_hash != proof(checkpoint.time):
+        if not source_continuation and checkpoint.prefix_hash != proof(checkpoint.time):
             raise InputValidationError("execution checkpoint causal prefix changed")
         actual_checkpoint = _account.complete_checkpoint_entitlements(
             checkpoint.actual,
@@ -993,7 +1223,7 @@ def _run(
         raise InputValidationError("execution has no new market sessions")
     by_day = {}
     pending_ids = {row["plan_id"] for row in pending}
-    if checkpoint is not None and weight_targets is None:
+    if checkpoint is not None and weight_targets is None and not source_continuation:
         supplied = {row["plan_id"]: row for row in plans.to_dicts()}
         for row in pending:
             if row.get("_retry"):
@@ -1026,6 +1256,7 @@ def _run(
     record = _account._group_actions(actions, "record_date")
     previous_actual = _account._state_equity(actual)
     previous_ideal = _account._state_equity(ideal)
+    starting_actual_equity = previous_actual
     for completed, day in enumerate(sessions):
         check_canceled()
         index = all_sessions.index(day)
@@ -1382,6 +1613,18 @@ def _run(
         .select(list(_PENDING_SCHEMA))
         .cast(_PENDING_SCHEMA)
     )
+    if source_binding is not None:
+        frozen_dates = [
+            final,
+            *pending_frame["execution_date"].to_list(),
+            *[row["available_date"] for row in actual["unsettled"]],
+        ]
+        if date.fromisoformat(source_binding["channels"]["calendar"]["end"]) < max(
+            frozen_dates
+        ):
+            raise InputValidationError(
+                "execution source calendar proof omits frozen future sessions"
+            )
     result_checkpoint = ExecutionStateCheckpoint(
         time=final,
         actual=_account._checkpoint(final, actual),
@@ -1393,12 +1636,23 @@ def _run(
         pending_transactions=pending_frame,
         processed_plan_ids=tuple(sorted(processed)),
         initial_capital=initial_capital,
-        prefix_hash=proof(final),
-        entitlement_lots=_frame(entitlement_lots, _ENTITLEMENT_SCHEMA).cast(
-            _ENTITLEMENT_SCHEMA
-        ),
+        prefix_hash=proof(final) if source_binding is None else _digest(source_binding),
+        entitlement_lots=_frame(entitlement_lots, _ENTITLEMENT_SCHEMA)
+        .cast(_ENTITLEMENT_SCHEMA)
+        .sort("action_id", "ledger", "asset_id", "plan_id"),
         corporate_pnl=_frame(corporate_pnl, _CORPORATE_PNL_SCHEMA).cast(
             _CORPORATE_PNL_SCHEMA
+        ),
+        source_binding=source_binding,
+        lot_rules=(
+            pl.DataFrame(schema={"asset_id": pl.String, "buy_lot_size": pl.Int64})
+            if lot_sizes is None
+            else lot_sizes.clone()
+        ),
+        active_actions=actions.filter(
+            pl.any_horizontal(
+                pl.col("ex_date", "cash_pay_date", "share_available_date") > final
+            )
         ),
         **totals,
     )
@@ -1429,7 +1683,9 @@ def _run(
     )
     tables = {
         "returns": return_frame,
-        "account_value": _frame(values),
+        "account_value": _frame(values).with_columns(
+            pl.exclude("time").cast(pl.Float64)
+        ),
         "orders": _frame(orders, _ORDER_SCHEMA).cast(_ORDER_SCHEMA),
         "fills": _frame(fills, _FILL_SCHEMA).cast(_FILL_SCHEMA),
         "ideal_fills": _frame(ideal_fills, _FILL_SCHEMA).cast(_FILL_SCHEMA),
@@ -1496,14 +1752,62 @@ def _run(
         ),
     }
     tables["transaction_pnl"] = _transaction_pnl(
-        tables, actual, ideal, corporate=result_checkpoint.corporate_pnl, through=final
+        tables,
+        actual,
+        ideal,
+        corporate=result_checkpoint.corporate_pnl,
+        through=final,
+        previous=None if checkpoint is None else checkpoint.transaction_summary,
+        corporate_income=tables["corporate_pnl"],
+    )
+    result_checkpoint = replace(
+        result_checkpoint, transaction_summary=tables["transaction_pnl"]
+    )
+    from .research_comparison import account_fill_turnover
+
+    tables["turnover"] = account_fill_turnover(
+        tables["fills"],
+        tables["account_value"],
+        initial_capital=initial_capital,
+        previous_equity=starting_actual_equity,
     )
     check_canceled()
     return ExecutionEvaluationResult(tables, metrics, result_checkpoint)
 
 
-def _transaction_pnl(tables, actual, ideal, *, corporate=None, through=None):
-    rows = {}
+def _transaction_pnl(
+    tables,
+    actual,
+    ideal,
+    *,
+    corporate=None,
+    through=None,
+    previous=None,
+    corporate_income=None,
+):
+    rows = (
+        {}
+        if previous is None
+        else {
+            row["plan_id"]: {
+                key: value
+                for key, value in row.items()
+                if key in {"plan_id", "asset_id", "side"}
+                or any(
+                    key == f"{ledger}_{name}"
+                    for ledger in ("target", "actual")
+                    for name in (
+                        "quantity",
+                        "notional",
+                        "cost",
+                        "realized_pnl",
+                        "dividend_income",
+                    )
+                )
+            }
+            for row in previous.to_dicts()
+        }
+    )
     for ledger, fills, lots, state in (
         ("target", tables["ideal_fills"], tables["ideal_open_lots"], ideal),
         ("actual", tables["fills"], tables["open_lots"], actual),
@@ -1546,8 +1850,10 @@ def _transaction_pnl(tables, actual, ideal, *, corporate=None, through=None):
         )
         key = f"{ledger}_realized_pnl"
         row[key] = row.get(key, 0) + match["net_pnl"]
-    if corporate is not None:
-        for event in corporate.to_dicts():
+    if corporate_income is None:
+        corporate_income = corporate
+    if corporate_income is not None:
+        for event in corporate_income.to_dicts():
             ledger = "target" if event["ledger"] == "ideal" else "actual"
             row = rows.setdefault(
                 event["plan_id"],
@@ -1559,6 +1865,17 @@ def _transaction_pnl(tables, actual, ideal, *, corporate=None, through=None):
             )
             income_key = f"{ledger}_dividend_income"
             row[income_key] = row.get(income_key, 0) + event["cash_income"]
+    if corporate is not None:
+        for event in corporate.to_dicts():
+            ledger = "target" if event["ledger"] == "ideal" else "actual"
+            row = rows.setdefault(
+                event["plan_id"],
+                {
+                    "plan_id": event["plan_id"],
+                    "asset_id": event["asset_id"],
+                    "side": "buy",
+                },
+            )
             if event["stock_quantity"] and event["share_available_date"] > through:
                 state = ideal if ledger == "target" else actual
                 key = f"{ledger}_unrealized_pnl"
@@ -1908,7 +2225,11 @@ def load_checkpoint(frames, metadata):
         "pending_transactions",
         "entitlement_lots",
         "corporate_pnl",
+        "transaction_summary",
+        "active_actions",
+        "lot_rules",
     ):
-        data[name] = frames[f"checkpoint_{name}"]
+        if f"checkpoint_{name}" in frames:
+            data[name] = frames[f"checkpoint_{name}"]
     data["processed_plan_ids"] = tuple(data["processed_plan_ids"])
     return ExecutionStateCheckpoint(**data)

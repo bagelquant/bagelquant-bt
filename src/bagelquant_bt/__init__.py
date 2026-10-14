@@ -20,6 +20,8 @@ from .diagnostics import (
 )
 from .evaluation import (
     EvaluationResult,
+    alpha_input_start,
+    alpha_update_plan,
     evaluate_alpha,
     evaluate_weights,
     return_statistics,
@@ -43,6 +45,7 @@ from .execution_evaluation import (
     save_checkpoint,
     summarize_transaction_pnl,
 )
+from .execution_inputs import validate_execution_continuation
 from .factor_analysis import (
     factor_return_correlation,
     holdings_factor_exposure,
@@ -80,6 +83,7 @@ from .horizon import (
     window_quantile_forward_returns,
     window_tail_returns,
 )
+from .input_maintenance import SharedInputEvidence
 from .periods import (
     aggregate_saved_window,
     slice_primitives,
@@ -108,10 +112,15 @@ from .risk import (
     fit_risk_factor_returns,
     industry_exposure_strength,
     link_risk_contributions,
-    residualize_risk_descriptor,
     risk_interval_returns,
     rolling_risk_profile,
-    standardize_risk_descriptor,
+)
+from .risk_update import (
+    RISK_UPDATE_POLICY,
+    RiskFactorResult,
+    RiskFactorUpdatePlan,
+    evaluate_risk_factor_returns,
+    plan_risk_factor_update,
 )
 from .runtime import (
     BTExecutionOptions,
@@ -139,6 +148,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "RISK_UPDATE_POLICY",
     "SAMPLE_POLICY",
     "SIGNAL_PERSISTENCE_HORIZONS",
     "BTExecutionOptions",
@@ -157,8 +167,11 @@ __all__ = [
     "IntegerTargetAllocation",
     "OneSampleTest",
     "PredictionHorizonDiagnostics",
+    "RiskFactorResult",
+    "RiskFactorUpdatePlan",
     "RollingRiskProfile",
     "SessionWindow",
+    "SharedInputEvidence",
     "TransactionCostConfig",
     "WeightStateCheckpoint",
     "account_fill_turnover",
@@ -166,6 +179,8 @@ __all__ = [
     "aggregate_saved_window",
     "allocate_integer_positions",
     "alpha_evaluation_contract",
+    "alpha_input_start",
+    "alpha_update_plan",
     "annualized_ratio",
     "annualized_return",
     "benchmark_performance",
@@ -183,6 +198,7 @@ __all__ = [
     "drawdown",
     "evaluate_alpha",
     "evaluate_execution",
+    "evaluate_risk_factor_returns",
     "evaluate_weights",
     "evaluation_identity",
     "evaluation_sample",
@@ -205,10 +221,10 @@ __all__ = [
     "non_overlapping_cohort_statistics",
     "one_sample_t_test",
     "partial_rank_ic",
+    "plan_risk_factor_update",
     "prepare_price_data",
     "quantile_curve_structure",
     "quantile_rank_information_coefficients",
-    "residualize_risk_descriptor",
     "return_metrics",
     "return_statistics",
     "risk_interval_returns",
@@ -221,10 +237,10 @@ __all__ = [
     "signal_rank_persistence",
     "slice_primitives",
     "stability_tables",
-    "standardize_risk_descriptor",
     "summarize_signal_persistence",
     "summarize_transaction_pnl",
     "summarize_window_ic",
+    "validate_execution_continuation",
     "window_book_returns",
     "window_factor_returns",
     "window_information_coefficients",

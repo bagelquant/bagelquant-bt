@@ -1,5 +1,31 @@
 # 公开 API — BT 0.12
 
+`alpha_update_plan(previous, *, calendar, available_date, affected_intervals=(),
+preceding=(), ..., input_proof=None)` 仅依据元数据规划追加和受影响后缀并选择原始前置
+checkpoint；无安全状态时返回明确恢复计划，通过同一 evaluate_alpha 引擎继续执行。
+
+`SharedInputEvidence` 与 `BTStore.maintain_shared_inputs(owner_id, ...)` 显式维护
+旧 signal 日原语的同边界输入绑定。提供原/新 input identity、原 receipt/request、
+settings/kernel、read windows、五类完整 source-owner typed 投影和报告引用/SHA256。
+BT 只发布登记原文件引用，读取及发布时验证原 authority；不增加 groups，不授予
+append/native causal state。详见 [Alpha 评估](factor-evaluation.md)。
+
+Alpha 续算提供 `previous` 与三边界 `input_proof`，`EvaluationResult.state`
+保留各路径 checkpoint 和前缀策略。证明合同和当前性能限制见
+[Alpha 评估](factor-evaluation.md)。`BTStore.publish_table`、`compose_reference`
+与 `publish_continuation` 在同一不可变 authority 下复用原表并写变化日尾部。
+组合通过 references-only 发布，原始字节审计保持显式。
+
+原生账户的 input_evidence/prefix_evidence 使用各消费 channel 的完整
+SharedInputEvidence。validate_execution_continuation 在任何数值输入读取前校验原
+checkpoint 元数据；版本化账户绑定、累计状态与旧 signal 维护分别有自己的权威证据。
+BTStore.execution_references 保存新增账户表/小 checkpoint，并保留历史引用；
+read_reference(filters=...) 用已登记坐标剪枝、将 eq/ge/le 谓词推入 Parquet。
+read_reference(coordinates=typed_keys) 精确选择 Date/String/Integer 多列组合；
+空 keys 不读数值文件。原生索引包含 checkpoint_date、available_date；旧坐标
+证据缺失时显式 maintain_reference，原 bytes 与 receipt 保留。
+channel 范围与失败处理见 [股数账户](account-backtest.md)。
+
 - evaluate_alpha 接受已保存 numeric/prediction Node；evaluate_weights 接受
   weights Node。收益需 time、asset_id、forward_return、interval_start、
   interval_end、available_date；经济区间顺序明确且不重叠，无隐式 lag/价格规则。

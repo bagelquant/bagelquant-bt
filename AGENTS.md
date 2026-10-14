@@ -4,6 +4,19 @@ BT owns portfolio mechanics, accounts, costs, evaluation/statistics and their
 artifact identity, storage, receipts, invalidation and recovery. Public modes are
 `evaluate_alpha`, `evaluate_weights` and `evaluate_execution`; the saved-weight
 execution bridge uses the same authoritative signed-share engine.
+Calculation changes must incrementally update new/affected daily primitives and
+maturity tails, reuse saved chapters/account state and check prerequisites from
+records; prove historical reuse under the evaluation/account owner rules.
+`alpha_update_plan` selects original preceding signal checkpoints from compact
+saved metadata and affected intervals. Missing safe state blocks repair;
+the same `evaluate_alpha(previous=...)` engine performs the admitted suffix.
+Explicit legacy input maintenance preserves same-boundary signal primitives
+under complete source-owner attestations; it grants no native continuation state.
+Native account continuation separately validates complete source prefixes before
+tail reads, retains cumulative state and publishes original daily references.
+`plan_risk_factor_update` plans only newly mature/affected daily fits from
+metadata; `evaluate_risk_factor_returns` owns WLS, maturity and price carry.
+Core owns style-exposure graphs; BTStore owns fit/diagnostic/state receipts.
 
 Before work read [`.ai/README.md`](.ai/README.md), mandatory development rules,
 affected topic rules, [`README.md`](README.md), [`pyproject.toml`](pyproject.toml)

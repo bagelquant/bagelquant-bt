@@ -46,38 +46,6 @@ def risk_interval_returns(prices: pl.DataFrame, calendar: pl.DataFrame) -> pl.Da
     )
 
 
-def standardize_risk_descriptor(values: np.ndarray) -> np.ndarray:
-    """Median/MAD clipping followed by a finite, population z-score."""
-    values = np.asarray(values, dtype=float).copy()
-    valid = np.isfinite(values)
-    result = np.full(values.shape, np.nan)
-    if not valid.any():
-        return result
-    x = values[valid]
-    median = np.median(x)
-    mad = np.median(np.abs(x - median))
-    if mad > 0:
-        x = np.clip(x, median - 5 * 1.4826 * mad, median + 5 * 1.4826 * mad)
-    scale = x.std(ddof=0)
-    if scale > 1e-12:
-        result[valid] = (x - x.mean()) / scale
-    return result
-
-
-def residualize_risk_descriptor(values: np.ndarray, controls: np.ndarray) -> np.ndarray:
-    """Cross-sectional OLS residuals; incomplete rows remain missing."""
-    values = np.asarray(values, dtype=float)
-    controls = np.asarray(controls, dtype=float)
-    valid = np.isfinite(values) & np.isfinite(controls).all(axis=1)
-    result = np.full(values.shape, np.nan)
-    x = np.column_stack([np.ones(valid.sum()), controls[valid]])
-    if valid.sum() > x.shape[1] and np.linalg.matrix_rank(x) == x.shape[1]:
-        result[valid] = (
-            values[valid] - x @ np.linalg.lstsq(x, values[valid], rcond=None)[0]
-        )
-    return result
-
-
 @dataclass(frozen=True)
 class CrossSectionalRiskFit:
     factor_returns: pl.DataFrame
