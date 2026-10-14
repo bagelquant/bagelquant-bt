@@ -54,7 +54,7 @@ The stage-4 contract is breaking: removed signal/policy/account runners have no
 aliases or migration readers. Real database/service cutover remains separately
 authorized stage 6; historical/authored evidence is preserved.
 
-Supported platforms: macOS and Linux. Windows support is retired.
+Supported platform: macOS. Validation runs locally; GitHub Actions is disabled.
 
 `evaluate_alpha(..., options=..., progress=...)` also uses this bounded executor
 for independent horizon windows, retaining declared order and numerical results.

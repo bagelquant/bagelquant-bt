@@ -21,7 +21,7 @@ Live database/service operations remain subject to the current authorization.
 
 ## Engineering and validation
 
-Supported platforms are macOS and Linux; Windows support is retired.
+The supported platform is macOS. Run validation locally; GitHub Actions is disabled.
 
 Inspect tracked/untracked Git state, README, pyproject and routed owner docs.
 Preserve unrelated changes and each repository's Git metadata. Use Python 3.13,

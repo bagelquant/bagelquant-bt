@@ -36,3 +36,6 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin'"]

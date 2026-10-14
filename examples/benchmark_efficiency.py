@@ -76,7 +76,7 @@ def _peak_rss_mb() -> float:
     import resource
 
     value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return value / (1024.0 * 1024.0) if sys.platform == "darwin" else value / 1024.0
+    return value / (1024.0 * 1024.0)
 
 
 def _market(
