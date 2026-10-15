@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 
 from bagelquant_core.resources import ResourceLimits, resource_limits
@@ -22,7 +23,13 @@ class BTExecutionOptions:
         default_factory=lambda: ResourceLimits(total_threads=1, lightgbm_threads=1)
     )
 
+    native_admission: Callable[[str], AbstractContextManager] | None = field(
+        default=None, compare=False, repr=False
+    )
+
     def __post_init__(self) -> None:
+        if self.native_admission is not None and not callable(self.native_admission):
+            raise ValueError("native_admission must be callable")
         if isinstance(self.workers, bool) or not isinstance(self.workers, int):
             raise ValueError("workers must be a positive integer")
         if self.workers < 1 or self.workers > self.limits.total_threads:
@@ -46,11 +53,16 @@ def run_evaluation_batch[Input, Output](
     The callback also runs inside each worker before and after its kernel.
     """
     selected = options or BTExecutionOptions()
-    limits = selected.limits.for_workers(selected.workers)
+    # Mixed evaluation units cannot nest another numerical executor while a
+    # caller owns the process-native permit. Standalone explicit pools remain.
+    workers = 1 if selected.native_admission is not None else selected.workers
+    limits = selected.limits.for_workers(workers)
     total = len(items) if hasattr(items, "__len__") else None
 
     def invoke(item: Input) -> Output:
-        with resource_limits(limits):
+        admission = (selected.native_admission("mixed")
+                     if selected.native_admission is not None else nullcontext())
+        with resource_limits(limits), admission:
             check_canceled()
             result = evaluate(item)
             check_canceled()
@@ -58,36 +70,43 @@ def run_evaluation_batch[Input, Output](
 
     results: list[Output] = []
     iterator = iter(items)
-    if selected.workers == 1:
+    if workers == 1:
         for item in iterator:
             check_canceled()
             results.append(invoke(item))
             progress(len(results), total)
         return results
-    with ThreadPoolExecutor(max_workers=selected.workers) as pool:
-        pending = []
-        try:
-            for _ in range(selected.workers):
+    ordered: dict[int, Output] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {}
+        index = 0
+
+        def admit():
+            nonlocal index
+            while len(pending) < workers:
                 check_canceled()
                 try:
                     item = next(iterator)
                 except StopIteration:
                     break
-                pending.append(pool.submit(invoke, item))
+                pending[pool.submit(invoke, item)] = index
+                index += 1
+
+        try:
+            admit()
             while pending:
                 check_canceled()
-                results.append(pending.pop(0).result())
-                progress(len(results), total)
-                check_canceled()
-                for future in pending:
-                    if future.done():
-                        future.result()
-                try:
-                    item = next(iterator)
-                except StopIteration:
+                done, _ = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                if not done:
                     continue
-                pending.append(pool.submit(invoke, item))
+                # Observe every already-completed failure before admitting more.
+                done.update(future for future in pending if future.done())
+                completed = [(future, future.result()) for future in done]
+                for future, result in completed:
+                    ordered[pending.pop(future)] = result
+                    progress(len(ordered), total)
+                admit()
         finally:
             for future in pending:
                 future.cancel()
-    return results
+    return [ordered[index] for index in range(len(ordered))]

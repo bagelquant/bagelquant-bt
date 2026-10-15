@@ -137,3 +137,10 @@ unchanged. The default `runtime=False` retains strict offline inspection and
 source/sidecar preservation for setup and installation.
 
 `evaluation_sample` and `SAMPLE_POLICY` expose the saved effective-sample contract; [research statistics](research-statistics.md) defines dates, gaps and empirical ES95.
+
+
+`BTExecutionOptions.native_admission` optionally accepts
+`Callable[[str], ContextManager[None]]`. BT calls it with `"mixed"` for complete
+local evaluation work and keeps inner execution serial. This execution-only
+admission is excluded from option equality and all numerical identity. Without
+it, `workers` retains the standalone bounded-thread behavior.

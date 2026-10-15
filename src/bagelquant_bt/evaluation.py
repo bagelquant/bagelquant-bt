@@ -23,13 +23,14 @@ from .horizon import (
     _gross_one_tail_weights_with_membership,
     _prepare_factor_returns,
     _quantile_membership,
+    _signal_rank_persistence_prepared,
     _validate_scheduled_factor_frame,
     _window_factor_returns_prepared,
     _window_quantile_forward_returns_with_membership,
     build_statistical_inference,
     quantile_curve_structure,
     rolling_window_information_coefficients,
-    signal_rank_persistence,
+    summarize_signal_persistence,
     summarize_window_ic,
     window_book_returns,
     window_information_coefficients,
@@ -576,7 +577,7 @@ def _alpha_window_execution(
     memory_workers = max(1, (budget - reserved - shared) // per_window)
     workers = min(selected.workers, len(windows), memory_workers)
     # Very small panels do not amortize pool admission and per-window allocation.
-    if factor.height < 1024:
+    if factor.height < 1024 or selected.native_admission is not None:
         workers = 1
     return replace(selected, workers=workers), {
         "requested_workers": selected.workers,
@@ -867,7 +868,14 @@ def evaluate_alpha(
     labels = normalize_forward_returns(
         forward_returns, calendar=sessions, available_date=available_date
     )
-    if values.select("time").unique().join(sessions, on="time", how="anti").height:
+    if (
+        values.lazy()
+        .select("time")
+        .unique()
+        .join(sessions.lazy(), on="time", how="anti")
+        .collect()
+        .height
+    ):
         raise InputValidationError("alpha dates are absent from calendar")
     policy = hash_mapping(
         {
@@ -1100,21 +1108,21 @@ def evaluate_alpha(
         lags = _lags(persistence_lags)
         if min(lags) < 1:
             raise InputValidationError("persistence lags must be positive")
-        persistence, persistence_summary = signal_rank_persistence(
+        # node_values/session_calendar already enforce the public kernel's
+        # finite unique factor and ordered unique session prerequisites.
+        persistence = _signal_rank_persistence_prepared(
             factor,
-            calendar=sessions,
+            sessions=dates,
             horizons=lags,
             target_start=None
             if previous is None or not prior_components & {"horizons", "persistence"}
             else date.fromisoformat(previous_state["through"]),
         )
         if previous is not None and prior_components & {"horizons", "persistence"}:
-            from .horizon import summarize_signal_persistence
-
             persistence = pl.concat(
                 [previous.tables["daily_signal_autocorrelation"], persistence]
             ).sort("evaluation_date", "horizon_sessions")
-            persistence_summary = summarize_signal_persistence(persistence, lags)
+        persistence_summary = summarize_signal_persistence(persistence, lags)
         tables["daily_signal_autocorrelation"] = persistence
         tables["horizon_signal_persistence"] = persistence
         tables["horizon_signal_persistence_summary"] = persistence_summary

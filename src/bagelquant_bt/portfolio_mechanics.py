@@ -34,7 +34,7 @@ def node_values(node: Node, *, kind: Literal["alpha", "weights"]) -> pl.DataFram
     allowed = {"numeric", "prediction"} if kind == "alpha" else {"weights"}
     if not isinstance(node, Node) or node.value_type not in allowed:
         raise TypeError(f"{kind} must be a saved Node with value_type in {allowed}")
-    frame = node.collect(dense=False).select("time", "asset_id", "value")
+    frame = node.collect(dense=False)
     if (
         kind == "weights"
         and frame.filter(
@@ -42,7 +42,13 @@ def node_values(node: Node, *, kind: Literal["alpha", "weights"]) -> pl.DataFram
         ).height
     ):
         raise InputValidationError("weights must be finite complete snapshots")
-    return frame.filter(pl.col("value").is_finite()).sort("time", "asset_id")
+    return (
+        frame.lazy()
+        .select("time", "asset_id", "value")
+        .filter(pl.col("value").is_finite())
+        .sort("time", "asset_id")
+        .collect()
+    )
 
 
 def session_calendar(
@@ -53,10 +59,15 @@ def session_calendar(
     frame = pl.DataFrame({"time": default}) if calendar is None else calendar
     if not isinstance(frame, pl.DataFrame) or "time" not in frame.columns:
         raise InputValidationError("calendar requires a time column")
-    result = frame.select(pl.col("time").cast(pl.Date, strict=False))
+    result = (
+        frame.lazy()
+        .select(pl.col("time").cast(pl.Date, strict=False))
+        .sort("time")
+        .collect()
+    )
     if result["time"].null_count() or result["time"].n_unique() != result.height:
         raise InputValidationError("calendar dates must be unique and non-null")
-    return result.sort("time")
+    return result
 
 
 def normalize_forward_returns(
@@ -122,25 +133,31 @@ def normalize_forward_returns(
         raise InputValidationError("forward_returns contains invalid values or dates")
     if frame.select(pl.struct("time", "asset_id").is_duplicated().any()).item():
         raise InputValidationError("forward_returns must be unique by (time, asset_id)")
-    if (
-        frame.group_by("time")
-        .agg(pl.col("interval_start").n_unique(), pl.col("interval_end").n_unique())
-        .filter((pl.col("interval_end") != 1) | (pl.col("interval_start") != 1))
-        .height
-    ):
+    timing = (
+        frame.lazy()
+        .group_by("time")
+        .agg(
+            pl.col("interval_start").n_unique().alias("_start_count"),
+            pl.col("interval_end").n_unique().alias("_end_count"),
+            pl.col("interval_start").first(),
+            pl.col("interval_end").first(),
+        )
+        .sort("time")
+        .collect()
+    )
+    if (timing["_start_count"] != 1).any() or (timing["_end_count"] != 1).any():
         raise InputValidationError(
             "each alignment label requires one economic interval"
         )
-    timing = (
-        frame.select("time", "interval_start", "interval_end").unique().sort("time")
-    )
-    if timing.filter(pl.col("interval_start") < pl.col("interval_end").shift(1)).height:
+    if (timing["interval_start"] < timing["interval_end"].shift(1)).any():
         raise InputValidationError("economic forward-return intervals must not overlap")
     if (
         calendar is not None
-        and frame.select("time")
+        and frame.lazy()
+        .select("time")
         .unique()
-        .join(calendar.select("time"), on="time", how="anti")
+        .join(calendar.lazy().select("time"), on="time", how="anti")
+        .collect()
         .height
     ):
         raise InputValidationError(
@@ -151,11 +168,16 @@ def normalize_forward_returns(
     )
     if cutoff is not None and not isinstance(cutoff, date):
         raise InputValidationError("available_date cutoff must be a date")
-    return frame.with_columns(
-        ((pl.col("interval_end") <= cutoff) & (pl.col("available_date") <= cutoff))
-        .fill_null(False)
-        .alias("is_mature")
-    ).sort("time", "asset_id")
+    return (
+        frame.lazy()
+        .with_columns(
+            ((pl.col("interval_end") <= cutoff) & (pl.col("available_date") <= cutoff))
+            .fill_null(False)
+            .alias("is_mature")
+        )
+        .sort("time", "asset_id")
+        .collect()
+    )
 
 
 def select_rebalance_snapshots(

@@ -108,3 +108,10 @@ In an integrated checkout, read workspace `.ai/rules/wiki.md`; required missing
 wiki access blocks task completion. Keep package docs and generated references
 here, and reference them from wiki knowledge/workflows without duplicating API
 authority. Record actual authors when maintaining wiki content.
+
+
+`BTExecutionOptions.native_admission` is an optional identity-neutral caller
+context factory. Mixed evaluation units acquire it around complete work and
+execute serially with the full supplied local budget, preventing nested native
+executors. Standalone options retain bounded threads, ready-future refill and
+ordered results. BT never imports the caller's admission implementation.

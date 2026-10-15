@@ -77,6 +77,79 @@ SETTINGS = {
 }
 
 
+def test_persistence_append_builds_only_new_pairs_and_one_merged_summary(monkeypatch):
+    from bagelquant_bt import evaluation
+
+    alpha, labels, calendar, proof = inputs(35)
+    previous = evaluate_alpha(
+        alpha,
+        labels,
+        calendar=calendar,
+        available_date=calendar["time"].max(),
+        components=("persistence",),
+        input_proof=proof,
+        **SETTINGS,
+    )
+    alpha, labels, calendar, proof = inputs(36)
+    reference = evaluate_alpha(
+        alpha,
+        labels,
+        calendar=calendar,
+        available_date=calendar["time"].max(),
+        components=("persistence",),
+        input_proof=proof,
+        **SETTINGS,
+    )
+    original_pairs = evaluation._signal_rank_persistence_prepared
+    original_summary = evaluation.summarize_signal_persistence
+    pair_targets, summary_rows = [], []
+
+    def observe_pairs(*args, **kwargs):
+        assert kwargs["target_start"] == date.fromisoformat(previous.state["through"])
+        result = original_pairs(*args, **kwargs)
+        pair_targets.extend(result["target_date"].to_list())
+        return result
+
+    def observe_summary(series, horizons):
+        summary_rows.append(series.height)
+        return original_summary(series, horizons)
+
+    monkeypatch.setattr(evaluation, "_signal_rank_persistence_prepared", observe_pairs)
+    monkeypatch.setattr(evaluation, "summarize_signal_persistence", observe_summary)
+    updated = evaluate_alpha(
+        alpha,
+        labels,
+        calendar=calendar,
+        available_date=calendar["time"].max(),
+        components=("persistence",),
+        input_proof=proof,
+        previous=previous,
+        **SETTINGS,
+    )
+    assert pair_targets and min(pair_targets) > date.fromisoformat(
+        previous.state["through"]
+    )
+    assert summary_rows == [reference.tables["daily_signal_autocorrelation"].height]
+    for name, expected in reference.tables.items():
+        assert_frame_equal(updated.tables[name], expected, check_exact=True)
+    prior = previous.tables["daily_signal_autocorrelation"]
+    retained = updated.tables["daily_signal_autocorrelation"].filter(
+        pl.col("target_date") <= date.fromisoformat(previous.state["through"])
+    )
+    assert_frame_equal(retained, prior, check_exact=True)
+    evaluate_alpha(
+        alpha,
+        labels,
+        calendar=calendar,
+        available_date=calendar["time"].max(),
+        components=("persistence",),
+        input_proof=proof,
+        previous=updated,
+        **SETTINGS,
+    )
+    assert summary_rows == [reference.tables["daily_signal_autocorrelation"].height]
+
+
 @pytest.mark.parametrize(
     "components",
     [("book_tail",), ("turnover",), ("quantiles",), ("lead_lag",), ("alpha_return",)],

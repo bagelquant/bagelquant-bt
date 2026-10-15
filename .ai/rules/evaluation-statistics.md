@@ -116,6 +116,14 @@ merge frames in requested window order before global summaries, BH/HAC and
 rolling inference. Cancellation checks separate window stages and global
 aggregation. No worker mutates shared inputs or publishes artifacts.
 
+Signal persistence keeps ranks after the common-asset join and collects each
+bounded pair chunk as one query. Its public wrapper validates factor/session
+inputs; Alpha evaluation reuses its already validated typed inputs through the
+same private numerical kernel. Append retains old pairs, computes only new
+target dates and derives the summary once from the merged primitives. Economic
+label consistency and overlap checks may share one per-date preparation, but
+every constituent still requires the same typed/unique/date/maturity checks.
+
 `evaluation_sample(frames, start=..., end=..., minimum_history_years=None)` owns neutral effective-sample metadata. Saved signal coverage defines the first finite signal and observation calendar; fallback finite economic observations respect maturity and count zero returns. Exclude only leading unavailable history, never trim by return direction or erase internal gaps. Minimum calendar years is an explicit caller policy. No available signal means no economic sample, not a fabricated flat path.
 
 `return_metrics`/`return_statistics` expose empirical daily `expected_shortfall_95`: negative mean of the worst ceil(5% * finite sample size) observations, requiring at least 20. Keep undefined values null with reasons. Saved research aggregation exposes annual/recent performance, annual IC and coverage summaries through the same formulas.

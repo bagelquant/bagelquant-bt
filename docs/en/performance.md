@@ -16,6 +16,14 @@ Window/lag statistics reuse prepared rank/return primitives rather than simulate
 accounts. Saved-period reads aggregate results and select the correct historical
 lot snapshot; they never rebuild values or replay execution.
 
+Signal persistence shares validated finite factors and session coordinates with
+Alpha evaluation. Each bounded pair chunk collects its join, common-universe
+ranks and correlation together; it retains the existing session and row bounds.
+Append calculates only new target pairs and summarizes once after merging the
+saved primitives. Return-label validation shares one per-date interval summary
+for consistency and overlap checks. These query boundaries do not change rank
+ties, missing-value treatment, formulas or native pool allocation.
+
 Tests use synthetic inputs and isolated roots. Broad benchmarks must preserve
 causal, deterministic and typed numerical contracts and report actual measured
 limits; runtime pressure never changes mathematics.
@@ -36,4 +44,14 @@ workers and byte estimates. These values are execution evidence only and must
 not enter numerical metrics or result identity. Callers use either outer target
 parallelism or inner window parallelism to avoid nested pools.
 
-Chapter inventory can use metadata-only receipts instead of opening every saved period. Selected-table reads hash each distinct selected file once per finite context, then recheck its identity after decoding. Repeated selected reads share proofs; unrelated period/table corruption remains visible to full audits and reads consuming it. Evaluation formulas, causal execution and result identity are unchanged.
+Chapter inventory can use metadata-only receipts instead of opening every saved period. Selected-table reads trust registered descriptors, row counts and indexed schemas, then recheck file identity after decoding. Explicit verify owns byte/logical/index audits. Repeated selected reads share proofs; unrelated period/table corruption remains visible to full audits and reads consuming it. Evaluation formulas, causal execution and result identity are unchanged.
+
+
+A caller may supply `BTExecutionOptions(native_admission=...)`, an execution-only
+callable returning a context manager for a native-work class. BT evaluates its
+complete mixed unit inside that permit and uses one local worker, retaining the
+whole supplied memory/thread share. This prevents nested native executors when
+Polars shares a process pool with BLAS/OpenMP. BT does not configure or resize
+those pools, detect hardware or choose machine policy. Omitted admission keeps
+the standalone bounded thread pool. Its ready slots refill after any completed
+future; results retain input order and failure stops further admission.

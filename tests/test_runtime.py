@@ -122,3 +122,45 @@ def test_failure_stops_later_admission_and_serial_cancel_stops_work():
 def test_workers_must_fit_explicit_budget(workers):
     with pytest.raises(ValueError):
         BTExecutionOptions(workers=workers, limits=ResourceLimits(total_threads=2))
+
+
+def test_any_completed_item_refills_slot_before_slow_earlier_result():
+    third_started = Event()
+
+    def evaluate(item):
+        if item == 0:
+            assert third_started.wait(5), "idle slot was not refilled"
+        if item == 2:
+            third_started.set()
+        return item
+
+    assert run_evaluation_batch(
+        range(3), evaluate,
+        options=BTExecutionOptions(workers=2, limits=ResourceLimits(total_threads=2)),
+    ) == [0, 1, 2]
+
+
+def test_caller_native_admission_keeps_complete_mixed_work_serial_and_budget_whole():
+    from contextlib import contextmanager
+    admitted = []
+    budgets = []
+
+    @contextmanager
+    def admission(kind):
+        admitted.append(kind)
+        yield
+        admitted.append("released")
+
+    options = BTExecutionOptions(workers=3, limits=ResourceLimits(total_threads=3),
+                                 native_admission=admission)
+    result = run_evaluation_batch(
+        range(3), lambda item: (
+            budgets.append(active_resource_limits().total_threads), item
+        )[1], options=options,
+    )
+    assert result == [0, 1, 2]
+    assert budgets == [3, 3, 3]
+    assert admitted == ["mixed", "released"] * 3
+    assert options == BTExecutionOptions(
+        workers=3, limits=ResourceLimits(total_threads=3)
+    )

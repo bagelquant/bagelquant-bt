@@ -381,6 +381,25 @@ def test_overlapping_economic_intervals_fail_without_a_hidden_date_shift():
         evaluate_weights(weights, labels, components=("returns",))
 
 
+@pytest.mark.parametrize("column", ["interval_start", "interval_end"])
+def test_each_label_rejects_disagreeing_constituent_economic_intervals(column):
+    alpha = _node({DATES[0]: {"a": 1.0, "b": 2.0}})
+    labels = _labels({DATES[0]: {"a": 0.1, "b": 0.2}})
+    labels = labels.with_columns(
+        pl.when(pl.col("asset_id") == "a")
+        .then(
+            pl.col(column) + pl.duration(days=-1 if column == "interval_start" else 1)
+        )
+        .otherwise(pl.col(column))
+        .alias(column),
+        (pl.col("available_date") + pl.duration(days=1)).alias("available_date"),
+    )
+    with pytest.raises(InputValidationError, match="one economic interval"):
+        evaluate_alpha(
+            alpha, labels, components=("persistence",), persistence_lags=(1,)
+        )
+
+
 def test_gap_between_economic_intervals_does_not_form_a_horizon_label():
     alpha = _node({DATES[0]: {"a": 1.0, "b": 2.0}}, calendar=DATES[:2])
     labels = _labels({day: {"a": 0.1, "b": 0.2} for day in DATES[:2]}).with_columns(

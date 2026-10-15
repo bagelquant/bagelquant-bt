@@ -654,11 +654,28 @@ def signal_rank_persistence(
 
     normalized = _validate_scheduled_factor_frame(factor)
     sessions = _session_dates(
-        calendar,
-        normalized.rename({"factor": "price"}).select(
-            pl.col("evaluation_date").alias(TIME), ASSET_ID, "price"
-        ),
+        calendar, normalized.rename({"evaluation_date": TIME})
     )
+    resolved_horizons = tuple(int(horizon) for horizon in horizons)
+    series = _signal_rank_persistence_prepared(
+        normalized,
+        sessions=sessions,
+        horizons=resolved_horizons,
+        progress=progress,
+        target_start=target_start,
+    )
+    return series, summarize_signal_persistence(series, resolved_horizons)
+
+
+def _signal_rank_persistence_prepared(
+    normalized: pl.DataFrame,
+    *,
+    sessions: Sequence[date],
+    horizons: Sequence[int],
+    progress: DailyDiagnosticProgress | None = None,
+    target_start: date | None = None,
+) -> pl.DataFrame:
+    """Consume validated finite unique factors and ordered unique sessions."""
     resolved_horizons = tuple(int(horizon) for horizon in horizons)
     if any(horizon < 1 for horizon in resolved_horizons):
         raise ValueError("persistence horizons must be positive")
@@ -681,8 +698,10 @@ def signal_rank_persistence(
         on="evaluation_date",
         how="inner",
     )
-    current = indexed.select("evaluation_date", ASSET_ID, "factor", "_session_ordinal")
-    future = indexed.select(
+    current = indexed.lazy().select(
+        "evaluation_date", ASSET_ID, "factor", "_session_ordinal"
+    )
+    future = indexed.lazy().select(
         pl.col("evaluation_date").alias("target_date"),
         ASSET_ID,
         pl.col("factor").alias("future_factor"),
@@ -698,7 +717,11 @@ def signal_rank_persistence(
     chunk_end: int | None = None
     chunk_rows = 0
     for ordinal, row_count in (
-        current.group_by("_session_ordinal").len().sort("_session_ordinal").iter_rows()
+        current.group_by("_session_ordinal")
+        .len()
+        .sort("_session_ordinal")
+        .collect()
+        .iter_rows()
     ):
         resolved_ordinal = int(ordinal)
         resolved_count = int(row_count)
@@ -721,7 +744,7 @@ def signal_rank_persistence(
     total = len(resolved_horizons)
     for completed, horizon in enumerate(resolved_horizons, start=1):
         for chunk_start, chunk_end in date_chunks:
-            paired = (
+            series_frame = (
                 current.filter(
                     pl.col("_session_ordinal").is_between(
                         chunk_start,
@@ -752,18 +775,17 @@ def signal_rank_persistence(
                     .over("evaluation_date")
                     .alias("_future_rank"),
                 )
-            )
-            if not paired.is_empty():
-                series_frames.append(
-                    paired.group_by(
-                        "evaluation_date", "target_date", "horizon_sessions"
-                    ).agg(
-                        _safe_corr("_current_rank", "_future_rank").alias(
-                            "rank_autocorrelation"
-                        ),
-                        pl.len().alias("sample_size"),
-                    )
+                .group_by("evaluation_date", "target_date", "horizon_sessions")
+                .agg(
+                    _safe_corr("_current_rank", "_future_rank").alias(
+                        "rank_autocorrelation"
+                    ),
+                    pl.len().alias("sample_size"),
                 )
+                .collect()
+            )
+            if not series_frame.is_empty():
+                series_frames.append(series_frame)
         if progress is not None:
             progress("signal_autocorrelation", completed, total)
     series = (
@@ -773,7 +795,7 @@ def signal_rank_persistence(
         if series_frames
         else pl.DataFrame(schema=series_schema)
     )
-    return series, summarize_signal_persistence(series, resolved_horizons)
+    return series
 
 
 def hac_mean_test(
@@ -1172,7 +1194,7 @@ def _validate_scheduled_factor_frame(frame: pl.DataFrame) -> pl.DataFrame:
     if missing:
         raise ValueError(f"factor is missing required columns: {missing}")
     normalized = (
-        frame.select(*required)
+        frame.lazy().select(*required)
         .with_columns(
             pl.col("evaluation_date").cast(pl.Date, strict=False),
             pl.col("execution_date").cast(pl.Date, strict=False),
@@ -1180,13 +1202,15 @@ def _validate_scheduled_factor_frame(frame: pl.DataFrame) -> pl.DataFrame:
             pl.col("factor").cast(pl.Float64, strict=False),
         )
         .drop_nulls(list(required))
+        .filter(pl.col("factor").is_finite())
+        .sort(["evaluation_date", ASSET_ID])
+        .collect()
     )
-    normalized = normalized.filter(pl.col("factor").is_finite())
     if normalized.select(
         pl.struct("evaluation_date", ASSET_ID).is_duplicated().any()
     ).item():
         raise ValueError("factor must be unique by (evaluation_date, asset_id)")
-    return normalized.sort(["evaluation_date", ASSET_ID])
+    return normalized
 
 
 def _session_dates(calendar: pl.DataFrame | None, prices: pl.DataFrame) -> list[date]:
@@ -1196,10 +1220,11 @@ def _session_dates(calendar: pl.DataFrame | None, prices: pl.DataFrame) -> list[
     if "is_open" in source.columns:
         source = source.filter(pl.col("is_open").cast(pl.Boolean, strict=False))
     return (
-        source.select(pl.col(TIME).cast(pl.Date, strict=False))
+        source.lazy().select(pl.col(TIME).cast(pl.Date, strict=False))
         .drop_nulls()
         .unique()
         .sort(TIME)
+        .collect()
         .get_column(TIME)
         .to_list()
     )
