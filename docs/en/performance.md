@@ -12,6 +12,12 @@ buffers and cancellation checks each session/order/planning step. Callers may
 share read-only market inputs, while every scenario owns independent account
 state. Reuse verified saved artifacts before preparing market rows.
 
+Research weight paths retain interval and availability scalars during the daily
+loop and materialize the returned weight checkpoint once, after the final mature
+session. Asset and rebalance sets are reduced to unique coordinates before
+Python conversion. These allocation reductions preserve daily outputs, zero
+asset coordinates and continuation state.
+
 Window/lag statistics reuse prepared rank/return primitives rather than simulate
 accounts. Saved-period reads aggregate results and select the correct historical
 lot snapshot; they never rebuild values or replay execution.

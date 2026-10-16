@@ -298,21 +298,22 @@ def simulate_weight_returns(
         ).height:
             raise InputValidationError("unknown decision status")
         rebalances = set(decisions.filter(pl.col("status") == "rebalance")["time"])
-        if set(weights["time"]) != rebalances:
+        if set(weights["time"].unique().to_list()) != rebalances:
             raise InputValidationError(
                 "weight snapshots must exactly match rebalance decisions"
             )
     else:
-        rebalances = set(weights["time"])
+        rebalances = set(weights["time"].unique().to_list())
     if checkpoint is not None and not isinstance(checkpoint, WeightStateCheckpoint):
         raise TypeError("checkpoint must be a WeightStateCheckpoint")
     assets = sorted(
-        set(weights["asset_id"])
-        | set(labels["asset_id"])
+        set(weights["asset_id"].unique().to_list())
+        | set(labels["asset_id"].unique().to_list())
         | (set(checkpoint.weights["asset_id"]) if checkpoint else set())
     )
     asset_indices = {asset: index for index, asset in enumerate(assets)}
     count = len(assets)
+    asset_array = np.array(assets) if include_holdings else None
     gross = np.zeros(count)
     net = np.zeros(count)
     gross_value = net_value = 1.0
@@ -352,7 +353,8 @@ def simulate_weight_returns(
         values[indices] = snapshot["value"].to_numpy()
         targets[snapshot["time"][0]] = values
     return_rows, turnover_rows, value_rows, coverage_rows, holdings = [], [], [], [], []
-    final_checkpoint = checkpoint
+    last_interval_end = None if checkpoint is None else checkpoint.interval_end
+    last_availability = None if checkpoint is None else checkpoint.available_date
     active = checkpoint is not None
     indexed_labels = labels.with_columns(
         pl.col("asset_id")
@@ -373,7 +375,7 @@ def simulate_weight_returns(
             traded = float(np.abs(desired - net).sum())
             gross, net = desired.copy(), desired.copy()
             active = True
-            initial_rebalance = final_checkpoint is None and not return_rows
+            initial_rebalance = checkpoint is None and not return_rows
         else:
             traded, initial_rebalance = 0.0, False
         if not active:
@@ -395,11 +397,11 @@ def simulate_weight_returns(
         interval_end = panel["interval_end"][0]
         interval_start = panel["interval_start"][0]
         availability = panel["available_date"].max()
-        if final_checkpoint is not None:
-            availability = max(availability, final_checkpoint.available_date)
+        if last_availability is not None:
+            availability = max(availability, last_availability)
         if (
-            final_checkpoint is not None
-            and interval_start != final_checkpoint.interval_end
+            last_interval_end is not None
+            and interval_start != last_interval_end
         ):
             raise InputValidationError(
                 f"portfolio returns require contiguous economic intervals at {day}"
@@ -461,7 +463,7 @@ def simulate_weight_returns(
                         "time": [day] * int(selected.sum()),
                         "interval_end": [interval_end] * int(selected.sum()),
                         "available_date": [availability] * int(selected.sum()),
-                        "asset_id": np.array(assets)[selected],
+                        "asset_id": asset_array[selected],
                         "gross_weight": gross[selected],
                         "net_weight": net[selected],
                     },
@@ -475,10 +477,16 @@ def simulate_weight_returns(
                     },
                 )
             )
+        last_interval_end = interval_end
+        last_availability = availability
+    final_checkpoint = checkpoint
+    if return_rows:
+        # Only the final state escapes the causal loop. Keep its interval and
+        # availability scalars above without copying all asset weights per day.
         final_checkpoint = WeightStateCheckpoint(
-            time=day,
-            interval_end=interval_end,
-            available_date=availability,
+            time=return_rows[-1]["time"],
+            interval_end=last_interval_end,
+            available_date=last_availability,
             gross_value=gross_value,
             net_value=net_value,
             weights=pl.DataFrame(

@@ -251,6 +251,72 @@ def test_weight_checkpoint_suffix_matches_full_run_with_independent_drift():
     assert suffix.checkpoint.net_value == pytest.approx(full.checkpoint.net_value)
 
 
+@pytest.mark.parametrize("include_holdings", [False, True])
+def test_weight_path_materializes_only_final_mature_checkpoint(
+    monkeypatch, include_holdings
+):
+    from bagelquant_bt import portfolio_mechanics as mechanics
+
+    weights = _node(
+        {
+            DATES[0]: {"a": 0.5, "b": 0.5, "c": 0.0},
+            DATES[2]: {"a": 0.2, "b": 0.8, "c": 0.0},
+        },
+        value_type="weights",
+        calendar=DATES[:4],
+    ).collect(dense=False)
+    labels = mechanics.normalize_forward_returns(
+        _labels(
+            {
+                day: {"a": 0.05, "b": None, "c": 0.0, "d": 0.0}
+                for day in DATES[:4]
+            },
+            immature=(DATES[3],),
+        ),
+        available_date=DATES[5],
+    )
+    allocated = []
+
+    class ObservedCheckpoint(mechanics.WeightStateCheckpoint):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            allocated.append(self.time)
+
+    monkeypatch.setattr(mechanics, "WeightStateCheckpoint", ObservedCheckpoint)
+    options = {
+        "decisions": None,
+        "cost_rate": 0.0005,
+        "include_holdings": include_holdings,
+    }
+    full, final = mechanics.simulate_weight_returns(weights, labels, **options)
+    assert allocated == [DATES[2]]
+    assert final.time == DATES[2]
+    assert final.interval_end == DATES[4]
+    assert final.available_date == DATES[4]
+    assert final.weights["asset_id"].to_list() == ["a", "b", "c", "d"]
+    assert final.weights["gross_weight"].tail(2).to_list() == [0.0, 0.0]
+    first, checkpoint = mechanics.simulate_weight_returns(
+        weights, labels.filter(pl.col("time") == DATES[0]), **options
+    )
+    suffix, continued = mechanics.simulate_weight_returns(
+        weights, labels, checkpoint=checkpoint, **options
+    )
+    assert allocated == [DATES[2], DATES[0], DATES[2]]
+    for family in ("returns", "turnover", "value", "coverage", "weights"):
+        assert_frame_equal(pl.concat([first[family], suffix[family]]), full[family])
+    assert_frame_equal(continued.weights, final.weights)
+    assert continued.gross_value == final.gross_value
+    assert continued.net_value == final.net_value
+    _, unchanged = mechanics.simulate_weight_returns(
+        weights,
+        labels.filter(pl.col("time") == DATES[0]),
+        checkpoint=checkpoint,
+        **options,
+    )
+    assert unchanged is checkpoint
+    assert allocated == [DATES[2], DATES[0], DATES[2]]
+
+
 def test_weight_mature_missing_asset_returns_zero_without_reselecting():
     weights = _node(
         {DATES[0]: {"a": 0.5, "b": 0.5}}, value_type="weights", calendar=DATES[:2]
