@@ -18,6 +18,7 @@ from .horizon import (
     DAILY_BOOK_LEAD_LAGS,
     DAILY_SESSION_WINDOWS,
     DAILY_SUMMARY_AUTOCORRELATION_LAGS,
+    PERSISTENCE_SUMMARY_POLICY,
     SessionWindow,
     _centered_rank_book_weights_prepared,
     _gross_one_tail_weights_with_membership,
@@ -544,6 +545,30 @@ def _alpha_window_frames(
             retained = previous[family].join(
                 refreshed, on="evaluation_date", how="anti"
             )
+            if retained.is_empty():
+                retained = frames[family].clear()
+            else:
+                # Old incomplete window sets promoted count columns through
+                # Int64 empty frames. Restore the current primitive boundary
+                # on the derived result, never rewrite its saved source table.
+                names = {
+                    "book_returns": ("expected_count", "observed_count"),
+                    "tail_returns": ("expected_count", "observed_count"),
+                    "quantile_forward_returns": ("expected_count", "observed_count"),
+                    "factor_returns": ("sample_size",),
+                }.get(family, ())
+                counts = {}
+                for name in names:
+                    dtype = frames[family].schema[name]
+                    if retained.schema[name] == dtype:
+                        continue
+                    if retained.schema[name] != pl.Int64 or dtype != pl.UInt32:
+                        raise InputValidationError(
+                            "Invalid retained horizon count dtype"
+                        )
+                    counts[name] = dtype
+                if counts:
+                    retained = retained.cast(counts, strict=True)
             frames[family] = (
                 retained
                 if frames[family].is_empty()
@@ -1005,12 +1030,36 @@ def evaluate_alpha(
             and str(available_date) == previous_state["cutoff"]
             and selected == prior_components
         ):
+            tables = previous.tables
+            state = previous.state
+            outcome = "up_to_date"
+            if (
+                selected & {"horizons", "persistence"}
+                and previous_state.get("persistence_summary_policy")
+                != PERSISTENCE_SUMMARY_POLICY
+            ):
+                cancel()
+                tables = {
+                    **previous.tables,
+                    "horizon_signal_persistence_summary": summarize_signal_persistence(
+                        previous.tables["daily_signal_autocorrelation"],
+                        _lags(persistence_lags),
+                    ),
+                }
+                cancel()
+                state = {
+                    **previous_state,
+                    "persistence_summary_policy": PERSISTENCE_SUMMARY_POLICY,
+                }
+                outcome = "derived_refresh"
             return replace(
                 previous,
+                tables=tables,
+                state=state,
                 execution={
                     "path_sessions": 0,
                     "continued_paths": 0,
-                    "outcome": "up_to_date",
+                    "outcome": outcome,
                 },
             )
     cancel()
@@ -1126,6 +1175,7 @@ def evaluate_alpha(
         tables["daily_signal_autocorrelation"] = persistence
         tables["horizon_signal_persistence"] = persistence
         tables["horizon_signal_persistence_summary"] = persistence_summary
+        state["persistence_summary_policy"] = PERSISTENCE_SUMMARY_POLICY
     cancel()
     book = tail = membership = None
     work_factor = factor

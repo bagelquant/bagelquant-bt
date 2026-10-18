@@ -1,0 +1,186 @@
+{
+  "provenance": {
+    "original_summary_source_sha256": "2703d99d05d25093c628e86ee8c6a891b349a2c98b65ca60344db06e2469df0d",
+    "root_observation_report_sha256": "b0ae43d8f53d5817f833eff03497b3de23187adf804a819fbb01896389589df7",
+    "root_observation_output_sha256": "2332e8b05bd0691bbfdfbb4f7c05c6fb425efa975c587b2fb3a6636c80d19dbe",
+    "recipe": "Nine exact tiny synthetic inputs in task observe_canonical_persistence_admission.py SHA55e1887b1b45f40ad0f6fa61fa1e3c4f71eaa73d8a407e2c26b828c3dff6c02a; no production legacy reducer."
+  },
+  "cases": [
+    {
+      "case": "float64",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Float64})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Float64, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "3fe0000000000000",
+            "2",
+            "'0-1D'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'0-1D'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "float32",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Float32})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Float32, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "3fe0000000000000",
+            "2",
+            "'0-1D'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'0-1D'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "int64",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Int64})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Float64, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "3fe0000000000000",
+            "2",
+            "'0-1D'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'0-1D'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "uint32",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': UInt32})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Float64, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "3fe0000000000000",
+            "2",
+            "'0-1D'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'0-1D'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "boolean",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Boolean})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Float64, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "3fe0000000000000",
+            "2",
+            "'0-1D'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'0-1D'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "string",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': String})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': String, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "None",
+            "2",
+            "'unavailable'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'unavailable'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "null",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Null})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Null, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "None",
+            "0",
+            "'unavailable'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'unavailable'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "decimal",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Decimal(precision=20, scale=2)})",
+      "original": {
+        "schema": "Schema({'horizon_sessions': Int64, 'mean_rank_autocorrelation': Float64, 'sample_size': Int64, 'signal_half_life_band': String})",
+        "rows": [
+          [
+            "1",
+            "3fe0000000000000",
+            "2",
+            "'0-1D'"
+          ],
+          [
+            "5",
+            "None",
+            "0",
+            "'0-1D'"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "date",
+      "input_schema": "Schema({'horizon_sessions': Int64, 'rank_autocorrelation': Date})",
+      "original": {
+        "error_type": "TypeError",
+        "error": "float() argument must be a string or a real number, not 'datetime.datetime'"
+      }
+    }
+  ]
+}

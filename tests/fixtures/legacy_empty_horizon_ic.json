@@ -1,0 +1,141 @@
+{
+  "producer_bt_head": "247e32c256981953c514854f223db2c1ba359826",
+  "producer_api": "evaluate_alpha(default components/windows, 1 session,8assets); BTStore.publish_shared/shared_evaluation",
+  "fixture_sha256": "4bb621b302b7086e37b19e24e7eb65a639b3995c62b34b6d1d2d4c5c39e2adce",
+  "bytes": 1272,
+  "schema": {
+    "evaluation_date": "Date",
+    "execution_date": "Date",
+    "target_end_date": "Date",
+    "window_kind": "String",
+    "window_id": "String",
+    "start_session": "Int64",
+    "end_session": "Int64",
+    "pearson_ic": "Float64",
+    "spearman_ic": "Float64",
+    "available_date": "Date",
+    "target_start_date": "Date"
+  },
+  "rows": 0,
+  "original_receipt_identity": "edf04114e929f7928356c2f8755b2efb446e0cf3578058cc1b02434fd9bc6e03",
+  "original_table_reference": {
+    "backend": "bt",
+    "checksum": "4bb621b302b7086e37b19e24e7eb65a639b3995c62b34b6d1d2d4c5c39e2adce",
+    "logical_hash": "04012477c8ddde3670595047792de56199b76cd008ce3405303d7a3f9bd455ec",
+    "rows": 0,
+    "table_id": "04012477c8ddde3670595047792de56199b76cd008ce3405303d7a3f9bd455ec"
+  },
+  "generator_recipe": "Run task artifacts/audit_bt_cross_version.py --phase old --old-counts 1,64,256 --root EXTERNAL_STORE --result EXTERNAL_RESULT using original runtime BT imports; read shared_evaluation('audit','prefix1', names=['horizon_ic']) and write its horizon_ic with Polars write_parquet.",
+  "additional_fixture_frames": {
+    "horizon_book_returns": {
+      "filename": "legacy_empty_horizon_book_returns.parquet",
+      "sha256": "258a340abbe4c66317df1a2ed8471962c5a26e333b72349045d319ec33e9fde2",
+      "bytes": 1599,
+      "original_table_reference": {
+        "backend": "bt",
+        "checksum": "258a340abbe4c66317df1a2ed8471962c5a26e333b72349045d319ec33e9fde2",
+        "logical_hash": "acf787a5b92d74bd910d55ea25722a28fa1f110985d91566230d06aa92a928a3",
+        "rows": 0,
+        "table_id": "acf787a5b92d74bd910d55ea25722a28fa1f110985d91566230d06aa92a928a3"
+      },
+      "schema": {
+        "evaluation_date": "Date",
+        "execution_date": "Date",
+        "target_end_date": "Date",
+        "window_kind": "String",
+        "window_id": "String",
+        "start_session": "Int64",
+        "end_session": "Int64",
+        "book_return": "Float64",
+        "expected_count": "Int64",
+        "observed_count": "Int64",
+        "coverage_ratio": "Float64",
+        "unavailable_reason": "String",
+        "available_date": "Date",
+        "target_start_date": "Date"
+      }
+    },
+    "horizon_factor_returns": {
+      "filename": "legacy_empty_horizon_factor_returns.parquet",
+      "sha256": "147e49f852aa1db8119c808ae217fbce002e8d2fc43f2d1fcfcdcfd8529f0dec",
+      "bytes": 1283,
+      "original_table_reference": {
+        "backend": "bt",
+        "checksum": "147e49f852aa1db8119c808ae217fbce002e8d2fc43f2d1fcfcdcfd8529f0dec",
+        "logical_hash": "369d0ce5f595bfed921819f92b0d7b852ec1472df439c3eba3733cd67100473a",
+        "rows": 0,
+        "table_id": "369d0ce5f595bfed921819f92b0d7b852ec1472df439c3eba3733cd67100473a"
+      },
+      "schema": {
+        "evaluation_date": "Date",
+        "execution_date": "Date",
+        "target_end_date": "Date",
+        "window_kind": "String",
+        "window_id": "String",
+        "start_session": "Int64",
+        "end_session": "Int64",
+        "factor_return": "Float64",
+        "sample_size": "Int64",
+        "available_date": "Date",
+        "target_start_date": "Date"
+      }
+    },
+    "horizon_quantile_forward_returns": {
+      "filename": "legacy_empty_horizon_quantile_forward_returns.parquet",
+      "sha256": "7da69379dfd8be5766e6a481c0275ebb4f47b29be2935433defd73da5ec9b9ac",
+      "bytes": 1696,
+      "original_table_reference": {
+        "backend": "bt",
+        "checksum": "7da69379dfd8be5766e6a481c0275ebb4f47b29be2935433defd73da5ec9b9ac",
+        "logical_hash": "3d49ddde52b0ead1e6719fd0e082e8e15fc856d8aea13b245f60f4b1769e1d35",
+        "rows": 0,
+        "table_id": "3d49ddde52b0ead1e6719fd0e082e8e15fc856d8aea13b245f60f4b1769e1d35"
+      },
+      "schema": {
+        "evaluation_date": "Date",
+        "execution_date": "Date",
+        "target_end_date": "Date",
+        "window_kind": "String",
+        "window_id": "String",
+        "start_session": "Int64",
+        "end_session": "Int64",
+        "quantile": "String",
+        "quantile_return": "Float64",
+        "expected_count": "Int64",
+        "observed_count": "Int64",
+        "coverage_ratio": "Float64",
+        "unavailable_reason": "String",
+        "available_date": "Date",
+        "target_start_date": "Date"
+      }
+    },
+    "horizon_tail_returns": {
+      "filename": "legacy_empty_horizon_tail_returns.parquet",
+      "sha256": "6f4e706f2b1a4bcb73c057fd37e8bf57618c836a150c750b47e17c3553839be0",
+      "bytes": 1599,
+      "original_table_reference": {
+        "backend": "bt",
+        "checksum": "6f4e706f2b1a4bcb73c057fd37e8bf57618c836a150c750b47e17c3553839be0",
+        "logical_hash": "f4e6ee750a594657b4aa145e203d605f44d64aced8e50fda92fb1748aab65d86",
+        "rows": 0,
+        "table_id": "f4e6ee750a594657b4aa145e203d605f44d64aced8e50fda92fb1748aab65d86"
+      },
+      "schema": {
+        "evaluation_date": "Date",
+        "execution_date": "Date",
+        "target_end_date": "Date",
+        "window_kind": "String",
+        "window_id": "String",
+        "start_session": "Int64",
+        "end_session": "Int64",
+        "tail_return": "Float64",
+        "expected_count": "Int64",
+        "observed_count": "Int64",
+        "coverage_ratio": "Float64",
+        "unavailable_reason": "String",
+        "available_date": "Date",
+        "target_start_date": "Date"
+      }
+    }
+  }
+}

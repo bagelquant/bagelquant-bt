@@ -18,9 +18,33 @@ session. Asset and rebalance sets are reduced to unique coordinates before
 Python conversion. These allocation reductions preserve daily outputs, zero
 asset coordinates and continuation state.
 
-Window/lag statistics reuse prepared rank/return primitives rather than simulate
-accounts. Saved-period reads aggregate results and select the correct historical
-lot snapshot; they never rebuild values or replay execution.
+Alpha's default diagnostics include 87 independent causal weight paths: Book,
+Spread, 61 Book lead/lag paths, 14 Alpha-return lag paths and ten quantiles.
+They retain independent Gross/Net holdings, cost and continuation state. The
+engine reduces date/asset coordinates before Python conversion, prepares null
+return values and observation masks once per path, and materializes only its
+final mature checkpoint. Holdings output, when requested, still records every
+processed session. No historical account state is recreated during append.
+
+Quantile-curve preparation groups numerically ordered quantile returns in one
+columnar query before applying the existing NumPy/SciPy formulas to each curve.
+Sparse, incomplete and constant curves retain their original unavailable reasons;
+rank ties, correlation, covariance and rounding are unchanged.
+Empty horizon primitives expose the same count columns and dtypes as populated
+ones, so continuation from a short history cannot promote later count schemas.
+Continuation also strictly normalizes retained legacy count columns at the
+current primitive merge boundary. An empty retained frame uses that primitive's
+current empty schema. Existing saved tables, receipt identities and processed
+daily checkpoints remain unchanged; no historical path replay is needed.
+Continuation publication requires equal schemas as well as equal values before
+reusing an original reference. A changed derived dtype is published through the
+ordinary immutable table path, including an empty result; reload preserves the
+current typed boundary without rewriting the original artifact.
+
+Saved-period reads aggregate results and select the correct historical lot
+snapshot; they never rebuild values or replay execution. Complete Alpha
+benchmarks must include all default horizon, persistence and causal path work;
+a persistence-only benchmark does not establish full-evaluation latency.
 
 Signal persistence shares validated finite factors and session coordinates with
 Alpha evaluation. Each bounded pair chunk collects its join, common-universe
@@ -33,6 +57,24 @@ ties, missing-value treatment, formulas or native pool allocation.
 Tests use synthetic inputs and isolated roots. Broad benchmarks must preserve
 causal, deterministic and typed numerical contracts and report actual measured
 limits; runtime pressure never changes mathematics.
+
+Rank-persistence derived summaries use `bt.persistence.canonical_mean.v1` and
+the public stdlib `statistics.mean` finite reducer. This removes native
+floating-reduction scheduling from the summary policy, but its Python/exact-ratio
+cost is not yet measured here. No whole-Evaluation latency or memory improvement
+is claimed. A pre-policy same-boundary continuation reduces the retained daily
+correlations once, without rerunning correlations or weight paths; subsequent
+current-policy repeats retain the summary object and skip that reduction.
+The direct evaluator's eager supplied-input validation remains unchanged.
+Full scientific comparisons must name this last-bit policy change explicitly
+and preserve the original failed/legacy results; do not replace an exact-bit
+comparison with a floating tolerance to conceal the old reduction instability.
+Public mean output dtypes are inferred from lazy schema metadata only. Float32
+retains its final output cast; integer/Boolean/Decimal inputs use the same
+canonical numeric mean with Float64 output. No legacy data reduction runs to
+infer types, and String/Null inputs retain unavailable values without numeric
+coercion. Decimal adaptation uses exact public Fraction values before stdlib
+mean, independent of the ambient Decimal precision.
 
 `evaluate_alpha(..., options=..., progress=...)` runs independent horizon
 windows through that same pool. It prepares factor, labels, Book and Spread once,
@@ -61,3 +103,52 @@ Polars shares a process pool with BLAS/OpenMP. BT does not configure or resize
 those pools, detect hardware or choose machine policy. Omitted admission keeps
 the standalone bounded thread pool. Its ready slots refill after any completed
 future; results retain input order and failure stops further admission.
+
+
+## Call-local table-index decoding
+
+An ordinary `BTStore.read_reference` shares the canonical registered-reference
+validator with `describe_reference`. T1 checks the registered descriptor,
+original-column metadata and complete index digest. Its read-only transaction
+closes before selection, frame-cache lookup or Parquet work. The raw reference
+and schema serialization and the parsed index belong only to that read call;
+there is no persistent metadata memo or new identity/schema/policy.
+
+T2 still opens a fresh read transaction before selection or a leaf frame-cache
+hit. It fetches both `reference_json` and `schema_json` and requires exact equality
+with the serialization validated in T1 before reusing the parsed object. A
+physical leaf read opens another fresh transaction at T3, makes the same exact
+comparison and retains the physical typed-schema check. Appearance, disappearance
+or any serialization change fails with `BT table index changed during read`.
+Thus a whitespace-only maintenance change can stop an overlapping read; the next
+call validates the new serialization normally. The reader neither rewrites rows
+nor holds a long snapshot that hides index maintenance. A metadata change after
+the last observation, or an unobserved change-and-restore, is not newly detected.
+File-stat invalidation, row counts, coordinate pruning, empty typed selections,
+concat leaf order and explicit byte/logical audit behavior remain unchanged.
+Registered index-free history still supports unfiltered reads and requires
+explicit maintenance for selected reads.
+
+The improvement removes duplicate JSON decoding within an unchanged indexed
+read. It retains the fresh SQL queries and serialization comparisons. Stored
+schema-JSON length is not per-job bytes decoded; source inspection alone does
+not establish elapsed benefit. Owner and downstream tests and bounded isolated
+measurements must supply that evidence before a performance claim.
+
+Call-local lifetime is finite, not a hard memory allowance. Let R and S denote
+the Python storage of the raw reference and schema strings, P the parsed tree,
+and D/U the existing canonical digest's temporary JSON string/UTF-8 bytes. A
+leaf read's metadata peak includes P plus the larger of R+S+D+U (T1 validation)
+and 2(R+S) (T2/T3 fresh serialization), plus SQLite/allocator overhead. Physical
+frames and the existing 64 MiB decoded-frame memo are additional. For a concat,
+the parent record stays live while one flat leaf is read, so both records count;
+there is no accumulation of parsed leaf records across iterations. Python Unicode
+storage can exceed UTF-8 file length. This estimate makes no hard RSS or resource
+admission claim and introduces no extra cross-call budget/cache.
+
+Every exit clears the new record's own fields and reader-owned index/fact aliases;
+lookup and fresh-query rows are released in `finally`. It does not mutate a
+borrowed descriptor/index tree, result, cached frame or caller traceback. Existing
+JSON exceptions may retain their input document, and unchanged called functions
+or foreign traceback frames can retain arguments. Those pre-existing exception
+retention limits remain; no blanket release guarantee or error rewriting is used.

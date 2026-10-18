@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
     benjamini_hochberg,
@@ -125,6 +127,42 @@ def test_book_return_never_reweights_around_missing_forward_labels() -> None:
     assert missing["observed_count"] == 3
     assert missing["coverage_ratio"] == pytest.approx(0.75)
     assert missing["unavailable_reason"] is None
+
+
+def test_window_primitive_schemas_stay_stable_before_first_mature_return():
+    from bagelquant_bt.horizon import window_information_coefficients
+
+    factor = _factor([float(value) for value in range(10)])
+    labels = factor.select(
+        "evaluation_date", "execution_date", "asset_id"
+    ).with_columns(
+        pl.lit(date(2024, 1, 3)).alias("target_end_date"),
+        pl.lit("cumulative").alias("window_kind"),
+        pl.lit("120d").alias("window_id"),
+        pl.lit(1, dtype=pl.Int64).alias("start_session"),
+        pl.lit(120, dtype=pl.Int64).alias("end_session"),
+        pl.Series("forward_return", np.arange(10) / 100.0),
+    )
+    book = centered_rank_book_weights(factor)
+    tail = gross_one_tail_weights(factor)
+    for calculate in (
+        lambda values: window_book_returns(book, values),
+        lambda values: window_tail_returns(tail, values),
+        lambda values: window_quantile_forward_returns(factor, values),
+        lambda values: window_factor_returns(factor, values),
+        lambda values: window_factor_returns(
+            factor, values, standardization="cross_sectional_zscore"
+        ),
+        lambda values: window_information_coefficients(factor, values),
+    ):
+        mature = calculate(labels)
+        immature = calculate(labels.head(0))
+        assert immature.schema == mature.schema
+        assert_frame_equal(
+            pl.concat([immature, mature], how="diagonal_relaxed"),
+            mature,
+            check_exact=True,
+        )
 
 
 def test_tail_return_keeps_original_weights_when_one_label_is_missing() -> None:
@@ -269,6 +307,69 @@ def test_quantile_structure_reports_positive_signal_order_linearity() -> None:
     assert incomplete["quantile_linearity_slope"] is None
     assert incomplete["quantile_linearity_r_squared"] is None
     assert incomplete["unavailable_reason"] == "complete q1-to-q10 curve required"
+
+
+def test_quantile_curves_preserve_order_and_scalar_reference_with_sparse_groups():
+    from scipy.stats import rankdata
+
+    from bagelquant_bt.horizon import _RETURN_GROUP_COLUMNS
+
+    curves = [
+        [0.02, 0.02, -0.01, 0.03],
+        [0.0, 0.0, 0.0, 0.0],
+        [0.1, None, 0.2, 0.3],
+        [0.1, float("inf"), 0.2, 0.3],
+        [0.1, 0.2, 0.3],
+    ]
+    rows = []
+    for offset, values in enumerate(curves):
+        for number, value in enumerate(values, start=1):
+            rows.append({
+                "evaluation_date": date(2024, 1, 1) + timedelta(days=offset),
+                "execution_date": date(2024, 1, 2) + timedelta(days=offset),
+                "target_end_date": date(2024, 1, 3) + timedelta(days=offset),
+                "window_kind": "cumulative",
+                "window_id": "4d",
+                "start_session": 1,
+                "end_session": 4,
+                "quantile": f"q{number}",
+                "quantile_return": value,
+            })
+    frame = pl.DataFrame(rows).reverse()
+    observed = quantile_curve_structure(frame, quantiles=4)
+    reference_rows = []
+    for key, group in frame.group_by(*_RETURN_GROUP_COLUMNS):
+        values = group.sort("quantile")["quantile_return"].to_numpy()
+        complete = len(values) == 4 and np.isfinite(values).all()
+        slope = rank_ic = r_squared = monotonicity = None
+        reason = "complete q1-to-q10 curve required"
+        if complete:
+            order = np.arange(4, 0, -1, dtype=float)
+            ranks = rankdata(values, method="average")
+            slope = float(np.cov(order, values, ddof=0)[0, 1] / np.var(order))
+            monotonicity = float(np.mean(values[:-1] >= values[1:]))
+            reason = "quantile-rank IC requires non-constant returns"
+            if np.unique(ranks).size >= 2:
+                rank_ic = float(np.corrcoef(order, ranks)[0, 1])
+                r_squared = float(np.corrcoef(order, values)[0, 1]) ** 2
+                reason = None
+        reference_rows.append({
+            **dict(zip(_RETURN_GROUP_COLUMNS, key, strict=True)),
+            "quantile_rank_ic": rank_ic,
+            "monotonicity": monotonicity,
+            "quantile_linearity_slope": slope,
+            "quantile_linearity_r_squared": r_squared,
+            "unavailable_reason": reason,
+        })
+    reference = pl.DataFrame(reference_rows, schema=observed.schema).sort(
+        "evaluation_date", "window_id"
+    )
+    assert_frame_equal(observed, reference, check_exact=True)
+    assert_frame_equal(
+        quantile_curve_structure(frame.head(0), quantiles=4),
+        observed.head(0),
+        check_exact=True,
+    )
 
 
 def test_standardized_factor_return_is_per_cross_sectional_standard_deviation() -> None:

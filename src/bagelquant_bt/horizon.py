@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
+from fractions import Fraction
+from statistics import mean
 from typing import Literal
 
 import numpy as np
@@ -118,6 +122,8 @@ DAILY_SESSION_WINDOWS = DAILY_CUMULATIVE_WINDOWS + DAILY_BUCKET_WINDOWS
 
 
 SIGNAL_PERSISTENCE_HORIZONS = (1, 5, 10, 20, 40, 60, 120)
+PERSISTENCE_SUMMARY_POLICY = "bt.persistence.canonical_mean.v1"
+_PERSISTENCE_NAN = struct.unpack(">d", bytes.fromhex("7ff8000000000000"))[0]
 
 
 DAILY_SUMMARY_AUTOCORRELATION_LAGS = tuple(range(1, 121))
@@ -291,7 +297,11 @@ def window_information_coefficients(
     )
     if paired.is_empty():
         return _empty_window_metric(
-            {"pearson_ic": pl.Float64, "spearman_ic": pl.Float64}
+            {
+                "pearson_ic": pl.Float64,
+                "spearman_ic": pl.Float64,
+                "sample_size": pl.Int64,
+            }
         )
     paired = paired.with_columns(
         pl.col("forward_return")
@@ -386,8 +396,8 @@ def _window_quantile_forward_returns_with_membership(
             {
                 "quantile": pl.String,
                 "quantile_return": pl.Float64,
-                "expected_count": pl.Int64,
-                "observed_count": pl.Int64,
+                "expected_count": pl.UInt32,
+                "observed_count": pl.UInt32,
                 "coverage_ratio": pl.Float64,
                 "unavailable_reason": pl.String,
             }
@@ -424,8 +434,8 @@ def _window_quantile_forward_returns_with_membership(
             {
                 "quantile": pl.String,
                 "quantile_return": pl.Float64,
-                "expected_count": pl.Int64,
-                "observed_count": pl.Int64,
+                "expected_count": pl.UInt32,
+                "observed_count": pl.UInt32,
                 "coverage_ratio": pl.Float64,
                 "unavailable_reason": pl.String,
             }
@@ -497,11 +507,15 @@ def quantile_curve_structure(
         "unavailable_reason": pl.String,
     }
     rows: list[dict[str, object]] = []
-    for key, sample in quantile_returns.group_by(*_RETURN_GROUP_COLUMNS):
-        ordered = sample.with_columns(
-            pl.col("quantile").str.slice(1).cast(pl.Int64).alias("_number")
-        ).sort("_number")
-        values = ordered.get_column("quantile_return").to_list()
+    curves = (
+        quantile_returns.lazy()
+        .with_columns(pl.col("quantile").str.slice(1).cast(pl.Int64).alias("_number"))
+        .group_by(*_RETURN_GROUP_COLUMNS)
+        .agg(pl.col("quantile_return").sort_by("_number").alias("_values"))
+        .collect()
+    )
+    for curve in curves.iter_rows(named=True):
+        values = curve.pop("_values")
         complete = len(values) == quantiles and all(
             value is not None and math.isfinite(float(value)) for value in values
         )
@@ -532,7 +546,7 @@ def quantile_curve_structure(
             )
         else:
             reason = "complete q1-to-q10 curve required"
-        metadata = dict(zip(_RETURN_GROUP_COLUMNS, key, strict=True))
+        metadata = curve
         rows.append(
             {
                 **metadata,
@@ -607,10 +621,10 @@ def _window_factor_returns_prepared(normalized, forward_returns, *, complete):
         if window_groups is not None:
             return window_groups.with_columns(
                 pl.lit(None, dtype=pl.Float64).alias("factor_return"),
-                pl.lit(0, dtype=pl.Int64).alias("sample_size"),
+                pl.lit(0, dtype=pl.UInt32).alias("sample_size"),
             ).sort(["evaluation_date", "window_id"])
         return _empty_window_metric(
-            {"factor_return": pl.Float64, "sample_size": pl.Int64}
+            {"factor_return": pl.Float64, "sample_size": pl.UInt32}
         )
     result = (
         paired.group_by(*_RETURN_GROUP_COLUMNS)
@@ -1291,8 +1305,8 @@ def _weighted_window_returns(
         return _empty_window_metric(
             {
                 return_column: pl.Float64,
-                "expected_count": pl.Int64,
-                "observed_count": pl.Int64,
+                "expected_count": pl.UInt32,
+                "observed_count": pl.UInt32,
                 "coverage_ratio": pl.Float64,
                 "unavailable_reason": pl.String,
             }
@@ -1422,30 +1436,85 @@ def summarize_window_ic(
     )
 
 
+def _persistence_mean(values: Sequence[float | int | Decimal]) -> float | None:
+    if not values:
+        return None
+    if isinstance(values[0], Decimal):
+        # Polars Decimal has finite exact base-ten values. Fraction adaptation
+        # keeps the stdlib mean independent of the ambient Decimal context.
+        return float(mean(Fraction(value) for value in values))
+    positive_infinity = negative_infinity = False
+    for value in values:
+        if math.isnan(value):
+            return _PERSISTENCE_NAN
+        positive_infinity |= value == math.inf
+        negative_infinity |= value == -math.inf
+    if positive_infinity and negative_infinity:
+        return _PERSISTENCE_NAN
+    if positive_infinity:
+        return math.inf
+    if negative_infinity:
+        return -math.inf
+    return float(mean(values))
+
+
 def summarize_signal_persistence(
     series: pl.DataFrame,
     horizons: Sequence[int],
 ) -> pl.DataFrame:
+    """Summarize correlations under PERSISTENCE_SUMMARY_POLICY.
+
+    Nulls do not count. Non-null nonfinite observations count and have explicit
+    order-independent means; finite means use stdlib exact-ratio arithmetic.
+    This derived policy does not change or invalidate daily correlations.
+    """
     schema = {
         "horizon_sessions": pl.Int64,
         "mean_rank_autocorrelation": pl.Float64,
         "sample_size": pl.Int64,
         "signal_half_life_band": pl.String,
     }
-    means = (
-        series.group_by("horizon_sessions").agg(
-            pl.col("rank_autocorrelation").mean().alias("mean_rank_autocorrelation"),
-            pl.col("rank_autocorrelation").is_not_null().sum().alias("sample_size"),
+    mean_schema = {
+        "horizon_sessions": pl.Int64,
+        "mean_rank_autocorrelation": pl.Float64,
+        "sample_size": pl.Int64,
+    }
+    means = pl.DataFrame(schema=mean_schema)
+    temporal = False
+    if not series.is_empty():
+        # Select first so missing-column errors retain the ordinary typed API
+        # boundary. Empty frames still use the original empty-schema bypass.
+        observations = series.select("horizon_sessions", "rank_autocorrelation")
+        correlation_type = observations.schema["rank_autocorrelation"]
+        # Infer only the original output dtype, never a historical mean value.
+        # Float32 remains Float32; integers/Boolean/Decimal produce Float64;
+        # String/Null retain their typed unavailable means and non-null counts.
+        mean_schema["mean_rank_autocorrelation"] = (
+            observations.lazy()
+            .select(pl.col("rank_autocorrelation").mean())
+            .collect_schema()["rank_autocorrelation"]
         )
-        if not series.is_empty()
-        else pl.DataFrame(
+        numeric = correlation_type.is_numeric() or correlation_type == pl.Boolean
+        temporal = correlation_type.is_temporal()
+        if (
+            not numeric and not temporal
+            and correlation_type not in (pl.String, pl.Null)
+        ):
+            raise TypeError("signal persistence correlation is not a numeric scalar")
+        grouped = observations.group_by("horizon_sessions").agg(
+            pl.col("rank_autocorrelation").drop_nulls()
+        )
+        means = pl.DataFrame(
+            [
+                (horizon, _persistence_mean(values) if numeric else None, len(values))
+                for horizon, values in grouped.iter_rows()
+            ],
             schema={
-                "horizon_sessions": pl.Int64,
-                "mean_rank_autocorrelation": pl.Float64,
-                "sample_size": pl.Int64,
-            }
+                **mean_schema,
+                "horizon_sessions": grouped.schema["horizon_sessions"],
+            },
+            orient="row",
         )
-    )
     grid = (
         pl.DataFrame(
             {"horizon_sessions": [int(value) for value in horizons]},
@@ -1455,6 +1524,11 @@ def summarize_signal_persistence(
         .with_columns(pl.col("sample_size").fill_null(0).cast(pl.Int64))
         .sort("horizon_sessions")
     )
+    # The old band conversion rejects visible non-null temporal means. Preserve
+    # its join/visibility precedence without implementing temporal arithmetic:
+    # empty/all-null/unrequested temporal groups only return typed null means.
+    if temporal and grid.get_column("sample_size").gt(0).any():
+        raise TypeError("signal persistence correlation is not a numeric scalar")
     band = "unavailable"
     previous = 0
     observed = grid.drop_nulls("mean_rank_autocorrelation")
@@ -1548,6 +1622,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "PERSISTENCE_SUMMARY_POLICY",
     "SIGNAL_PERSISTENCE_HORIZONS",
     "HACMeanTest",
     "PredictionHorizonDiagnostics",

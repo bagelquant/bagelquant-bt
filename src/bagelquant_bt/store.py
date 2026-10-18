@@ -650,75 +650,140 @@ class BTStore:
         )
 
     def _registered_table(self, table_id: str, *, original=False):
-        """Resolve original owner records, including index-free historical stores."""
-        with self._read_connection() as connection:
-            if (
-                not original
-                and connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
-                ).fetchone()
-            ):
-                row = connection.execute(
-                    "SELECT reference_json,schema_json FROM bt_table_index "
-                    "WHERE table_id=?",
-                    (table_id,),
-                ).fetchone()
-                if row is not None:
-                    reference, index = json.loads(row[0]), json.loads(row[1])
-                    if "columns" in index and (
-                        not isinstance(index["columns"], list)
-                        or any(not isinstance(name, str) for name in index["columns"])
-                        or len(set(index["columns"])) != len(index["columns"])
-                        or set(index["columns"]) != set(index.get("schema", {}))
-                    ):
-                        raise ValueError("corrupt BT original-column index")
-                    if (
-                        reference.get("table_id") != table_id
-                        or reference.get("logical_hash") != table_id
-                    ):
-                        raise ValueError(
-                            "BT table descriptor index source binding differs"
+        """Resolve the same canonical original record without retaining its index."""
+        with self._registered_table_read(table_id, original=original) as registered:
+            return registered["reference"]
+
+    @contextmanager
+    def _registered_table_read(self, table_id: str, *, original=False):
+        """Validate one row in T1; close its transaction before yielding.
+
+        Raw serialization and the decoded index belong only to this call. The
+        public descriptor and numerical reader use this one validation path.
+        """
+        registered = {"reference": None, "index": None, "raw": None}
+        row = reference = index = receipt = None
+        try:
+            with self._read_connection() as connection:
+                if (
+                    not original
+                    and connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                    ).fetchone()
+                ):
+                    row = connection.execute(
+                        "SELECT reference_json,schema_json FROM bt_table_index "
+                        "WHERE table_id=?",
+                        (table_id,),
+                    ).fetchone()
+                    if row is not None:
+                        reference, index = json.loads(row[0]), json.loads(row[1])
+                        if "columns" in index and (
+                            not isinstance(index["columns"], list)
+                            or any(
+                                not isinstance(name, str) for name in index["columns"]
+                            )
+                            or len(set(index["columns"])) != len(index["columns"])
+                            or set(index["columns"]) != set(index.get("schema", {}))
+                        ):
+                            raise ValueError("corrupt BT original-column index")
+                        if (
+                            reference.get("table_id") != table_id
+                            or reference.get("logical_hash") != table_id
+                        ):
+                            raise ValueError(
+                                "BT table descriptor index source binding differs"
+                            )
+                        if index.get("digest") != _identity(
+                            {
+                                "version": "bt.table.index.v2",
+                                "reference": reference,
+                                "schema": index.get("schema"),
+                                **(
+                                    {"columns": index["columns"]}
+                                    if "columns" in index
+                                    else {}
+                                ),
+                                **(
+                                    {"coordinates": index["coordinates"]}
+                                    if "coordinates" in index
+                                    else {}
+                                ),
+                                **(
+                                    {"evidence": index["evidence"]}
+                                    if "evidence" in index
+                                    else {}
+                                ),
+                            }
+                        ):
+                            raise ValueError("corrupt BT table descriptor index")
+                        registered.update(
+                            reference=reference, index=index, raw=(row[0], row[1])
                         )
-                    if index.get("digest") != _identity(
-                        {
-                            "version": "bt.table.index.v2",
-                            "reference": reference,
-                            "schema": index.get("schema"),
-                            **(
-                                {"columns": index["columns"]}
-                                if "columns" in index
-                                else {}
-                            ),
-                            **(
-                                {"coordinates": index["coordinates"]}
-                                if "coordinates" in index
-                                else {}
-                            ),
-                            **(
-                                {"evidence": index["evidence"]}
-                                if "evidence" in index
-                                else {}
-                            ),
-                        }
-                    ):
-                        raise ValueError("corrupt BT table descriptor index")
-                    return reference
-            for table in ("bt_shared", "bt_chapters"):
-                row = connection.execute(
-                    f"SELECT manifest_json,j.value FROM {table},"
-                    "json_tree(manifest_json,'$.files') j "
-                    "WHERE j.type='object' AND "
-                    "json_extract(j.value,'$.table_id')=? LIMIT 1",
-                    (table_id,),
-                ).fetchone()
-                if row is not None:
-                    receipt = json.loads(row[0])
-                    _verify_record(receipt, receipt["schema"])
-                    return json.loads(row[1])
-        return None
+                if registered["reference"] is None:
+                    for table in ("bt_shared", "bt_chapters"):
+                        row = connection.execute(
+                            f"SELECT manifest_json,j.value FROM {table},"
+                            "json_tree(manifest_json,'$.files') j "
+                            "WHERE j.type='object' AND "
+                            "json_extract(j.value,'$.table_id')=? LIMIT 1",
+                            (table_id,),
+                        ).fetchone()
+                        if row is not None:
+                            receipt = json.loads(row[0])
+                            _verify_record(receipt, receipt["schema"])
+                            registered["reference"] = json.loads(row[1])
+                            break
+            # Do not retain sqlite rows or duplicate parsed aliases across yield.
+            row = reference = index = receipt = None
+            yield registered
+        finally:
+            row = reference = index = receipt = None
+            registered.clear()
+
+    def _fresh_reference_index(self, registered):
+        """Observe T2/T3 afresh; reuse decoding only for the exact T1 row.
+
+        Index maintenance may replace rows. Any appearance, disappearance or
+        serialization change during this read fails closed, including cache hits.
+        No transaction/snapshot or index survives the call.
+        """
+        row = None
+        try:
+            with self._read_connection() as connection:
+                row = (
+                    connection.execute(
+                        "SELECT reference_json,schema_json FROM bt_table_index "
+                        "WHERE table_id=?",
+                        (registered["reference"]["table_id"],),
+                    ).fetchone()
+                    if connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                    ).fetchone()
+                    else None
+                )
+                if (
+                    (row is None) != (registered["raw"] is None)
+                    or (
+                        row is not None
+                        and (
+                            row[0] != registered["raw"][0]
+                            or row[1] != registered["raw"][1]
+                        )
+                    )
+                ):
+                    raise ValueError("BT table index changed during read")
+            return registered["index"]
+        finally:
+            row = None
 
     def describe_reference(self, reference: Mapping[str, Any]) -> dict[str, Any]:
         """Resolve a registered immutable table without reading its numerical bytes."""
+        with self._describe_reference_read(reference) as registered:
+            return registered["reference"]
+
+    @contextmanager
+    def _describe_reference_read(self, reference):
         if reference.get("backend") != "bt":
             raise ValueError("reference is not a BT table")
         self._table_path(str(reference.get("table_id", "")))
@@ -737,10 +802,17 @@ class BTStore:
             ):
                 raise ValueError("BT composition metadata identity differs")
         self._table_path(str(reference.get("table_id", "")))
-        original = self._registered_table(str(reference.get("table_id", "")))
-        if original is None or original != dict(reference):
-            raise ValueError("BT table reference differs from its registered record")
-        return original
+        with self._registered_table_read(
+            str(reference.get("table_id", ""))
+        ) as registered:
+            if (
+                registered["reference"] is None
+                or registered["reference"] != dict(reference)
+            ):
+                raise ValueError(
+                    "BT table reference differs from its registered record"
+                )
+            yield registered
 
     def publish_table(
         self, frame: pl.DataFrame, *, check_canceled=lambda: None
@@ -798,7 +870,7 @@ class BTStore:
                 )
                 continue
             old = self.read_reference(original)
-            if old.equals(frame):
+            if old.schema == frame.schema and old.equals(frame):
                 references[name] = self.describe_reference(original)
                 continue
             axis = next(
@@ -1378,141 +1450,134 @@ class BTStore:
                 return reader.read_reference(
                     reference, filters=filters, coordinates=coordinates
                 )
-        reference = self.describe_reference(reference)
-        from .table_composition import (
-            COORDINATES,
-            admit_coordinates,
-            select,
-            select_keys,
-            selected_coordinates,
-            selected_keys,
-        )
-        from .table_composition import filters as admit_filters
+        with self._describe_reference_read(reference) as registered:
+            return self._read_registered_reference(
+                registered, filters=filters, coordinates=coordinates
+            )
 
-        with self._read_connection() as connection:
-            index_row = (
-                connection.execute(
-                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
-                    (reference["table_id"],),
-                ).fetchone()
-                if connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
-                ).fetchone()
+    def _read_registered_reference(self, registered, *, filters, coordinates):
+        reference = registered["reference"]
+        index = facts = None
+        try:
+            from .table_composition import (
+                COORDINATES,
+                admit_coordinates,
+                select,
+                select_keys,
+                selected_coordinates,
+                selected_keys,
+            )
+            from .table_composition import filters as admit_filters
+
+            index = self._fresh_reference_index(registered)
+            if (filters or coordinates is not None) and index is None:
+                raise ValueError(
+                    "BT selected reads need explicit coordinate-index maintenance"
+                )
+            predicates = (
+                []
+                if not filters
+                else admit_filters(
+                    filters,
+                    {
+                        key: dtype
+                        for key, dtype in index["schema"].items()
+                        if key in COORDINATES
+                    },
+                )
+            )
+            expected = reference["rows"]
+            if coordinates is not None:
+                coordinates = admit_coordinates(coordinates, index["schema"])
+            if predicates or coordinates is not None:
+                facts = selected_coordinates(
+                    index.get("coordinates"), predicates, schema=index["schema"]
+                )
+                if coordinates is not None:
+                    facts = selected_keys(facts, coordinates, schema=index["schema"])
+                expected = sum(item["_rows"] for item in facts)
+            if (predicates or coordinates is not None) and expected == 0:
+                return self._empty_indexed_table(
+                    index["schema"], columns=index.get("columns")
+                )
+            key = (
+                reference["table_id"],
+                _json(predicates),
+                None if coordinates is None else hash_dataframe(coordinates),
+            )
+            leaf = reference.get("format") != "concat"
+            stamp = self._reference_stamp(reference) if leaf else None
+            cached = (
+                self._frame_cache.get(key, stamp)
+                if leaf and self._frame_cache is not None
                 else None
             )
-        index = None if index_row is None else json.loads(index_row[0])
-        if (filters or coordinates is not None) and index is None:
-            raise ValueError(
-                "BT selected reads need explicit coordinate-index maintenance"
-            )
-        predicates = (
-            []
-            if not filters
-            else admit_filters(
-                filters,
-                {
-                    key: dtype
-                    for key, dtype in index["schema"].items()
-                    if key in COORDINATES
-                },
-            )
-        )
-        expected = reference["rows"]
-        if coordinates is not None:
-            coordinates = admit_coordinates(coordinates, index["schema"])
-        if predicates or coordinates is not None:
-            facts = selected_coordinates(
-                index.get("coordinates"), predicates, schema=index["schema"]
-            )
-            if coordinates is not None:
-                facts = selected_keys(facts, coordinates, schema=index["schema"])
-            expected = sum(item["_rows"] for item in facts)
-        if (predicates or coordinates is not None) and expected == 0:
-            return self._empty_indexed_table(
-                index["schema"], columns=index.get("columns")
-            )
-        key = (
-            reference["table_id"],
-            _json(predicates),
-            None if coordinates is None else hash_dataframe(coordinates),
-        )
-        leaf = reference.get("format") != "concat"
-        stamp = self._reference_stamp(reference) if leaf else None
-        cached = (
-            self._frame_cache.get(key, stamp)
-            if leaf and self._frame_cache is not None
-            else None
-        )
-        if cached is not None:
-            return cached
-        if (
-            leaf
-            and self._frame_cache is not None
-            and (predicates or coordinates is not None)
-        ):
-            full = self._frame_cache.get(
-                (reference["table_id"], _json([]), None), stamp
-            )
-            if full is not None:
-                frame = select(full, predicates)
-                if coordinates is not None:
-                    frame = select_keys(frame, coordinates)
-                if frame.height != expected:
-                    raise ValueError("BT selected memo row count differs")
+            if cached is not None:
+                return cached
+            if (
+                leaf
+                and self._frame_cache is not None
+                and (predicates or coordinates is not None)
+            ):
+                full = self._frame_cache.get(
+                    (reference["table_id"], _json([]), None), stamp
+                )
+                if full is not None:
+                    frame = select(full, predicates)
+                    if coordinates is not None:
+                        frame = select_keys(frame, coordinates)
+                    if frame.height != expected:
+                        raise ValueError("BT selected memo row count differs")
+                    self._frame_cache.put(key, frame, stamp)
+                    return frame
+            if reference.get("format") == "concat":
+                frames = []
+                for part in reference["parts"]:
+                    combined = [*part["filters"], *predicates]
+                    selected = self.read_reference(
+                        part["reference"], filters=combined, coordinates=coordinates
+                    )
+                    if selected.height:
+                        frames.append(selected)
+                if frames:
+                    columns = frames[0].columns
+                    frame = pl.concat([item.select(columns) for item in frames])
+                    if frame.height != expected:
+                        raise ValueError("BT composed table selected row count differs")
+                    return frame
+                if index is None:
+                    raise ValueError(
+                        "BT empty selection needs explicit table-index maintenance"
+                    )
+                return self._empty_indexed_table(
+                    index["schema"], columns=index.get("columns")
+                )
+            path = self._table_path(str(reference.get("table_id", "")))
+            try:
+                if predicates or coordinates is not None:
+                    selected = select(pl.scan_parquet(_path(path)), predicates)
+                    if coordinates is not None:
+                        selected = select_keys(selected, coordinates)
+                    frame = selected.collect()
+                else:
+                    frame = pl.read_parquet(_path(path))
+            except pl.exceptions.PolarsError as error:
+                raise ValueError("corrupt or unreadable BT artifact") from error
+            if frame.height != expected:
+                raise ValueError("BT table row count differs")
+            index = self._fresh_reference_index(registered)
+            if index is not None and index["schema"] != {
+                name: str(dtype) for name, dtype in frame.schema.items()
+            }:
+                raise ValueError("BT table typed schema differs")
+            if self._frame_cache is not None:
+                if self._reference_stamp(reference) != stamp:
+                    raise ValueError("BT artifact changed during read")
                 self._frame_cache.put(key, frame, stamp)
-                return frame
-        if reference.get("format") == "concat":
-            frames = []
-            for part in reference["parts"]:
-                combined = [*part["filters"], *predicates]
-                selected = self.read_reference(
-                    part["reference"], filters=combined, coordinates=coordinates
-                )
-                if selected.height:
-                    frames.append(selected)
-            if frames:
-                columns = frames[0].columns
-                frame = pl.concat([item.select(columns) for item in frames])
-                if frame.height != expected:
-                    raise ValueError("BT composed table selected row count differs")
-                return frame
-            if index is None:
-                raise ValueError(
-                    "BT empty selection needs explicit table-index maintenance"
-                )
-            return self._empty_indexed_table(
-                index["schema"], columns=index.get("columns")
-            )
-        path = self._table_path(str(reference.get("table_id", "")))
-        try:
-            if predicates or coordinates is not None:
-                selected = select(pl.scan_parquet(_path(path)), predicates)
-                if coordinates is not None:
-                    selected = select_keys(selected, coordinates)
-                frame = selected.collect()
-            else:
-                frame = pl.read_parquet(_path(path))
-        except pl.exceptions.PolarsError as error:
-            raise ValueError("corrupt or unreadable BT artifact") from error
-        if frame.height != expected:
-            raise ValueError("BT table row count differs")
-        with self._read_connection() as connection:
-            if connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
-            ).fetchone():
-                row = connection.execute(
-                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
-                    (reference["table_id"],),
-                ).fetchone()
-                if row is not None and json.loads(row[0])["schema"] != {
-                    name: str(dtype) for name, dtype in frame.schema.items()
-                }:
-                    raise ValueError("BT table typed schema differs")
-        if self._frame_cache is not None:
-            if self._reference_stamp(reference) != stamp:
-                raise ValueError("BT artifact changed during read")
-            self._frame_cache.put(key, frame, stamp)
-        return frame
+            return frame
+        finally:
+            # Clear only aliases owned by this reader; preserve exception identity.
+            index = facts = None
 
     def _reference_stamp(self, reference):
         leaves = (

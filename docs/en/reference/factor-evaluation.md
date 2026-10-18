@@ -5,6 +5,54 @@ one-session forward returns. Components select horizons, rolling IC, Book/Spread
 turnover, lead-lag, persistence, lagged alpha returns and quantiles. Direct IC,
 rank IC and their IR plus persistence do not require an account.
 
+`PERSISTENCE_SUMMARY_POLICY = "bt.persistence.canonical_mean.v1"` identifies the
+derived rank-persistence mean and half-life-band policy. Financial daily
+producers emit Float64 `rank_autocorrelation`. The public summary also preserves
+the existing Float32 output and Float64 output for integer, Boolean and Decimal
+inputs. String and Null inputs retain their respective typed null means, without
+numeric coercion; non-null String values still count. Requested non-null temporal
+means retain the original band-conversion TypeError category; all-null, empty-grid
+and unrequested temporal groups retain typed unavailable output. No temporal
+mean arithmetic is introduced. Empty frames retain the original Float64 bypass.
+Null correlations do not count. Every other numeric observation, including
+duplicates, NaN and infinities, contributes one to Int64 `sample_size`; daily
+asset counts do not weight the mean. Missing/all-null requested lags have a null
+mean and zero count. Requested duplicate lags retain duplicate output rows.
+
+Finite means use public Python `statistics.mean`, which adds exact input ratios
+and divides before the final Float64 conversion. Integer precision is retained;
+Decimal values adapt exactly through public `Fraction` so the ambient Decimal
+context cannot change the result. Float64 results are independent of row/chunk
+order and native thread scheduling, including finite intermediate-sum overflow
+and exact cancellation. Float32 inputs follow that canonical Float64 mean with
+the established Float32 output cast; this is deterministic two-stage rounding,
+not a separate promise of one exact rounding directly to Float32. Exact zero is
+`+0.0`; a negative exact mean that
+underflows at final conversion remains -0.0. Any NaN or both infinity signs yield
+the fixed quiet NaN `7ff8000000000000`; one infinity sign yields that infinity.
+The existing sorted lag grid and first mean <=0.5 band rule remain unchanged,
+including non-null NaN's false comparison and missing-last-lag availability.
+This explicitly changes last-bit derived numerical policy from the historical
+parallel mean. Old saved summaries are not rewritten or silently relabeled.
+
+`EvaluationResult.state.persistence_summary_policy` records this derived policy,
+separately from the unchanged raw `state.policy`. At identical proved input and
+information boundaries, a pre-policy result refreshes only its summary from the
+saved daily correlations, reports `execution.outcome="derived_refresh"`, and
+retains all other table objects, metrics and checkpoints. A current-policy repeat
+skips reduction. Append/repair continue the same daily engine and summarize the
+merged saved/new observations. The existing API still validates supplied Node
+values, labels and original input-prefix evidence before its early return; this
+does not promise metadata-only input loading for the direct evaluator.
+
+Applications must include the derived policy in new Evaluation/chapter settings
+and persist the summary under that new immutable identity. Raw daily identity,
+lag generation and continuation-prefix policy do not change. A policy refresh
+must reuse original daily references and cannot replace a differing chapter at
+an old Evaluation ID. Reference-only composition and consumer/report policy
+orchestration remain the caller's responsibility; BT does not build upstream
+values or retroactively convert historical archives.
+
 `alpha_update_plan(previous, calendar=..., available_date=...,
 affected_intervals=[(start, end)], preceding=[saved_state, ...])` inspects compact
 state without value or table reads. It returns `initialize`, `up_to_date`, `append`,

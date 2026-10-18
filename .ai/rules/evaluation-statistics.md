@@ -86,9 +86,38 @@ remain strict. Calendar gaps must not compress economic windows.
 Alpha/Prediction share evaluation: Pearson/rank IC and IR, cross-sectional and
 window returns, gross-one centered-rank Book/Spread, deterministic quantiles,
 rank persistence, horizons/buckets, lag/lead-lag and rolling IC/inference.
+Persistence summary policy `bt.persistence.canonical_mean.v1` uses the single
+BT `summarize_signal_persistence` function: public stdlib exact-ratio finite mean,
+explicit canonical NaN/infinity handling, non-null observation counts and the
+existing grid/band rule. Financial daily correlations are Float64; preserve the
+public summary's existing Float32 output, Float64 integer/Boolean/Decimal means,
+String/Null typed-unavailable values/counts and visible non-null temporal mean's
+TypeError category. All-null/empty-grid/unrequested temporal means stay unavailable.
+Infer output types from public lazy schema metadata, never an old floating
+reduction. Use exact Fraction adaptation for Decimal input, then the same public
+stdlib mean and final output cast. Bind the
+derived policy in new immutable Evaluation/chapter settings; do not bump daily
+correlation or raw Alpha continuation policy. Same-boundary pre-policy state can
+refresh only this summary after the ordinary complete prefix/state checks;
+current-policy repeat skips reduction. Preserve original daily frame objects,
+references/bytes, independent metrics and checkpoints. Never overwrite an old
+chapter or claim an old summary has the new policy merely because inputs match.
 Default annualization is 252 and quantiles 10. Workbench explicitly supplies
 240 and its China label adapter (decision t -> adjusted t+1 to t+2 open).
 Book/Spread paths use normalized virtual NAV with proportional full-L1 costs.
+Each independent weight path preserves its causal daily state, but only its
+final mature checkpoint is materialized; null-return values/observation masks
+are prepared once per path. Quantile curves share columnar grouping/order
+preparation while retaining the same scalar statistical formulas. Full Alpha
+performance evidence covers all requested paths/windows and incremental reuse.
+Empty horizon Book/Spread/quantile counts and factor-return sample sizes use
+UInt32, matching populated reductions; IC sample size remains Int64 even before
+the first mature return. Appending or repairing cannot change these schemas.
+At a retained-window merge, normalize only the original Int64 representation of
+the four UInt32 horizon count families, with strict nonnegative/range validation.
+Reject other noncanonical count dtypes. An empty retained primitive uses the
+current empty schema, including IC sample size. Never rewrite original saved
+tables or replay processed path sessions to normalize derived output schemas.
 
 Pure saved comparisons, conditional/incremental IC, HAC/BH and Deflated Sharpe
 remain reusable BT APIs. BH includes every valid declared trial, including

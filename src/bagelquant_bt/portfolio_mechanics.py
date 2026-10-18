@@ -359,7 +359,9 @@ def simulate_weight_returns(
     indexed_labels = labels.with_columns(
         pl.col("asset_id")
         .replace_strict(asset_indices, return_dtype=pl.Int64)
-        .alias("_asset_index")
+        .alias("_asset_index"),
+        pl.col("forward_return").fill_null(0.0).alias("_asset_return"),
+        pl.col("forward_return").is_not_null().alias("_observed"),
     )
     for panel in indexed_labels.partition_by("time", maintain_order=True):
         if check_canceled:
@@ -383,8 +385,8 @@ def simulate_weight_returns(
         asset_return = np.zeros(count)
         observed = np.zeros(count, dtype=bool)
         indices = panel["_asset_index"].to_numpy()
-        asset_return[indices] = panel["forward_return"].fill_null(0.0).to_numpy()
-        observed[indices] = panel["forward_return"].is_not_null().to_numpy()
+        asset_return[indices] = panel["_asset_return"].to_numpy()
+        observed[indices] = panel["_observed"].to_numpy()
         expected = (gross != 0) | (net != 0)
         expected_count = int(expected.sum())
         observed_count = int((expected & observed).sum())

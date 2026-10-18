@@ -1,3 +1,6 @@
+import hashlib
+import math
+from dataclasses import replace
 from datetime import date, timedelta
 
 import polars as pl
@@ -6,7 +9,12 @@ from bagelquant_core import Domain, Node
 from bagelquant_core.hashing import hash_dataframe, hash_mapping
 from polars.testing import assert_frame_equal
 
-from bagelquant_bt import alpha_input_start, evaluate_alpha
+from bagelquant_bt import (
+    PERSISTENCE_SUMMARY_POLICY,
+    BTStore,
+    alpha_input_start,
+    evaluate_alpha,
+)
 from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.horizon import SessionWindow
 
@@ -608,3 +616,272 @@ def test_noop_backward_cutoff_and_missing_path_table_do_no_daily_work(monkeypatc
             previous=previous,
             **SETTINGS,
         )
+
+
+def _pre_summary_policy(result):
+    """Retain a real evaluation's daily/state data with a legacy derived payload.
+
+    The synthetic legacy mean differs by one bit, so a blind previous-result
+    return cannot satisfy the current reference. This is not a captured real
+    original archive or a claim that every original reduction differs.
+    """
+    summary = result.tables["horizon_signal_persistence_summary"]
+    legacy = summary.with_columns(
+        pl.Series(
+            "mean_rank_autocorrelation",
+            [None if value is None else math.nextafter(value, math.inf)
+             for value in summary["mean_rank_autocorrelation"]],
+            dtype=pl.Float64,
+        )
+    )
+    return replace(
+        result,
+        state={key: value for key, value in result.state.items()
+               if key != "persistence_summary_policy"},
+        tables={**result.tables, "horizon_signal_persistence_summary": legacy},
+    )
+
+
+def _artifact_facts(root):
+    result = {}
+    for path in root.rglob("*.parquet"):
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+        result[path.relative_to(root).as_posix()] = (
+            digest.hexdigest(), path.stat().st_mtime_ns
+        )
+    return result
+
+
+@pytest.mark.parametrize("old_marker", [None, "bt.persistence.unknown.v0"])
+def test_saved_prepolicy_refresh_keeps_daily_objects_receipts_bytes_and_repeat(
+    tmp_path, monkeypatch, old_marker
+):
+    from bagelquant_bt import evaluation
+
+    node, labels, calendar, proof = inputs(35)
+    initial = evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, **SETTINGS,
+    )
+    legacy = _pre_summary_policy(initial)
+    if old_marker is not None:
+        legacy = replace(legacy, state={**legacy.state,
+                                       "persistence_summary_policy": old_marker})
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    old_id = store.begin("alpha", settings={"raw_policy": legacy.state["policy"]},
+                         through=legacy.state["through"])
+    old_header = store.publish_chapter(
+        old_id, "summary", legacy.tables,
+        metadata={"metrics": legacy.metrics, "state": legacy.state},
+    )
+    header, frames = store.read_chapter(old_id, "summary")
+    previous = replace(legacy, tables=frames, metrics=header["metrics"],
+                       state=header["state"])
+    old_facts = _artifact_facts(store.artifact_path)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("replayed a daily/account producer during derived refresh")
+
+    calls = []
+    summary = evaluation.summarize_signal_persistence
+
+    def observe(frame, horizons):
+        calls.append(frame)
+        return summary(frame, horizons)
+
+    for name in (
+        "_signal_rank_persistence_prepared", "simulate_weight_returns",
+        "window_information_coefficients", "window_book_returns",
+        "window_tail_returns", "_window_factor_returns_prepared",
+        "_window_quantile_forward_returns_with_membership",
+        "rolling_window_information_coefficients", "build_statistical_inference",
+    ):
+        monkeypatch.setattr(evaluation, name, forbidden)
+    monkeypatch.setattr(evaluation, "summarize_signal_persistence", observe)
+    refreshed = evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, previous=previous, **SETTINGS,
+    )
+    assert len(calls) == 1
+    assert calls[0] is previous.tables["daily_signal_autocorrelation"]
+    assert refreshed.state["policy"] == previous.state["policy"]
+    assert refreshed.state["paths"] is previous.state["paths"]
+    assert refreshed.metrics is previous.metrics
+    assert refreshed.checkpoint is previous.checkpoint
+    assert refreshed.state["persistence_summary_policy"] == PERSISTENCE_SUMMARY_POLICY
+    assert previous.state.get("persistence_summary_policy") == old_marker
+    assert {key: value for key, value in refreshed.state.items()
+            if key != "persistence_summary_policy"} == {
+                key: value for key, value in previous.state.items()
+                if key != "persistence_summary_policy"
+            }
+    assert refreshed.execution == {
+        "path_sessions": 0, "continued_paths": 0, "outcome": "derived_refresh"
+    }
+    for name, frame in previous.tables.items():
+        if name == "horizon_signal_persistence_summary":
+            assert_frame_equal(refreshed.tables[name], initial.tables[name],
+                               check_exact=True)
+        else:
+            assert refreshed.tables[name] is frame
+
+    new_id = store.begin(
+        "alpha", settings={"raw_policy": refreshed.state["policy"],
+                           "persistence_summary_policy": PERSISTENCE_SUMMARY_POLICY},
+        through=refreshed.state["through"],
+    )
+    assert new_id != old_id
+    unchanged_refs = {
+        key: value for key, value in old_header["files"].items()
+        if key != "horizon_signal_persistence_summary"
+    }
+    with pytest.raises(RuntimeError, match="immutable BT chapter already differs"):
+        store.publish_chapter(
+            old_id, "summary",
+            {"horizon_signal_persistence_summary":
+             refreshed.tables["horizon_signal_persistence_summary"]},
+            file_references=unchanged_refs,
+            metadata={"metrics": refreshed.metrics, "state": refreshed.state},
+        )
+    new_header = store.publish_chapter(
+        new_id, "summary",
+        {"horizon_signal_persistence_summary":
+         refreshed.tables["horizon_signal_persistence_summary"]},
+        file_references=unchanged_refs,
+        metadata={"metrics": refreshed.metrics, "state": refreshed.state},
+    )
+    for name, reference in old_header["files"].items():
+        if name != "horizon_signal_persistence_summary":
+            assert new_header["files"][name] == reference
+    assert store.chapter(old_id, "summary", verify=True) == {
+        **old_header, "status": "ready"
+    }
+    after_facts = _artifact_facts(store.artifact_path)
+    assert all(after_facts[key] == fact for key, fact in old_facts.items())
+
+    monkeypatch.setattr(evaluation, "summarize_signal_persistence", forbidden)
+    repeated = evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, previous=refreshed, **SETTINGS,
+    )
+    assert repeated.tables is refreshed.tables
+    assert repeated.state is refreshed.state
+    assert repeated.execution["outcome"] == "up_to_date"
+
+
+def test_prepolicy_refresh_keeps_prefix_and_cancellation_gates(monkeypatch):
+    from bagelquant_bt import evaluation
+
+    node, labels, calendar, proof = inputs(35)
+    previous = _pre_summary_policy(evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, **SETTINGS,
+    ))
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("reduced before input-prefix validation")
+    monkeypatch.setattr(evaluation, "summarize_signal_persistence", forbidden)
+    with pytest.raises(InputValidationError, match="input prefix changed"):
+        evaluate_alpha(
+            node, labels, calendar=calendar, available_date=calendar["time"].max(),
+            input_proof=lambda *_: "changed", previous=previous, **SETTINGS,
+        )
+    def canceled():
+        raise RuntimeError("canceled")
+    with pytest.raises(RuntimeError, match="canceled"):
+        evaluate_alpha(
+            node, labels, calendar=calendar, available_date=calendar["time"].max(),
+            input_proof=proof, previous=previous, check_canceled=canceled, **SETTINGS,
+        )
+    assert "persistence_summary_policy" not in previous.state
+    damaged = replace(previous, tables={
+        key: value for key, value in previous.tables.items()
+        if key != "horizon_signal_persistence_summary"
+    })
+    with pytest.raises(InputValidationError, match="primitive families are incomplete"):
+        evaluate_alpha(
+            node, labels, calendar=calendar, available_date=calendar["time"].max(),
+            input_proof=proof, previous=damaged, **SETTINGS,
+        )
+
+
+def test_canceled_derived_refresh_does_not_mutate_previous(monkeypatch):
+    from bagelquant_bt import evaluation
+
+    node, labels, calendar, proof = inputs(35)
+    previous = _pre_summary_policy(evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, **SETTINGS,
+    ))
+    summary = evaluation.summarize_signal_persistence
+    reductions = []
+    def observed(*args):
+        reductions.append(1)
+        return summary(*args)
+    monkeypatch.setattr(evaluation, "summarize_signal_persistence", observed)
+    checks = []
+    def canceled_after_reduction():
+        checks.append(1)
+        if reductions:
+            raise RuntimeError("canceled after summary")
+    with pytest.raises(RuntimeError, match="canceled after summary"):
+        evaluate_alpha(
+            node, labels, calendar=calendar, available_date=calendar["time"].max(),
+            input_proof=proof, previous=previous,
+            check_canceled=canceled_after_reduction, **SETTINGS,
+        )
+    assert reductions == [1]
+    assert len(checks) >= 3
+    assert "persistence_summary_policy" not in previous.state
+
+
+@pytest.mark.parametrize("repair", [False, True])
+def test_prepolicy_append_and_preceding_checkpoint_repair_reuse_daily_work(
+    repair, monkeypatch
+):
+    from bagelquant_bt import evaluation
+
+    old_count = 5 if repair else 35
+    node, labels, calendar, proof = inputs(old_count)
+    previous = _pre_summary_policy(evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, **SETTINGS,
+    ))
+    node, labels, calendar, proof = inputs(36, revision=repair)
+    reference = evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, **SETTINGS,
+    )
+    calls = []
+    original = evaluation._signal_rank_persistence_prepared
+    def observed(*args, **kwargs):
+        calls.append(kwargs.get("target_start"))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(evaluation, "_signal_rank_persistence_prepared", observed)
+    updated = evaluate_alpha(
+        node, labels, calendar=calendar, available_date=calendar["time"].max(),
+        input_proof=proof, previous=previous, **SETTINGS,
+    )
+    assert calls == [date.fromisoformat(previous.state["through"])]
+    assert updated.state["policy"] == previous.state["policy"]
+    assert updated.state["persistence_summary_policy"] == PERSISTENCE_SUMMARY_POLICY
+    assert updated.execution["path_sessions"] <= (
+        (36 - old_count) * len(updated.state["paths"])
+    )
+    assert updated.tables.keys() == reference.tables.keys()
+    for name, expected in reference.tables.items():
+        keys = [column for column in (
+            "time", "evaluation_date", "target_date", "window_kind", "window_id",
+            "lag", "path_kind", "quantile", "horizon_sessions",
+        ) if column in expected.columns]
+        assert_frame_equal(
+            updated.tables[name].select(expected.columns).sort(keys),
+            expected.sort(keys), check_exact=False, rel_tol=1e-12, abs_tol=1e-12,
+        )
+    assert_frame_equal(
+        updated.tables["horizon_signal_persistence_summary"],
+        reference.tables["horizon_signal_persistence_summary"], check_exact=True,
+    )
