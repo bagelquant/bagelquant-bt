@@ -21,10 +21,27 @@ asset coordinates and continuation state.
 Alpha's default diagnostics include 87 independent causal weight paths: Book,
 Spread, 61 Book lead/lag paths, 14 Alpha-return lag paths and ten quantiles.
 They retain independent Gross/Net holdings, cost and continuation state. The
-engine reduces date/asset coordinates before Python conversion, prepares null
-return values and observation masks once per path, and materializes only its
-final mature checkpoint. Holdings output, when requested, still records every
+engine reduces date/asset coordinates before Python conversion and materializes
+only its final mature checkpoint. An evaluation can share immutable sparse
+return indices, null-filled returns, observation masks and interval scalars
+across paths with the exact asset axis. Different date windows select from that
+preparation only when the common source has no additional assets. Each path
+retains its own daily vectors, costs, Gross/Net holdings and checkpoints, with
+the same arithmetic order. Holdings output still records every requested
 processed session. No historical account state is recreated during append.
+
+This evaluation-local LRU uses at most the minimum of 64 MiB, one quarter of
+`cache_mib` and one quarter of `memory_target_mib`. Its reserve is deducted from
+the existing local budget before other diagnostics are admitted. Admission
+precedes partition/NumPy allocation; zero, tiny or oversized cases use the
+ordinary per-path preparation without retaining a shared source frame or asset
+set. A common append source starts after the earliest saved path checkpoint.
+The cache clears on success, failure or cancellation; it stores no account
+state or persisted validity. Execution reports expose `return_preparation_hits`,
+`return_prepared_rows`, `return_preparation_peak_bytes` and
+`return_preparation_maximum_bytes`. These charges are conservative working-set
+estimates, not process RSS bounds. Components without causal paths reserve no
+return preparation.
 
 Quantile-curve preparation groups numerically ordered quantile returns in one
 columnar query before applying the existing NumPy/SciPy formulas to each curve.

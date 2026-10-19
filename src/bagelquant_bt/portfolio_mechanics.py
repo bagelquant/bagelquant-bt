@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -26,6 +28,166 @@ class WeightStateCheckpoint:
     gross_value: float
     net_value: float
     weights: pl.DataFrame
+
+
+@dataclass(frozen=True, slots=True)
+class _ReturnPanel:
+    day: date
+    mature: bool
+    interval_start: date
+    interval_end: date
+    available_date: date
+    indices: np.ndarray
+    returns: np.ndarray
+    observed: np.ndarray
+
+
+def _return_panels(labels, asset_indices, check_canceled):
+    indexed = labels.with_columns(
+        pl.col("asset_id")
+        .replace_strict(asset_indices, return_dtype=pl.Int64)
+        .alias("_asset_index"),
+        pl.col("forward_return").fill_null(0.0).alias("_asset_return"),
+        pl.col("forward_return").is_not_null().alias("_observed"),
+    )
+    for panel in indexed.partition_by("time", maintain_order=True):
+        if check_canceled:
+            check_canceled()
+        arrays = (
+            panel["_asset_index"].to_numpy(),
+            panel["_asset_return"].to_numpy(),
+            panel["_observed"].to_numpy(),
+        )
+        for array in arrays:
+            array.flags.writeable = False
+        yield _ReturnPanel(
+            panel["time"][0],
+            bool(panel["is_mature"].all()),
+            panel["interval_start"][0],
+            panel["interval_end"][0],
+            panel["available_date"].max(),
+            *arrays,
+        )
+
+
+class _WeightReturnPreparation:
+    """One evaluation's bounded immutable date/asset preparation, never state.
+
+    A common source can serve different date windows only with the exact path
+    axis. Later/new assets that change that axis use the selected window instead.
+    Arrays stay sparse; each causal path still owns its full daily vectors.
+    """
+
+    def __init__(self, labels, maximum_bytes, *, after=None):
+        self.labels = labels
+        self.after = after
+        self.maximum_bytes = maximum_bytes
+        self.bytes = self.peak_bytes = self.hits = self.prepared_rows = 0
+        self._panels = OrderedDict()
+
+    def window(self, *, after=None, through=None):
+        if self.after is not None and (after is None or after < self.after):
+            raise ValueError(
+                "return preparation cannot extend its admitted historical window"
+            )
+        predicates = []
+        if after is not None:
+            predicates.append(pl.col("time") > after)
+        if through is not None:
+            predicates.append(pl.col("time") <= through)
+        frame = (
+            self.labels
+            if not predicates
+            else self.labels.filter(pl.all_horizontal(predicates))
+        )
+        return _PreparedReturnWindow(self, frame)
+
+    def panels(self, frame, assets, check_canceled):
+        # Each frame comes from window(), preserving the original row order,
+        # dates, cutoff, maturity and economic interval, without hash/equality work.
+        indices = {asset: index for index, asset in enumerate(assets)}
+        if self.maximum_bytes < 4096 or frame.is_empty():
+            self.prepared_rows += frame.height
+            return _return_panels(frame, indices, check_canceled)
+        first, last = frame["time"].min(), frame["time"].max()
+        axis = tuple(assets)
+        shared_key = (axis, None, None)
+        window_key = (axis, first, last)
+        key = shared_key if shared_key in self._panels else window_key
+        cached = self._panels.pop(key, None)
+        if cached is not None:
+            self._panels[key] = cached
+            self.hits += 1
+            panels = cached[0]
+        else:
+            # Normalized labels are ordered by time/asset. A slice borrows their
+            # existing buffers; unlike a filtered frame or Python asset set it
+            # allocates no owned historical payload before admission.
+            start = (
+                0
+                if self.after is None
+                else bisect_right(self.labels["time"], self.after)
+            )
+            source = self.labels.slice(start)
+            charge = self._charge(source, assets)
+            if (
+                charge <= self.maximum_bytes
+                and source.select(pl.col("asset_id").is_in(assets).all()).item()
+            ):
+                selected, key = source, shared_key
+            else:
+                selected, key = frame, window_key
+                charge = self._charge(selected, assets)
+            if charge > self.maximum_bytes:
+                self.prepared_rows += frame.height
+                return _return_panels(frame, indices, check_canceled)
+            while self._panels and self.bytes + charge > self.maximum_bytes:
+                _, (_, removed) = self._panels.popitem(last=False)
+                self.bytes -= removed
+            panels = tuple(_return_panels(selected, indices, check_canceled))
+            self.prepared_rows += selected.height
+            self._panels[key] = panels, charge
+            self.bytes += charge
+            self.peak_bytes = max(self.peak_bytes, self.bytes)
+        return (
+            panel
+            for panel in panels
+            if first is not None and first <= panel.day <= last
+        )
+
+    @staticmethod
+    def _charge(frame, assets):
+        # Include sparse arrays, retained Arrow buffers and Python date/panel
+        # objects. Calendar span bounds panel count without allocating unique
+        # dates. Admission precedes partitioning and NumPy conversion.
+        dates = (
+            0 if frame.is_empty() else (frame["time"][-1] - frame["time"][0]).days + 1
+        )
+        return (
+            4096
+            + 4 * frame.estimated_size()
+            + frame.height * 24
+            + dates * 1024
+            + sum(128 + len(asset.encode()) for asset in assets)
+        )
+
+    def report(self):
+        return {
+            "return_preparation_hits": self.hits,
+            "return_prepared_rows": self.prepared_rows,
+            "return_preparation_peak_bytes": self.peak_bytes,
+            "return_preparation_maximum_bytes": self.maximum_bytes,
+        }
+
+    def clear(self):
+        self._panels.clear()
+        self.bytes = 0
+        self.labels = None
+
+@dataclass(frozen=True, slots=True)
+class _PreparedReturnWindow:
+    owner: _WeightReturnPreparation
+    frame: pl.DataFrame
 
 
 def node_values(node: Node, *, kind: Literal["alpha", "weights"]) -> pl.DataFrame:
@@ -275,6 +437,7 @@ def simulate_weight_returns(
     checkpoint: WeightStateCheckpoint | None = None,
     include_holdings: bool = True,
     check_canceled: Callable[[], None] | None = None,
+    _prepared: _PreparedReturnWindow | None = None,
 ) -> tuple[dict[str, pl.DataFrame], WeightStateCheckpoint | None]:
     """Drift independent Gross/Net holdings and charge full Net-pretrade L1.
 
@@ -356,21 +519,21 @@ def simulate_weight_returns(
     last_interval_end = None if checkpoint is None else checkpoint.interval_end
     last_availability = None if checkpoint is None else checkpoint.available_date
     active = checkpoint is not None
-    indexed_labels = labels.with_columns(
-        pl.col("asset_id")
-        .replace_strict(asset_indices, return_dtype=pl.Int64)
-        .alias("_asset_index"),
-        pl.col("forward_return").fill_null(0.0).alias("_asset_return"),
-        pl.col("forward_return").is_not_null().alias("_observed"),
+    if _prepared is not None and _prepared.frame is not labels:
+        raise ValueError("prepared returns belong to a different selected label frame")
+    panels = (
+        _return_panels(labels, asset_indices, check_canceled)
+        if _prepared is None
+        else _prepared.owner.panels(labels, assets, check_canceled)
     )
-    for panel in indexed_labels.partition_by("time", maintain_order=True):
+    for panel in panels:
         if check_canceled:
             check_canceled()
-        day = panel["time"][0]
+        day = panel.day
         if checkpoint is not None and day <= checkpoint.time:
             continue
         # An immature interval is never booked as a zero asset return.
-        if not panel["is_mature"].all():
+        if not panel.mature:
             break
         if day in rebalances:
             desired = targets[day]
@@ -384,9 +547,9 @@ def simulate_weight_returns(
             continue
         asset_return = np.zeros(count)
         observed = np.zeros(count, dtype=bool)
-        indices = panel["_asset_index"].to_numpy()
-        asset_return[indices] = panel["_asset_return"].to_numpy()
-        observed[indices] = panel["_observed"].to_numpy()
+        indices = panel.indices
+        asset_return[indices] = panel.returns
+        observed[indices] = panel.observed
         expected = (gross != 0) | (net != 0)
         expected_count = int(expected.sum())
         observed_count = int((expected & observed).sum())
@@ -396,9 +559,9 @@ def simulate_weight_returns(
         net_return = net_pre_cost_return - cost_return
         if 1 + gross_return <= 0 or 1 + net_return <= 0:
             raise InputValidationError(f"nonpositive portfolio wealth at {day}")
-        interval_end = panel["interval_end"][0]
-        interval_start = panel["interval_start"][0]
-        availability = panel["available_date"].max()
+        interval_end = panel.interval_end
+        interval_start = panel.interval_start
+        availability = panel.available_date
         if last_availability is not None:
             availability = max(availability, last_availability)
         if (

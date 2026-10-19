@@ -39,6 +39,7 @@ from .horizon import (
 )
 from .portfolio_mechanics import (
     WeightStateCheckpoint,
+    _WeightReturnPreparation,
     node_values,
     normalize_forward_returns,
     select_rebalance_snapshots,
@@ -1083,343 +1084,406 @@ def evaluate_alpha(
         if input_proof is None
         else input_proof(dates[0], dates[-1], available_date)
     )
-    path_sessions = []
+    selected_options = options or BTExecutionOptions()
+    has_paths = bool(
+        selected & {"book_tail", "turnover", "lead_lag", "alpha_return", "quantiles"}
+    )
+    reserve_mib = (
+        min(64, selected_options.limits.cache_mib // 4,
+            selected_options.limits.memory_target_mib // 4)
+        if has_paths else 0
+    )
+    saved_paths = previous_state.get("paths", {})
+    after = (
+        min(date.fromisoformat(saved["time"]) for saved in saved_paths.values())
+        if saved_paths
+        and all(saved is not None for saved in saved_paths.values())
+        and prior_components == selected
+        else None
+    )
+    return_preparation = (
+        _WeightReturnPreparation(labels, reserve_mib * 1024 * 1024, after=after)
+        if has_paths else None
+    )
+    try:
+        reserved_options = replace(
+            selected_options,
+            limits=replace(
+                selected_options.limits,
+                memory_target_mib=selected_options.limits.memory_target_mib
+                - reserve_mib,
+                cache_mib=selected_options.limits.cache_mib - reserve_mib,
+            ),
+        )
+        path_sessions = []
 
-    def run_path(name, weights, rate, *, end=None):
-        saved = previous_state.get("paths", {}).get(name)
-        checkpoint = None
-        if saved is not None:
-            checkpoint = WeightStateCheckpoint(
-                time=date.fromisoformat(saved["time"]),
-                interval_end=date.fromisoformat(saved["interval_end"]),
-                available_date=date.fromisoformat(saved["available_date"]),
-                gross_value=saved["gross_value"],
-                net_value=saved["net_value"],
-                weights=pl.DataFrame(
-                    saved["weights"],
-                    schema={
-                        "asset_id": pl.String,
-                        "gross_weight": pl.Float64,
-                        "net_weight": pl.Float64,
+        def run_path(name, weights, rate, *, end=None):
+            assert return_preparation is not None
+            saved = previous_state.get("paths", {}).get(name)
+            checkpoint = None
+            if saved is not None:
+                checkpoint = WeightStateCheckpoint(
+                    time=date.fromisoformat(saved["time"]),
+                    interval_end=date.fromisoformat(saved["interval_end"]),
+                    available_date=date.fromisoformat(saved["available_date"]),
+                    gross_value=saved["gross_value"],
+                    net_value=saved["net_value"],
+                    weights=pl.DataFrame(
+                        saved["weights"],
+                        schema={
+                            "asset_id": pl.String,
+                            "gross_weight": pl.Float64,
+                            "net_weight": pl.Float64,
+                        },
+                    ),
+                )
+            prepared_window = return_preparation.window(
+                after=None if checkpoint is None else checkpoint.time, through=end
+            )
+            selected_labels = prepared_window.frame
+            selected_weights = (
+                weights
+                if checkpoint is None
+                else weights.filter(pl.col("time") > checkpoint.time)
+            )
+            output, current = simulate_weight_returns(
+                selected_weights,
+                selected_labels,
+                decisions=None,
+                cost_rate=rate,
+                checkpoint=checkpoint,
+                include_holdings=False,
+                check_canceled=cancel,
+                _prepared=prepared_window,
+            )
+            path_sessions.append(output["returns"].height)
+            for family in ("returns", "turnover", "coverage"):
+                table = f"state_{name}_{family}".replace("-", "minus")
+                prior = None if previous is None else previous.tables.get(table)
+                if prior is not None:
+                    if checkpoint is None and not prior.is_empty():
+                        raise InputValidationError(
+                            "Completed weight path lacks a continuation checkpoint; "
+                            "explicit state maintenance is required"
+                        )
+                    output[family] = pl.concat([prior, output[family]]).sort("time")
+                tables[table] = output[family]
+            state["paths"][name] = (
+                None
+                if current is None
+                else {
+                    "time": str(current.time),
+                    "interval_end": str(current.interval_end),
+                    "available_date": str(current.available_date),
+                    "gross_value": current.gross_value,
+                    "net_value": current.net_value,
+                    "weights": current.weights.to_dict(as_series=False),
+                }
+            )
+            return output
+
+        cancel()
+        metrics: dict[str, Any] = {
+            "annualization": annualization,
+            "quantiles": quantiles,
+        }
+        if selected & {"horizons", "persistence"}:
+            lags = _lags(persistence_lags)
+            if min(lags) < 1:
+                raise InputValidationError("persistence lags must be positive")
+            # node_values/session_calendar already enforce the public kernel's
+            # finite unique factor and ordered unique session prerequisites.
+            persistence = _signal_rank_persistence_prepared(
+                factor,
+                sessions=dates,
+                horizons=lags,
+                target_start=None
+                if previous is None
+                or not prior_components & {"horizons", "persistence"}
+                else date.fromisoformat(previous_state["through"]),
+            )
+            if previous is not None and prior_components & {"horizons", "persistence"}:
+                persistence = pl.concat(
+                    [previous.tables["daily_signal_autocorrelation"], persistence]
+                ).sort("evaluation_date", "horizon_sessions")
+            persistence_summary = summarize_signal_persistence(persistence, lags)
+            tables["daily_signal_autocorrelation"] = persistence
+            tables["horizon_signal_persistence"] = persistence
+            tables["horizon_signal_persistence_summary"] = persistence_summary
+            state["persistence_summary_policy"] = PERSISTENCE_SUMMARY_POLICY
+        cancel()
+        book = tail = membership = None
+        work_factor = factor
+        if previous is not None:
+            work_start = alpha_input_start(
+                previous,
+                calendar=sessions,
+                components=sorted(selected),
+                windows=windows,
+                persistence_lags=persistence_lags,
+                lead_lags=lead_lags,
+                alpha_return_lags=alpha_return_lags,
+            )
+            work_factor = factor.filter(pl.col("evaluation_date") >= work_start)
+        if selected - {"persistence"}:
+            normalized_factor = _validate_scheduled_factor_frame(work_factor)
+            book = _centered_rank_book_weights_prepared(normalized_factor)
+            cancel()
+            membership = _quantile_membership(normalized_factor, quantiles=quantiles)
+            tail = _gross_one_tail_weights_with_membership(
+                membership, quantiles=quantiles
+            )
+        if selected & {"horizons", "rolling_ic"}:
+            resolved_windows = tuple(windows)
+            if not resolved_windows or any(
+                not isinstance(window, SessionWindow) for window in resolved_windows
+            ):
+                raise InputValidationError(
+                    "windows requires nonempty SessionWindow values"
+                )
+            if len(
+                {(window.window_kind, window.window_id) for window in resolved_windows}
+            ) != len(resolved_windows):
+                raise InputValidationError("window identities must be unique")
+            assert book is not None and tail is not None and membership is not None
+            prepared_factor = _prepare_factor_returns(
+                work_factor, factor_standardization
+            )
+            window_options, execution = _alpha_window_execution(
+                reserved_options, resolved_windows, factor, labels, sessions, book, tail
+            )
+            if progress:
+                progress(0, len(resolved_windows))
+            window_frames = run_evaluation_batch(
+                resolved_windows,
+                lambda window: _alpha_window_frames(
+                    window,
+                    factor=work_factor,
+                    labels=labels,
+                    sessions=sessions,
+                    book=book,
+                    tail=tail,
+                    quantiles=quantiles,
+                    factor_standardization=factor_standardization,
+                    quantile_membership=membership,
+                    prepared_factor=prepared_factor,
+                    check_canceled=cancel,
+                    previous=None
+                    if previous is None
+                    or not prior_components & {"horizons", "rolling_ic"}
+                    else {
+                        name.removeprefix("horizon_"): frame.filter(
+                            (pl.col("window_kind") == window.window_kind)
+                            & (pl.col("window_id") == window.window_id)
+                        )
+                        for name, frame in previous.tables.items()
+                        if name
+                        in {
+                            "horizon_coverage",
+                            "horizon_ic",
+                            "horizon_book_returns",
+                            "horizon_tail_returns",
+                            "horizon_quantile_forward_returns",
+                            "horizon_quantile_structure",
+                            "horizon_factor_returns",
+                        }
                     },
                 ),
-            )
-        selected_labels = (
-            labels
-            if checkpoint is None
-            else labels.filter(pl.col("time") > checkpoint.time)
-        )
-        selected_weights = (
-            weights
-            if checkpoint is None
-            else weights.filter(pl.col("time") > checkpoint.time)
-        )
-        if end is not None:
-            selected_labels = selected_labels.filter(pl.col("time") <= end)
-        output, current = simulate_weight_returns(
-            selected_weights,
-            selected_labels,
-            decisions=None,
-            cost_rate=rate,
-            checkpoint=checkpoint,
-            include_holdings=False,
-            check_canceled=cancel,
-        )
-        path_sessions.append(output["returns"].height)
-        for family in ("returns", "turnover", "coverage"):
-            table = f"state_{name}_{family}".replace("-", "minus")
-            prior = None if previous is None else previous.tables.get(table)
-            if prior is not None:
-                if checkpoint is None and not prior.is_empty():
-                    raise InputValidationError(
-                        "Completed weight path lacks a continuation checkpoint; "
-                        "explicit state maintenance is required"
-                    )
-                output[family] = pl.concat([prior, output[family]]).sort("time")
-            tables[table] = output[family]
-        state["paths"][name] = (
-            None
-            if current is None
-            else {
-                "time": str(current.time),
-                "interval_end": str(current.interval_end),
-                "available_date": str(current.available_date),
-                "gross_value": current.gross_value,
-                "net_value": current.net_value,
-                "weights": current.weights.to_dict(as_series=False),
-            }
-        )
-        return output
-
-    cancel()
-    metrics: dict[str, Any] = {"annualization": annualization, "quantiles": quantiles}
-    if selected & {"horizons", "persistence"}:
-        lags = _lags(persistence_lags)
-        if min(lags) < 1:
-            raise InputValidationError("persistence lags must be positive")
-        # node_values/session_calendar already enforce the public kernel's
-        # finite unique factor and ordered unique session prerequisites.
-        persistence = _signal_rank_persistence_prepared(
-            factor,
-            sessions=dates,
-            horizons=lags,
-            target_start=None
-            if previous is None or not prior_components & {"horizons", "persistence"}
-            else date.fromisoformat(previous_state["through"]),
-        )
-        if previous is not None and prior_components & {"horizons", "persistence"}:
-            persistence = pl.concat(
-                [previous.tables["daily_signal_autocorrelation"], persistence]
-            ).sort("evaluation_date", "horizon_sessions")
-        persistence_summary = summarize_signal_persistence(persistence, lags)
-        tables["daily_signal_autocorrelation"] = persistence
-        tables["horizon_signal_persistence"] = persistence
-        tables["horizon_signal_persistence_summary"] = persistence_summary
-        state["persistence_summary_policy"] = PERSISTENCE_SUMMARY_POLICY
-    cancel()
-    book = tail = membership = None
-    work_factor = factor
-    if previous is not None:
-        work_start = alpha_input_start(
-            previous,
-            calendar=sessions,
-            components=sorted(selected),
-            windows=windows,
-            persistence_lags=persistence_lags,
-            lead_lags=lead_lags,
-            alpha_return_lags=alpha_return_lags,
-        )
-        work_factor = factor.filter(pl.col("evaluation_date") >= work_start)
-    if selected - {"persistence"}:
-        normalized_factor = _validate_scheduled_factor_frame(work_factor)
-        book = _centered_rank_book_weights_prepared(normalized_factor)
-        cancel()
-        membership = _quantile_membership(normalized_factor, quantiles=quantiles)
-        tail = _gross_one_tail_weights_with_membership(membership, quantiles=quantiles)
-    if selected & {"horizons", "rolling_ic"}:
-        resolved_windows = tuple(windows)
-        if not resolved_windows or any(
-            not isinstance(window, SessionWindow) for window in resolved_windows
-        ):
-            raise InputValidationError("windows requires nonempty SessionWindow values")
-        if len(
-            {(window.window_kind, window.window_id) for window in resolved_windows}
-        ) != len(resolved_windows):
-            raise InputValidationError("window identities must be unique")
-        assert book is not None and tail is not None and membership is not None
-        prepared_factor = _prepare_factor_returns(work_factor, factor_standardization)
-        window_options, execution = _alpha_window_execution(
-            options, resolved_windows, factor, labels, sessions, book, tail
-        )
-        if progress:
-            progress(0, len(resolved_windows))
-        window_frames = run_evaluation_batch(
-            resolved_windows,
-            lambda window: _alpha_window_frames(
-                window,
-                factor=work_factor,
-                labels=labels,
-                sessions=sessions,
-                book=book,
-                tail=tail,
-                quantiles=quantiles,
-                factor_standardization=factor_standardization,
-                quantile_membership=membership,
-                prepared_factor=prepared_factor,
+                options=window_options,
                 check_canceled=cancel,
-                previous=None
-                if previous is None or not prior_components & {"horizons", "rolling_ic"}
-                else {
-                    name.removeprefix("horizon_"): frame.filter(
-                        (pl.col("window_kind") == window.window_kind)
-                        & (pl.col("window_id") == window.window_id)
-                    )
-                    for name, frame in previous.tables.items()
-                    if name
-                    in {
-                        "horizon_coverage",
-                        "horizon_ic",
-                        "horizon_book_returns",
-                        "horizon_tail_returns",
-                        "horizon_quantile_forward_returns",
-                        "horizon_quantile_structure",
-                        "horizon_factor_returns",
-                    }
-                },
-            ),
-            options=window_options,
-            check_canceled=cancel,
-            progress=progress or (lambda *_: None),
-        )
-        cancel()
-        families = {
-            name: [frames[name] for frames in window_frames]
-            for name in window_frames[0]
-        }
-        for name, frames in families.items():
-            tables[f"horizon_{name}"] = pl.concat(frames, how="diagonal_relaxed")
-            if "execution_date" in tables[f"horizon_{name}"].columns:
-                tables[f"horizon_{name}"] = tables[f"horizon_{name}"].with_columns(
-                    pl.col("execution_date").alias("target_start_date")
-                )
-        cancel()
-        tables["horizon_ic_summary"] = summarize_window_ic(
-            tables["horizon_ic"], annualization_sessions=annualization
-        )
-        window_availability = (
-            tables["horizon_ic"]
-            .group_by(*_WINDOW_COLUMNS)
-            .agg(pl.col("available_date").max())
-        )
-        tables["horizon_ic_summary"] = tables["horizon_ic_summary"].join(
-            window_availability,
-            on=list(_WINDOW_COLUMNS),
-            how="left",
-            maintain_order="left",
-        )
-        cancel()
-        tables["horizon_statistical_inference"] = build_statistical_inference(
-            ic=tables["horizon_ic"],
-            book_returns=tables["horizon_book_returns"],
-            tail_returns=tables["horizon_tail_returns"],
-            quantile_structure=tables["horizon_quantile_structure"],
-            factor_returns=tables["horizon_factor_returns"],
-        )
-        tables["horizon_statistical_inference"] = tables[
-            "horizon_statistical_inference"
-        ].join(
-            window_availability,
-            on=list(_WINDOW_COLUMNS),
-            how="left",
-            maintain_order="left",
-        )
-        metrics["ic"] = tables["horizon_ic_summary"].to_dicts()
-        if "rolling_ic" in selected:
+                progress=progress or (lambda *_: None),
+            )
             cancel()
-            tables["daily_rolling_ic"] = rolling_window_information_coefficients(
-                tables["horizon_ic"],
-                observations=rolling_observations,
-                previous=None
-                if previous is None or "rolling_ic" not in prior_components
-                else previous.tables["daily_rolling_ic"].drop("available_date"),
-                previous_observations=rolling_observations,
+            families = {
+                name: [frames[name] for frames in window_frames]
+                for name in window_frames[0]
+            }
+            for name, frames in families.items():
+                tables[f"horizon_{name}"] = pl.concat(frames, how="diagonal_relaxed")
+                if "execution_date" in tables[f"horizon_{name}"].columns:
+                    tables[f"horizon_{name}"] = tables[f"horizon_{name}"].with_columns(
+                        pl.col("execution_date").alias("target_start_date")
+                    )
+            cancel()
+            tables["horizon_ic_summary"] = summarize_window_ic(
+                tables["horizon_ic"], annualization_sessions=annualization
             )
-            rolling_availability = (
+            window_availability = (
                 tables["horizon_ic"]
-                .sort("evaluation_date")
-                .with_columns(pl.col("available_date").cum_max().over(*_WINDOW_COLUMNS))
-                .select("evaluation_date", *_WINDOW_COLUMNS, "available_date")
+                .group_by(*_WINDOW_COLUMNS)
+                .agg(pl.col("available_date").max())
             )
-            tables["daily_rolling_ic"] = tables["daily_rolling_ic"].join(
-                rolling_availability,
-                on=["evaluation_date", *_WINDOW_COLUMNS],
+            tables["horizon_ic_summary"] = tables["horizon_ic_summary"].join(
+                window_availability,
+                on=list(_WINDOW_COLUMNS),
                 how="left",
                 maintain_order="left",
             )
-    cancel()
-    if selected & {"book_tail", "turnover", "lead_lag", "alpha_return", "quantiles"}:
-        assert book is not None and tail is not None
-        book_values = book.filter(pl.col("book_weight").is_not_null()).select(
-            pl.col("evaluation_date").alias("time"),
-            "asset_id",
-            pl.col("book_weight").alias("value"),
-        )
-        tail_values = tail.filter(pl.col("tail_weight").is_not_null()).select(
-            pl.col("evaluation_date").alias("time"),
-            "asset_id",
-            pl.col("tail_weight").alias("value"),
-        )
-        if selected & {"book_tail", "turnover"}:
-            for path_kind, weights in (("book", book_values), ("tail", tail_values)):
-                output = run_path(path_kind, weights, cost_rate)
-                if "book_tail" in selected:
-                    tables[f"daily_{path_kind}_returns"] = output["returns"]
-                    metrics[path_kind] = return_statistics(
-                        output["returns"], annualization=annualization
-                    )
-                if "turnover" in selected and path_kind == "book":
-                    tables["daily_book_turnover"] = output["turnover"]
-        if "lead_lag" in selected:
-            tables["daily_book_lead_lag_returns"] = _path_frames(
-                book_values,
-                labels,
-                sessions,
-                _lags(lead_lags, negative=True),
-                cost_rate,
-                check_canceled,
-                path_runner=run_path,
-                path_id="book_leadlag",
-                previous=None
-                if previous is None
-                else previous.tables.get("daily_book_lead_lag_returns"),
+            cancel()
+            tables["horizon_statistical_inference"] = build_statistical_inference(
+                ic=tables["horizon_ic"],
+                book_returns=tables["horizon_book_returns"],
+                tail_returns=tables["horizon_tail_returns"],
+                quantile_structure=tables["horizon_quantile_structure"],
+                factor_returns=tables["horizon_factor_returns"],
             )
-        if "alpha_return" in selected:
-            frames = [
-                _path_frames(
-                    weights,
+            tables["horizon_statistical_inference"] = tables[
+                "horizon_statistical_inference"
+            ].join(
+                window_availability,
+                on=list(_WINDOW_COLUMNS),
+                how="left",
+                maintain_order="left",
+            )
+            metrics["ic"] = tables["horizon_ic_summary"].to_dicts()
+            if "rolling_ic" in selected:
+                cancel()
+                tables["daily_rolling_ic"] = rolling_window_information_coefficients(
+                    tables["horizon_ic"],
+                    observations=rolling_observations,
+                    previous=None
+                    if previous is None or "rolling_ic" not in prior_components
+                    else previous.tables["daily_rolling_ic"].drop("available_date"),
+                    previous_observations=rolling_observations,
+                )
+                rolling_availability = (
+                    tables["horizon_ic"]
+                    .sort("evaluation_date")
+                    .with_columns(
+                        pl.col("available_date").cum_max().over(*_WINDOW_COLUMNS)
+                    )
+                    .select("evaluation_date", *_WINDOW_COLUMNS, "available_date")
+                )
+                tables["daily_rolling_ic"] = tables["daily_rolling_ic"].join(
+                    rolling_availability,
+                    on=["evaluation_date", *_WINDOW_COLUMNS],
+                    how="left",
+                    maintain_order="left",
+                )
+        cancel()
+        if selected & {
+            "book_tail",
+            "turnover",
+            "lead_lag",
+            "alpha_return",
+            "quantiles",
+        }:
+            assert book is not None and tail is not None
+            book_values = book.filter(pl.col("book_weight").is_not_null()).select(
+                pl.col("evaluation_date").alias("time"),
+                "asset_id",
+                pl.col("book_weight").alias("value"),
+            )
+            tail_values = tail.filter(pl.col("tail_weight").is_not_null()).select(
+                pl.col("evaluation_date").alias("time"),
+                "asset_id",
+                pl.col("tail_weight").alias("value"),
+            )
+            if selected & {"book_tail", "turnover"}:
+                for path_kind, weights in (
+                    ("book", book_values),
+                    ("tail", tail_values),
+                ):
+                    output = run_path(path_kind, weights, cost_rate)
+                    if "book_tail" in selected:
+                        tables[f"daily_{path_kind}_returns"] = output["returns"]
+                        metrics[path_kind] = return_statistics(
+                            output["returns"], annualization=annualization
+                        )
+                    if "turnover" in selected and path_kind == "book":
+                        tables["daily_book_turnover"] = output["turnover"]
+            if "lead_lag" in selected:
+                tables["daily_book_lead_lag_returns"] = _path_frames(
+                    book_values,
                     labels,
                     sessions,
-                    _lags(alpha_return_lags),
+                    _lags(lead_lags, negative=True),
                     cost_rate,
                     check_canceled,
                     path_runner=run_path,
-                    path_id=f"alpha_{kind}",
+                    path_id="book_leadlag",
                     previous=None
-                    if previous is None or "alpha_return" not in prior_components
-                    else previous.tables.get(
-                        "daily_alpha_return_lag_returns", pl.DataFrame()
+                    if previous is None
+                    else previous.tables.get("daily_book_lead_lag_returns"),
+                )
+            if "alpha_return" in selected:
+                frames = [
+                    _path_frames(
+                        weights,
+                        labels,
+                        sessions,
+                        _lags(alpha_return_lags),
+                        cost_rate,
+                        check_canceled,
+                        path_runner=run_path,
+                        path_id=f"alpha_{kind}",
+                        previous=None
+                        if previous is None or "alpha_return" not in prior_components
+                        else previous.tables.get(
+                            "daily_alpha_return_lag_returns", pl.DataFrame()
+                        )
+                        .filter(pl.col("path_kind") == kind)
+                        .drop("path_kind"),
+                    ).with_columns(pl.lit(kind).alias("path_kind"))
+                    for kind, weights in (("book", book_values), ("tail", tail_values))
+                ]
+                common = _common_lag_dates(frames)
+                tables["daily_alpha_return_lag_returns"] = pl.concat(frames).join(
+                    common, on="time", how="inner"
+                )
+            if "quantiles" in selected:
+                assert membership is not None
+                valid = membership.filter(
+                    (pl.col("_count") >= quantiles) & (pl.col("_unique") >= 2)
+                )
+                frames = []
+                for number in range(1, quantiles + 1):
+                    weights = valid.filter(
+                        pl.col("quantile") == f"q{number}"
+                    ).with_columns(
+                        (1.0 / pl.len().over("evaluation_date")).alias("value")
                     )
-                    .filter(pl.col("path_kind") == kind)
-                    .drop("path_kind"),
-                ).with_columns(pl.lit(kind).alias("path_kind"))
-                for kind, weights in (("book", book_values), ("tail", tail_values))
-            ]
-            common = _common_lag_dates(frames)
-            tables["daily_alpha_return_lag_returns"] = pl.concat(frames).join(
-                common, on="time", how="inner"
-            )
-        if "quantiles" in selected:
-            assert membership is not None
-            valid = membership.filter(
-                (pl.col("_count") >= quantiles) & (pl.col("_unique") >= 2)
-            )
-            frames = []
-            for number in range(1, quantiles + 1):
-                weights = valid.filter(pl.col("quantile") == f"q{number}").with_columns(
-                    (1.0 / pl.len().over("evaluation_date")).alias("value")
-                )
-                output = run_path(
-                    f"quantile_{number}",
-                    weights.select(
-                        pl.col("evaluation_date").alias("time"), "asset_id", "value"
-                    ),
-                    0.0,
-                )
-                frames.append(
-                    output["returns"]
-                    .join(
-                        output["coverage"].select(
-                            "time", pl.col("expected_count").alias("constituent_count")
+                    output = run_path(
+                        f"quantile_{number}",
+                        weights.select(
+                            pl.col("evaluation_date").alias("time"), "asset_id", "value"
                         ),
-                        on="time",
-                        how="left",
+                        0.0,
                     )
-                    .with_columns(
-                        pl.lit(f"q{number}").alias("quantile"),
-                        pl.lit(None, dtype=pl.String).alias("unavailable_reason"),
+                    frames.append(
+                        output["returns"]
+                        .join(
+                            output["coverage"].select(
+                                "time",
+                                pl.col("expected_count").alias("constituent_count"),
+                            ),
+                            on="time",
+                            how="left",
+                        )
+                        .with_columns(
+                            pl.lit(f"q{number}").alias("quantile"),
+                            pl.lit(None, dtype=pl.String).alias("unavailable_reason"),
+                        )
                     )
-                )
-            tables["daily_quantile_returns"] = pl.concat(frames)
-    cancel()
-    execution["path_sessions"] = sum(path_sessions)
-    execution["continued_paths"] = sum(
-        item is not None for item in previous_state.get("paths", {}).values()
-    )
-    coverage = tables.get("horizon_coverage")
-    pending = (None if coverage is None else
-               coverage.filter(~pl.col("is_mature"))["evaluation_date"].min())
-    state["pending_horizon_start"] = None if pending is None else str(pending)
-    return EvaluationResult(tables, metrics, execution=execution, state=state)
+                tables["daily_quantile_returns"] = pl.concat(frames)
+        cancel()
+        execution["path_sessions"] = sum(path_sessions)
+        if return_preparation is not None:
+            execution.update(return_preparation.report())
+        execution["continued_paths"] = sum(
+            item is not None for item in previous_state.get("paths", {}).values()
+        )
+        coverage = tables.get("horizon_coverage")
+        pending = (
+            None
+            if coverage is None
+            else coverage.filter(~pl.col("is_mature"))["evaluation_date"].min()
+        )
+        state["pending_horizon_start"] = None if pending is None else str(pending)
+        return EvaluationResult(tables, metrics, execution=execution, state=state)
+    finally:
+        if return_preparation is not None:
+            return_preparation.clear()
 
 
 __all__ = [
