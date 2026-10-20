@@ -30,9 +30,12 @@ retains its own daily vectors, costs, Gross/Net holdings and checkpoints, with
 the same arithmetic order. Holdings output still records every requested
 processed session. No historical account state is recreated during append.
 
-This evaluation-local LRU uses at most the minimum of 64 MiB, one quarter of
-`cache_mib` and one quarter of `memory_target_mib`. Its reserve is deducted from
-the existing local budget before other diagnostics are admitted. Admission
+This evaluation-local LRU uses at most the minimum of `cache_mib` and one quarter
+of `memory_target_mib`. Its reserve is deducted from both the existing local
+cache and memory allowances before other diagnostics are admitted. It can use
+the full configured cache for repeated return panels, leaving zero ordinary
+cache when that is the binding limit. There is no additional memory budget
+or machine-dependent policy. Admission
 precedes partition/NumPy allocation; zero, tiny or oversized cases use the
 ordinary per-path preparation without retaining a shared source frame or asset
 set. A common append source starts after the earliest saved path checkpoint.

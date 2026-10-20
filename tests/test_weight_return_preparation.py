@@ -235,3 +235,42 @@ def test_alpha_failure_releases_owned_preparation(monkeypatch):
             **SETTINGS,
         )
     assert len(owned) == 1 and owned[0].bytes == 0 and not owned[0]._panels
+
+
+@pytest.mark.parametrize(
+    "cache,memory,reserve",
+    [(0, 512, 0), (16, 512, 16), (1024, 20480, 1024), (1024, 2048, 512)],
+)
+def test_alpha_return_reserve_is_debited_before_other_diagnostics(
+    monkeypatch, cache, memory, reserve
+):
+    from bagelquant_bt import evaluation
+
+    alpha, labels, calendar, proof = inputs(12)
+    options = BTExecutionOptions(
+        limits=ResourceLimits(
+            total_threads=1, memory_target_mib=memory, cache_mib=cache
+        )
+    )
+    original = evaluation._alpha_window_execution
+    observed = []
+
+    def admitted(selected, *args, **kwargs):
+        assert selected.limits.memory_target_mib == memory - reserve
+        assert selected.limits.cache_mib == cache - reserve
+        observed.append(selected)
+        return original(selected, *args, **kwargs)
+
+    monkeypatch.setattr(evaluation, "_alpha_window_execution", admitted)
+    result = evaluate_alpha(
+        alpha,
+        labels,
+        calendar=calendar,
+        available_date=calendar["time"].max(),
+        options=options,
+        input_proof=proof,
+        **SETTINGS,
+    )
+    assert observed
+    assert result.execution["return_preparation_maximum_bytes"] == reserve * 1024**2
+    assert result.execution["return_preparation_peak_bytes"] <= reserve * 1024**2

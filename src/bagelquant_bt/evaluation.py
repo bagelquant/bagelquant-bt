@@ -1089,8 +1089,10 @@ def evaluate_alpha(
         selected & {"book_tail", "turnover", "lead_lag", "alpha_return", "quantiles"}
     )
     reserve_mib = (
-        min(64, selected_options.limits.cache_mib // 4,
-            selected_options.limits.memory_target_mib // 4)
+        min(
+            selected_options.limits.cache_mib,
+            selected_options.limits.memory_target_mib // 4,
+        )
         if has_paths else 0
     )
     saved_paths = previous_state.get("paths", {})

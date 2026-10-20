@@ -110,6 +110,12 @@ final mature checkpoint is materialized; null-return values/observation masks
 are prepared once per path. Quantile curves share columnar grouping/order
 preparation while retaining the same scalar statistical formulas. Full Alpha
 performance evidence covers all requested paths/windows and incremental reuse.
+Immutable return preparation may use the caller's cache allowance, bounded by
+one quarter of its memory target; debit both before admitting other diagnostics.
+Retain exact asset axes, date/maturity windows, independent causal path state,
+pre-allocation charges, zero/oversize fallback and operation cleanup. Larger
+configured caches may avoid repeated panel conversion; they do not relax the
+mixed-native serial inner-executor contract or increase the total budget.
 Empty horizon Book/Spread/quantile counts and factor-return sample sizes use
 UInt32, matching populated reductions; IC sample size remains Int64 even before
 the first mature return. Appending or repairing cannot change these schemas.
