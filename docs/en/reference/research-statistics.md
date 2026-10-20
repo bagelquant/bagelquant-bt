@@ -28,3 +28,26 @@ nine native-rule one-factor cases with independent accounts.
 `evaluation_sample(frames, start=..., end=..., minimum_history_years=None)` reports requested/effective dates, first signal/economic dates, observation counts, leading exclusions, missingness and warnings. Signal coverage is authoritative when supplied; otherwise finite saved economic observations set the start after maturity filtering. Zero returns are valid. Subsequent gaps stay in the calendar. Calendar-history thresholds are caller policy.
 
 `return_statistics` also exposes `expected_shortfall_95` (gross/net prefixes when available). It is minus the average of the worst `ceil(0.05*N)` finite returns, with at least 20 observations, not an annualized quantity. An entirely profitable sample can produce a negative ES, correctly reflecting gains in that empirical tail. Undefined metrics retain a reason. Saved research-window aggregation exposes annual/recent performance, annual IC and coverage summaries; recent means cutoff year and preceding four calendar years.
+
+
+## Coverage-qualified sample starts
+
+`evaluation_sample(..., minimum_signal_coverage=...)` optionally requires a finite
+signal count divided by the full caller-supplied Universe count to reach a
+threshold in `(0, 1]`. The first qualifying date is inclusive. Empty Universes do
+not qualify, finite zero signals count, and later gaps or lower coverage remain
+in the sample. Search the supplied complete coverage history before clipping to
+the requested window; a later low-coverage window does not choose a new start.
+Without a qualifying date, the sample is unavailable and returns cannot supply
+a fallback start. Omitting the argument preserves the original frozen policy.
+
+This sample function selects dates; it does not restart an account. Callers that
+require a fresh diagnostic must supply a calendar and signal values beginning at
+the qualifying date to `evaluate_alpha`, with no prior diagnostic state. Saved
+window aggregation accepts resolved `sample_metadata` so all sections use the
+same root start. Changing a display range only aggregates saved paths.
+
+A late-start `rolling_risk_profile` can receive `factor_catalogue` with original
+factor family and first-seen dates. This preserves causal population metadata
+without admitting pre-start regression observations. Warm-up counts begin with
+the supplied calendar; continuation still requires original state and proofs.

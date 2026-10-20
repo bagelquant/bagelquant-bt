@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from datetime import date
+from math import isfinite
 
 import polars as pl
 
@@ -14,10 +15,14 @@ def evaluation_sample(
     start: date,
     end: date,
     minimum_history_years: int | None = None,
+    minimum_signal_coverage: float | None = None,
 ) -> dict:
     """Describe the requested interval after excluding leading unavailable history.
 
     Signal coverage supplies the observation calendar and the first finite signal.
+    An explicit minimum uses signal_count / universe_count to select the first
+    qualifying date, including dates before the requested window. It never
+    filters later low-coverage observations or falls back to economic returns.
     Without it, finite saved economic observations supply the start. Zero returns
     are valid. Later missing observations never move the original sample start.
     """
@@ -29,11 +34,31 @@ def evaluation_sample(
         raise ValueError(
             "minimum history must be a nonnegative number of calendar years"
         )
+    if minimum_signal_coverage is not None and (
+        isinstance(minimum_signal_coverage, bool)
+        or not isfinite(minimum_signal_coverage)
+        or not 0 < minimum_signal_coverage <= 1
+    ):
+        raise ValueError("minimum signal coverage must be finite and in (0, 1]")
     coverage = frames.get("daily_signal_coverage", pl.DataFrame())
     signal_start = None
+    qualifying_start = None
     if {"time", "signal_count"} <= set(coverage.columns):
         available = coverage.filter(pl.col("signal_count") > 0)
         signal_start = available["time"].min() if not available.is_empty() else None
+        if minimum_signal_coverage is not None and "universe_count" in coverage.columns:
+            qualified = available.filter(
+                (pl.col("time") <= end)
+                & (pl.col("universe_count") > 0)
+                & pl.col("universe_count").is_finite()
+                & pl.col("signal_count").is_finite()
+                & (pl.col("signal_count") <= pl.col("universe_count"))
+                & (
+                    pl.col("signal_count") / pl.col("universe_count")
+                    >= minimum_signal_coverage
+                )
+            )
+            qualifying_start = qualified["time"].min()
     candidates = []
     return_starts = []
     fallback_calendar = pl.DataFrame()
@@ -75,7 +100,9 @@ def evaluation_sample(
                         .sort("time")
                     )
     observation_start = (
-        signal_start
+        qualifying_start
+        if minimum_signal_coverage is not None
+        else signal_start
         if "signal_count" in coverage.columns
         else min(candidates, default=None)
     )
@@ -103,7 +130,11 @@ def evaluation_sample(
     )
     warnings = []
     if effective_start is None:
-        warnings.append("no_available_observations")
+        warnings.append(
+            "no_qualifying_signal_coverage"
+            if minimum_signal_coverage is not None
+            else "no_available_observations"
+        )
     elif minimum_history_years is not None:
         try:
             anniversary = effective_start.replace(
@@ -116,7 +147,19 @@ def evaluation_sample(
         if end < anniversary:
             warnings.append("effective_history_below_minimum")
     return {
-        "policy": SAMPLE_POLICY,
+        "policy": SAMPLE_POLICY
+        if minimum_signal_coverage is None
+        else "evaluation.signal_coverage_sample.v1",
+        **(
+            {
+                "minimum_signal_coverage": minimum_signal_coverage,
+                "first_qualifying_signal_date": qualifying_start.isoformat()
+                if qualifying_start
+                else None,
+            }
+            if minimum_signal_coverage is not None
+            else {}
+        ),
         "requested_start": start.isoformat(),
         "requested_end": end.isoformat(),
         "effective_start": effective_start.isoformat() if effective_start else None,

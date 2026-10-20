@@ -38,6 +38,41 @@ def proof(first, last, cutoff):
     return f"synthetic:{first}:{last}:{cutoff}"
 
 
+def test_late_start_catalogue_preserves_original_dates_without_warmup_credit():
+    days, returns, factors = inputs(400)
+    gate = 30
+    catalogue = {
+        "size": {"family": "style", "first_seen": str(days[0])},
+        "future": {
+            "family": "industry",
+            "first_seen": str(days[-1] + timedelta(days=1)),
+        },
+    }
+    actual = rolling_risk_profile(
+        returns, factors, days[gate:], factor_catalogue=catalogue
+    )
+    reference = rolling_risk_profile(
+        returns.filter(pl.col("time") >= days[gate]),
+        factors.filter(pl.col("time") >= days[gate]),
+        days[gate:],
+    )
+    assert actual.state["factors"] == {"size": catalogue["size"]}
+    for name in ("returns", "exposures", "diagnostics"):
+        assert_frame_equal(
+            getattr(actual, name), getattr(reference, name), check_exact=True
+        )
+    assert actual.exposures["time"].min() >= days[gate + 240]
+    with pytest.raises(ValueError, match="precedes its original catalogue"):
+        rolling_risk_profile(
+            returns,
+            factors,
+            days[gate:],
+            factor_catalogue={
+                "size": {"family": "style", "first_seen": str(days[gate + 1])}
+            },
+        )
+
+
 def evaluate(days, returns, factors, through, *, previous=None, plan=None):
     selected = days[: days.index(through) + 1]
     plan = plan or plan_risk_profile_update(

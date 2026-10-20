@@ -6,7 +6,7 @@ These analytics accept numerical inputs, never resolve data or create accounts.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -191,6 +191,7 @@ def rolling_risk_profile(
     output_start: date | None = None,
     input_proof: Callable[[date, date, date | None], str | None] | None = None,
     previous_input_proof: Callable[[date, date, date | None], str | None] | None = None,
+    factor_catalogue: Mapping[str, Mapping[str, str]] | None = None,
     check_canceled: Callable[[], None] | None = None,
 ) -> RollingRiskProfile:
     """Attribute one Gross path using only previously matured observations.
@@ -205,6 +206,9 @@ def rolling_risk_profile(
     specific-return halo, not historical regressions/exposures. Gross/factor
     inputs may be restricted to ``plan.read_start``. Continuation emits only the
     planned output delta; publish it with the original BT-owned references.
+    ``factor_catalogue`` supplies original family/first_seen metadata when a
+    fresh diagnostic starts after the factor history. It does not supply any
+    pre-start regression observations or advance a factor's causal appearance.
     """
     policy = risk_profile_policy(
         regression_window, volatility_window, annualization, ridge
@@ -288,8 +292,7 @@ def rolling_risk_profile(
             != previous_input_proof(admitted[0], admitted[before], plan.through)
         ):
             raise ValueError(
-                "risk profile repair needs original source equality "
-                "for its saved halo"
+                "risk profile repair needs original source equality for its saved halo"
             )
     first_position = global_positions[plan.read_start]
     last_position = global_positions[plan.output_end]
@@ -312,6 +315,15 @@ def rolling_risk_profile(
         if retained_state is None
         else {name: dict(item) for name, item in retained_state["factors"].items()}
     )
+    for name, item in (factor_catalogue or {}).items():
+        first_seen = date.fromisoformat(item["first_seen"])
+        if first_seen > plan.through:
+            continue
+        if name in catalog and catalog[name] != dict(item):
+            raise ValueError(
+                "risk factor catalogue changed; explicitly plan its repair"
+            )
+        catalog[name] = {"family": item["family"], "first_seen": str(first_seen)}
     for name, family, first_seen_date in (
         factor_returns.group_by("factor")
         .agg(
@@ -323,6 +335,10 @@ def rolling_risk_profile(
         .select("factor", "family", "first_seen")
         .iter_rows()
     ):
+        if name in (factor_catalogue or {}) and first_seen_date < date.fromisoformat(
+            factor_catalogue[name]["first_seen"]
+        ):
+            raise ValueError("risk factor observation precedes its original catalogue")
         if name in catalog:
             if catalog[name]["family"] != family:
                 raise ValueError(

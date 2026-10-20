@@ -162,3 +162,12 @@ every constituent still requires the same typed/unique/date/maturity checks.
 `evaluation_sample(frames, start=..., end=..., minimum_history_years=None)` owns neutral effective-sample metadata. Saved signal coverage defines the first finite signal and observation calendar; fallback finite economic observations respect maturity and count zero returns. Exclude only leading unavailable history, never trim by return direction or erase internal gaps. Minimum calendar years is an explicit caller policy. No available signal means no economic sample, not a fabricated flat path.
 
 `return_metrics`/`return_statistics` expose empirical daily `expected_shortfall_95`: negative mean of the worst ceil(5% * finite sample size) observations, requiring at least 20. Keep undefined values null with reasons. Saved research aggregation exposes annual/recent performance, annual IC and coverage summaries through the same formulas.
+
+
+An explicit `minimum_signal_coverage` uses finite signals / full supplied Universe
+and an inclusive first qualifying date. Preserve complete leading coverage to
+resolve the gate; no qualifying coverage cannot fall back to returns. Pass the
+resolved sample to derived windows instead of re-gating a sliced interval.
+Fresh diagnostic restarts are caller-owned calendar/input choices, with no old
+state. Risk's optional original `factor_catalogue` preserves first_seen metadata
+under a late start without pre-start observations or warm-up credit.

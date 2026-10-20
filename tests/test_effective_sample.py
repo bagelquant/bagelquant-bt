@@ -8,6 +8,108 @@ from bagelquant_bt.periods import aggregate_saved_window
 from bagelquant_bt.statistics import return_metrics
 
 
+def test_coverage_gate_is_inclusive_and_is_not_a_daily_filter():
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(5)]
+    frames = {
+        "daily_signal_coverage": pl.DataFrame(
+            {
+                "time": days,
+                "signal_count": [1, 29, 30, 10, 0],
+                "universe_count": [100] * 5,
+            }
+        ),
+        "daily_book_returns": pl.DataFrame(
+            {"time": days, "net_return": [0.5, -0.5, 0.0, 0.1, 0.0]}
+        ),
+    }
+    sample = evaluation_sample(
+        frames, start=days[0], end=days[-1], minimum_signal_coverage=0.3
+    )
+    assert sample["effective_start"] == str(days[2])
+    assert sample["first_signal_date"] == str(days[0])
+    assert sample["expected_observations"] == 3
+    # A later low-coverage-only interval still uses the original gate.
+    later = evaluation_sample(
+        frames, start=days[3], end=days[-1], minimum_signal_coverage=0.3
+    )
+    assert later["effective_start"] == str(days[3])
+    metrics, _ = aggregate_saved_window(
+        "alpha",
+        "summary",
+        frames,
+        {"annualization": 240, "minimum_signal_coverage": 0.3},
+        start=days[0],
+        end=days[-1],
+    )
+    assert metrics["book"]["net_sample_size"] == 3
+    assert metrics["sample"] == sample
+
+
+@pytest.mark.parametrize("universe", [None, [0, 0], [100, 100]])
+def test_missing_empty_or_insufficient_universe_cannot_use_return_fallback(universe):
+    days = [date(2024, 1, 1), date(2024, 1, 2)]
+    coverage = {"time": days, "signal_count": [1, 29]}
+    if universe is not None:
+        coverage["universe_count"] = universe
+    frames = {
+        "daily_signal_coverage": pl.DataFrame(coverage),
+        "daily_book_returns": pl.DataFrame({"time": days, "net_return": [0.1, 0.2]}),
+    }
+    result = evaluation_sample(
+        frames, start=days[0], end=days[-1], minimum_signal_coverage=0.3
+    )
+    assert result["effective_start"] is None
+    assert result["warnings"] == ["no_qualifying_signal_coverage"]
+    metrics, _ = aggregate_saved_window(
+        "alpha",
+        "summary",
+        frames,
+        {"annualization": 240, "minimum_signal_coverage": 0.3},
+        start=days[0],
+        end=days[-1],
+    )
+    assert metrics["book"]["net_sample_size"] == 0
+
+
+def test_coverage_counts_finite_zero_values_in_changing_selected_universe():
+    from bagelquant_bt.diagnostics import signal_coverage
+
+    days = [date(2024, 1, 1), date(2024, 1, 2)]
+    universe = pl.DataFrame(
+        {
+            "time": [days[0]] * 10 + [days[1]] * 3,
+            "asset_id": [str(i) for i in range(10)] + [str(i) for i in range(3)],
+        }
+    )
+    signals = pl.DataFrame(
+        {
+            "time": [day for day in days for _ in range(4)],
+            "asset_id": ["0", "1", "2", "outside"] * 2,
+            "value": [0.0, None, float("nan"), 1.0] * 2,
+        }
+    )
+    coverage = signal_coverage(signals, universe)
+    assert coverage["signal_count"].to_list() == [1, 1]
+    result = evaluation_sample(
+        {"daily_signal_coverage": coverage},
+        start=days[0],
+        end=days[-1],
+        minimum_signal_coverage=0.3,
+    )
+    assert result["effective_start"] == str(days[1])
+
+
+@pytest.mark.parametrize("minimum", [0, -0.1, 1.01, float("nan"), float("inf"), True])
+def test_invalid_minimum_signal_coverage(minimum):
+    with pytest.raises(ValueError, match="minimum signal coverage"):
+        evaluation_sample(
+            {},
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 2),
+            minimum_signal_coverage=minimum,
+        )
+
+
 def test_leading_blanks_do_not_change_economic_statistics_but_later_gaps_remain():
     days = [date(2020, 1, 1) + timedelta(days=i) for i in range(6)]
     returns = pl.DataFrame(

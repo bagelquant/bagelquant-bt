@@ -36,25 +36,38 @@ def slice_primitives(frames, start: date, end: date):
     return result
 
 
-def aggregate_saved_window(kind, section, frames, settings, *, start, end, items=()):
+def aggregate_saved_window(
+    kind, section, frames, settings, *, start, end, items=(), sample_metadata=None
+):
     """Recompute metrics/tables for a period without producing or persisting values."""
     from bagelquant_bt.sample import evaluation_sample
     from bagelquant_bt.statistics import return_statistics
     from bagelquant_bt.window import compute_window_tables
 
     requested_start = start
-    metadata = (
-        evaluation_sample(frames, start=start, end=end) if kind != "portfolio" else None
-    )
+    metadata = None if kind == "portfolio" else sample_metadata
+    if kind != "portfolio" and metadata is None:
+        metadata = evaluation_sample(
+            frames,
+            start=start,
+            end=end,
+            minimum_signal_coverage=settings.get("minimum_signal_coverage"),
+        )
     if metadata and metadata["effective_start"]:
         start = date.fromisoformat(metadata["effective_start"])
     sample = slice_primitives(frames, start, end)
     if (
         metadata
         and metadata["effective_start"] is None
-        and "signal_count"
-        in frames.get("daily_signal_coverage", pl.DataFrame()).columns
-        and section not in {"input_evidence", "model_diagnostics"}
+        and (
+            metadata.get("minimum_signal_coverage") is not None
+            or section not in {"input_evidence", "model_diagnostics"}
+        )
+        and (
+            metadata.get("minimum_signal_coverage") is not None
+            or "signal_count"
+            in frames.get("daily_signal_coverage", pl.DataFrame()).columns
+        )
     ):
         sample = {name: frame.head(0) for name, frame in sample.items()}
     annualization = settings["annualization"]
