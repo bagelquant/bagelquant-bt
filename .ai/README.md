@@ -1,6 +1,8 @@
 # BT AI workflow and rule routes
 
 Read [development](rules/development.md) first, then only affected topic rules.
+Metadata schema 2, owner storage inventories and the explicit schema-1 converter
+are documented in [metadata storage](../docs/en/metadata-storage.md).
 Every calculation/update change also reads
 [Evaluation/statistics](rules/evaluation-statistics.md) for recorded prerequisites
 and incremental acceptance, including saved account continuation.

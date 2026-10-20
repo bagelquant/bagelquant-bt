@@ -18,7 +18,7 @@ def test_inspect_initialized_store_preserves_bytes(tmp_path):
     store = BTStore(tmp_path / "meta.sqlite", tmp_path / "artifacts")
     store.initialize()
     before = store.meta_path.read_bytes()
-    assert store.inspect() == {"status": "ready", "schema_version": 1, "reason": None}
+    assert store.inspect() == {"status": "ready", "schema_version": 2, "reason": None}
     assert store.meta_path.read_bytes() == before
     assert list(store.artifact_path.iterdir()) == []
 
@@ -59,14 +59,12 @@ def test_checkpointed_wal_inspection_creates_no_sidecars(tmp_path, version):
         connection.commit()
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     before = {
-        path.name: path.read_bytes()
-            for path in tmp_path.iterdir() if path.is_file()
+        path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()
     }
     assert set(before) == {"meta.sqlite"}
-    assert store.inspect()["status"] == ("ready" if version == 1 else "incompatible")
+    assert store.inspect()["status"] == ("ready" if version == 2 else "incompatible")
     assert {
-        path.name: path.read_bytes()
-            for path in tmp_path.iterdir() if path.is_file()
+        path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()
     } == before
 
 
@@ -92,7 +90,7 @@ def test_active_wal_inspection_reads_committed_version_without_touching_index(
             if path.is_file()
         }
         assert store.inspect()["status"] == (
-            "ready" if version == 1 else "incompatible"
+            "ready" if version == 2 else "incompatible"
         )
         assert {
             path.name: path.read_bytes()
@@ -134,7 +132,7 @@ def test_active_rollback_journal_never_confers_uncommitted_readiness(
         } == before
         connection.rollback()
         assert store.inspect()["status"] == (
-            "ready" if committed_version == 1 else "incompatible"
+            "ready" if committed_version == 2 else "incompatible"
         )
 
 
@@ -151,7 +149,8 @@ def test_runtime_inspection_reads_committed_schema_during_rollback_writer(
         writer.execute("UPDATE bt_store_schema SET version=?", (3 - committed_version,))
         before = {
             path.name: path.read_bytes()
-            for path in tmp_path.iterdir() if path.is_file()
+            for path in tmp_path.iterdir()
+            if path.is_file()
         }
 
         def no_copy(*args, **kwargs):
@@ -160,7 +159,7 @@ def test_runtime_inspection_reads_committed_schema_during_rollback_writer(
         monkeypatch.setattr("bagelquant_core.inspection.shutil.copyfile", no_copy)
         result = store.inspect(runtime=True)
         assert result["status"] == (
-            "ready" if committed_version == 1 else "incompatible"
+            "ready" if committed_version == 2 else "incompatible"
         )
         assert result["schema_version"] == committed_version
         assert writer.in_transaction
@@ -169,7 +168,8 @@ def test_runtime_inspection_reads_committed_schema_during_rollback_writer(
         )
         assert {
             path.name: path.read_bytes()
-            for path in tmp_path.iterdir() if path.is_file()
+            for path in tmp_path.iterdir()
+            if path.is_file()
         } == before
         writer.rollback()
 
@@ -189,7 +189,8 @@ def test_runtime_wal_inspection_reads_committed_schema_without_copy_or_recovery(
         # Runtime SQLite may coordinate WAL read marks in SHM; durable database
         # and WAL payload bytes must remain unchanged and uncommitted invisible.
         before = {
-            path.name: path.read_bytes() for path in tmp_path.iterdir()
+            path.name: path.read_bytes()
+            for path in tmp_path.iterdir()
             if path.is_file() and not path.name.endswith("-shm")
         }
 
@@ -199,12 +200,13 @@ def test_runtime_wal_inspection_reads_committed_schema_without_copy_or_recovery(
         monkeypatch.setattr("bagelquant_core.inspection.shutil.copyfile", no_copy)
         result = store.inspect(runtime=True)
         assert result["status"] == (
-            "ready" if committed_version == 1 else "incompatible"
+            "ready" if committed_version == 2 else "incompatible"
         )
         assert result["schema_version"] == committed_version
         assert writer.in_transaction
         assert {
-            path.name: path.read_bytes() for path in tmp_path.iterdir()
+            path.name: path.read_bytes()
+            for path in tmp_path.iterdir()
             if path.is_file() and not path.name.endswith("-shm")
         } == before
         writer.rollback()

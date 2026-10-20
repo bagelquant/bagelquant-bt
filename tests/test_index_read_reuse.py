@@ -292,7 +292,7 @@ def test_call_local_record_and_own_aliases_clear_without_changing_primary_error(
         while traceback is not None:
             if traceback.tb_frame.f_code.co_name == "_read_registered_reference":
                 assert traceback.tb_frame.f_locals["index"] is None
-                assert traceback.tb_frame.f_locals["facts"] is None
+                assert traceback.tb_frame.f_locals.get("facts") is None
                 checked += 1
             traceback = traceback.tb_next
         assert checked == 1 and reader._frame_cache.bytes == 0

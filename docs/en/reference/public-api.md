@@ -38,7 +38,8 @@ to numerical time; BT does not invent an execution lag or shift source dates.
 output_start=..., output_end=...)` composes the original prefix, delta and optional
 unaffected suffix without decoding history. Omit bounds for complete-frame
 continuation, which locates the first exact ordered mismatch in one pass.
-`read_context(cache_bytes=...)` shares a finite decoded-frame memo under an
+`read_context(cache_bytes=...)` reserves one quarter of its finite cache for
+metadata blocks and the remainder for decoded numerical frames under an
 explicit 64 MiB default cap; zero disables caching and exit/failure clears it.
 
 `alpha_update_plan(previous, *, calendar, available_date, affected_intervals=(),

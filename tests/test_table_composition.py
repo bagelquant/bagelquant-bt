@@ -169,10 +169,14 @@ def test_coordinate_index_audit_and_schema_selection_rejections(tmp_path):
                 (ref["table_id"],),
             ).fetchone()[0]
         )
-        index["coordinates"][0]["time"] = "2024-02-01"
+        index["coordinates"] = store._metadata.save(
+            pl.DataFrame(
+                {"time": [date(2024, 2, 1)], "_rows": pl.Series([1], dtype=pl.UInt32)}
+            )
+        )
         index["digest"] = _identity(
             {
-                "version": "bt.table.index.v2",
+                "version": "bt.table.index.v3",
                 "reference": ref,
                 "schema": index["schema"],
                 "columns": index["columns"],
@@ -203,7 +207,7 @@ def test_original_column_order_requires_explicit_legacy_index_maintenance(tmp_pa
         index.pop("columns")
         index["digest"] = _identity(
             {
-                "version": "bt.table.index.v2",
+                "version": "bt.table.index.v3",
                 "reference": reference,
                 "schema": index["schema"],
                 "coordinates": index["coordinates"],
@@ -247,7 +251,7 @@ def test_original_column_index_audit_rejects_self_consistent_tampering(
         index["columns"] = columns
         index["digest"] = _identity(
             {
-                "version": "bt.table.index.v2",
+                "version": "bt.table.index.v3",
                 "reference": reference,
                 "schema": index["schema"],
                 "columns": columns,

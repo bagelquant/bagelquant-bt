@@ -11,6 +11,12 @@ frozen quantities. Removed policy/composition/account runners have no aliases.
 
 BTStore owns its SQLite metadata, immutable Parquet tables, numerical identity,
 receipts, publication integrity, invalidation, recovery and cleanup APIs.
+Schema 2 keeps compact headers in SQLite and exact bounded Zstd Parquet metadata
+blocks under the BT artifact root. Ordinary startup rejects schema 1.
+The user-authorized offline converter is a separate module, never a runtime
+compatibility path. Preserve receipt/reference bytes, verify backup/WAL and
+source fences, publish blocks before the database switch, and retain rollback
+evidence. See [metadata storage](../../docs/en/metadata-storage.md).
 Workbench owns app/global-version bindings, governance and backend references;
 it uses public APIs rather than BT tables/files or duplicate numerical caches.
 Core owns graphs/numerical/model artifacts; Data owns source datasets/PIT/input
@@ -85,7 +91,8 @@ Explicit `verify` retains full byte/logical/index checks and expiring context pr
 `publish_shared/publish_chapter(file_references=...)` resolve registered original descriptors;
 new frames retain canonical hashes, and unregistered conflicting files require canonical proof.
 Optional table descriptor maintenance uses public `index_plan/build_index`; no implicit backfill.
-`read_context(cache_bytes=...)` bounds an operation-local decoded-frame memo
+`read_context(cache_bytes=...)` splits its one finite cache budget between
+metadata (one quarter) and numerical frames (the remainder), bounding both memos
 (64 MiB default, zero disables it). It expires on exit/failure, rechecks source
 file stats and never substitutes for registered evidence or explicit full audits.
 Continuation compares ordered rows once when supplied full frames; admitted

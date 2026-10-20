@@ -66,3 +66,10 @@ aggregate saved primitives. `publish_continuation` retains original indexed
 table fragments and publishes new tails. Current composition still reads saved
 typed fragments to validate the combined tables; this remaining I/O is distinct
 from replaying historical daily statistics.
+
+BT metadata schema 2 uses compact SQLite headers and bounded immutable Zstd
+Parquet coordinate/evidence blocks. Compositions retain original part references;
+explicit maintenance never recreates their expanded coordinate grids. The
+[metadata storage guide](metadata-storage.md) owns block verification, finite
+caches, cleanup, owner storage inventory and explicit offline schema-1 conversion.
+Normal runtime has no legacy reader or automatic migration.

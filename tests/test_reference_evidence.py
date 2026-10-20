@@ -102,4 +102,4 @@ def test_legacy_evidence_requires_explicit_index_maintenance_preserving_receipts
         index = json.loads(
             connection.execute("SELECT schema_json FROM bt_table_index").fetchone()[0]
         )
-    assert len(index["evidence"]["groups"]) == 11
+    assert index["evidence"]["groups"]["rows"] == 11

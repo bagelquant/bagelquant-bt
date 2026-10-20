@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 _SCHEMA = """
 CREATE TABLE bt_store_schema(version INTEGER NOT NULL);
-INSERT INTO bt_store_schema VALUES(1);
+INSERT INTO bt_store_schema VALUES(2);
 CREATE TABLE bt_evaluations(
  id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,manifest_json TEXT NOT NULL,
  created_at TEXT NOT NULL);
@@ -283,11 +283,20 @@ class BTStore:
     here. Table references disclose no path and are read only through this API.
     """
 
+    def storage_usage(self, *, within_root: Path | None = None) -> dict[str, Any]:
+        """Inventory metadata, numerical/index files and unknown owned files."""
+        from bagelquant_core.storage_usage import store_usage
+
+        return store_usage(self.meta_path, self.artifact_path, within_root=within_root)
+
     def __init__(self, meta_path: str | Path, artifact_path: str | Path):
         self.meta_path = Path(meta_path).resolve()
         self.artifact_path = Path(artifact_path).resolve()
         self._verification: ArtifactVerification | None = None
         self._frame_cache: _FrameReadCache | None = None
+        from .index_blocks import MetadataBlocks
+
+        self._metadata = MetadataBlocks(self.artifact_path)
 
     @contextmanager
     def read_context(self, *, cache_bytes: int = 64 * 1024 * 1024):
@@ -305,7 +314,12 @@ class BTStore:
             raise ValueError("BT frame cache bytes must be a nonnegative integer")
         reader = copy(self)
         reader._verification = ArtifactVerification()
-        reader._frame_cache = _FrameReadCache(cache_bytes)
+        reader._frame_cache = _FrameReadCache(cache_bytes - cache_bytes // 4)
+        from .index_blocks import MetadataBlocks
+
+        reader._metadata = MetadataBlocks(
+            self.artifact_path, cache_bytes=cache_bytes // 4
+        )
         try:
             yield reader
         finally:
@@ -313,6 +327,7 @@ class BTStore:
             reader._verification = None
             reader._frame_cache.close()
             reader._frame_cache = None
+            reader._metadata.close()
 
     def inspect(self, *, runtime: bool = False) -> dict[str, Any]:
         """Return schema readiness without initializing or recovering storage.
@@ -387,7 +402,7 @@ class BTStore:
                     "SELECT version FROM bt_store_schema"
                 ).fetchall()
                 version = versions[0][0] if len(versions) == 1 else None
-                if version != 1:
+                if version != 2:
                     return {
                         "status": "incompatible",
                         "schema_version": version,
@@ -402,11 +417,17 @@ class BTStore:
             }
 
     @contextmanager
-    def _connect(self):
-        connection = sqlite3.connect(_path(self.meta_path), timeout=30)
+    def _connect(self, *, initializing=False):
+        connection = sqlite3.connect(
+            self.meta_path.as_uri() + ("?mode=rwc" if initializing else "?mode=rw"),
+            uri=True,
+            timeout=30,
+        )
         connection.row_factory = sqlite3.Row
         try:
             with connection:
+                if not initializing:
+                    self._require_schema(connection)
                 yield connection
         finally:
             connection.close()
@@ -420,16 +441,37 @@ class BTStore:
         try:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
+            self._require_schema(connection)
             yield connection
         finally:
             connection.rollback()
             connection.close()
 
+    @staticmethod
+    def _require_schema(connection):
+        try:
+            versions = connection.execute(
+                "SELECT version FROM bt_store_schema"
+            ).fetchall()
+        except sqlite3.DatabaseError as error:
+            raise ValueError(
+                "BT metadata is incompatible; initialize a fresh store or run the "
+                "offline converter"
+            ) from error
+        if len(versions) != 1 or versions[0][0] != 2:
+            raise ValueError(
+                "BT metadata schema 2 required; run python -m "
+                "bagelquant_bt.metadata_upgrade explicitly offline"
+            )
+
     def initialize(self) -> None:
         """Create a fresh store; incompatible stores are never migrated."""
+        if self.meta_path.is_file() and self.meta_path.stat().st_size:
+            with self._read_connection():
+                pass
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
         self.artifact_path.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connect(initializing=True) as connection:
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='bt_store_schema'"
             ).fetchone()
@@ -448,10 +490,10 @@ class BTStore:
                 )
             elif (
                 connection.execute("SELECT version FROM bt_store_schema").fetchone()[0]
-                != 1
+                != 2
             ):
                 raise RuntimeError("BT metadata is incompatible; back up and rebuild")
-        with self._connect() as connection:
+        with self._connect(initializing=True) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
 
     def begin(
@@ -594,6 +636,7 @@ class BTStore:
             "rows": frame.height,
         }
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS bt_table_index(table_id TEXT PRIMARY KEY,"
                 "reference_json TEXT NOT NULL,schema_json TEXT NOT NULL)"
@@ -611,43 +654,84 @@ class BTStore:
                 )
         return reference
 
-    @staticmethod
-    def _index_schema(reference, schema, *, frame=None, coordinates=None):
-        values = {name: str(dtype) for name, dtype in schema.items()}
-        if frame is not None:
-            from .table_composition import coordinates as describe_coordinates
+    def _index_schema(self, reference, schema, *, frame=None, coordinates=None):
+        from .index_blocks import coordinate_frame, evidence_frame
 
-            coordinates = describe_coordinates(frame)
+        values = {name: str(dtype) for name, dtype in schema.items()}
         payload: dict[str, Any] = {"schema": values, "columns": list(schema)}
-        if frame is not None or coordinates is not None:
-            payload["coordinates"] = coordinates
         if frame is not None:
-            evidence = _table_evidence(frame)
+            facts = coordinate_frame(frame)
+            payload["coordinates"] = (
+                None if facts is None else self._metadata.save(facts)
+            )
+            evidence = evidence_frame(frame)
             if evidence is not None:
-                payload["evidence"] = evidence
+                header, groups = evidence
+                payload["evidence"] = {**header, "groups": self._metadata.save(groups)}
+        elif coordinates is not None:
+            if coordinates == {"composition": True}:
+                payload["coordinates"] = coordinates
+            else:
+                from .table_composition import COORDINATES, _coordinate_frame
+
+                facts = (
+                    _coordinate_frame(coordinates, values)
+                    if coordinates
+                    else pl.DataFrame(
+                        schema={
+                            name: dtype
+                            for name, dtype in schema.items()
+                            if name in COORDINATES
+                        }
+                        | {"_rows": pl.UInt32}
+                    )
+                )
+                # Legacy explicit maintenance callers pass serialized dates.
+                facts = facts.with_columns(
+                    pl.col(name).str.to_date()
+                    for name, dtype in values.items()
+                    if dtype == "Date"
+                    and name in facts.columns
+                    and facts.schema[name] == pl.String
+                )
+                payload["coordinates"] = self._metadata.save(facts)
+        return self._seal_index(reference, payload)
+
+    @staticmethod
+    def _seal_index(reference, payload):
         return _json(
             {
                 **payload,
                 "digest": _identity(
-                    {
-                        "version": "bt.table.index.v2",
-                        "reference": reference,
-                        "schema": values,
-                        "columns": payload["columns"],
-                        **(
-                            {"coordinates": coordinates}
-                            if "coordinates" in payload
-                            else {}
-                        ),
-                        **(
-                            {"evidence": payload["evidence"]}
-                            if "evidence" in payload
-                            else {}
-                        ),
-                    }
+                    {"version": "bt.table.index.v3", "reference": reference, **payload}
                 ),
             }
         )
+
+    def _selected_count(self, reference, index, predicates=(), keys=None):
+        coordinate_index = index.get("coordinates")
+        if coordinate_index is None:
+            raise ValueError(
+                "BT selected references need explicit coordinate-index maintenance"
+            )
+        if reference.get("format") == "concat":
+            count = 0
+            for part in reference["parts"]:
+                with self._registered_table_read(
+                    part["reference"]["table_id"]
+                ) as child:
+                    if child["index"] is None:
+                        raise ValueError(
+                            "BT composition needs explicit table-index maintenance"
+                        )
+                    count += self._selected_count(
+                        child["reference"],
+                        child["index"],
+                        [*part["filters"], *predicates],
+                        keys,
+                    )
+            return count
+        return self._metadata.count(coordinate_index, predicates=predicates, keys=keys)
 
     def _registered_table(self, table_id: str, *, original=False):
         """Resolve the same canonical original record without retaining its index."""
@@ -696,7 +780,7 @@ class BTStore:
                             )
                         if index.get("digest") != _identity(
                             {
-                                "version": "bt.table.index.v2",
+                                "version": "bt.table.index.v3",
                                 "reference": reference,
                                 "schema": index.get("schema"),
                                 **(
@@ -762,14 +846,10 @@ class BTStore:
                     ).fetchone()
                     else None
                 )
-                if (
-                    (row is None) != (registered["raw"] is None)
-                    or (
-                        row is not None
-                        and (
-                            row[0] != registered["raw"][0]
-                            or row[1] != registered["raw"][1]
-                        )
+                if (row is None) != (registered["raw"] is None) or (
+                    row is not None
+                    and (
+                        row[0] != registered["raw"][0] or row[1] != registered["raw"][1]
                     )
                 ):
                     raise ValueError("BT table index changed during read")
@@ -805,9 +885,8 @@ class BTStore:
         with self._registered_table_read(
             str(reference.get("table_id", ""))
         ) as registered:
-            if (
-                registered["reference"] is None
-                or registered["reference"] != dict(reference)
+            if registered["reference"] is None or registered["reference"] != dict(
+                reference
             ):
                 raise ValueError(
                     "BT table reference differs from its registered record"
@@ -1026,89 +1105,54 @@ class BTStore:
         return references
 
     def compose_reference(self, parts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        """Select/concatenate registered tables using only owner coordinate facts.
+        """Compose original references and exact counts, never expanded grids."""
+        from .table_composition import COORDINATES, filters
 
-        Each part has an original ``reference`` and optional coordinate
-        ``filters`` (column/operation/value; eq/ge/le). Existing concatenations
-        are flattened. No numerical file is read, hashed or rewritten.
-        """
-        from .table_composition import (
-            COORDINATES,
-            combine_coordinates,
-            filters,
-            selected_coordinates,
-        )
-
-        selected, schema, facts = [], None, []
-        complete_facts = True
+        selected, schema, complete_facts = [], None, True
         for part in parts:
             reference = self.describe_reference(part["reference"])
-            with self._read_connection() as connection:
-                if not connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
-                ).fetchone():
+            with self._registered_table_read(reference["table_id"]) as registered:
+                index = registered["index"]
+                if index is None or "columns" not in index:
                     raise ValueError(
-                        "BT composition needs explicit table-index maintenance"
+                        "BT composition needs explicit original-column index "
+                        "maintenance"
                     )
-                row = connection.execute(
-                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
-                    (reference["table_id"],),
-                ).fetchone()
-            if row is None:
-                raise ValueError(
-                    "BT composition needs explicit table-index maintenance"
+                if schema is None:
+                    schema = {name: index["schema"][name] for name in index["columns"]}
+                elif schema != index["schema"]:
+                    raise ValueError("BT composition table schemas differ")
+                predicates = filters(
+                    part.get("filters", ()),
+                    {
+                        key: value
+                        for key, value in index["schema"].items()
+                        if key in COORDINATES
+                    },
                 )
-            index = json.loads(row[0])
-            if "columns" not in index:
-                raise ValueError(
-                    "BT composition needs explicit original-column index maintenance"
-                )
-            if schema is None:
-                schema = {
-                    name: index["schema"][name]
-                    for name in index.get("columns", index["schema"])
-                }
-            elif schema != index["schema"]:
-                raise ValueError("BT composition table schemas differ")
-            predicates = filters(
-                part.get("filters", ()),
-                {
-                    key: value
-                    for key, value in index["schema"].items()
-                    if key in COORDINATES
-                },
-            )
             members = reference.get("parts", [{"reference": reference, "filters": []}])
             for member in members:
-                original = self.describe_reference(member["reference"])
-                combined = [*member["filters"], *predicates]
-                with self._read_connection() as connection:
-                    original_index = connection.execute(
-                        "SELECT schema_json FROM bt_table_index WHERE table_id=?",
-                        (original["table_id"],),
-                    ).fetchone()
-                if original_index is None:
-                    raise ValueError(
-                        "BT composition needs explicit coordinate-index maintenance"
+                with self._registered_table_read(
+                    member["reference"]["table_id"]
+                ) as registered:
+                    original, index = registered["reference"], registered["index"]
+                    if index is None:
+                        raise ValueError(
+                            "BT composition needs explicit coordinate-index maintenance"
+                        )
+                    combined = [*member["filters"], *predicates]
+                    rows = (
+                        original["rows"]
+                        if not combined
+                        else self._selected_count(original, index, combined)
                     )
-                axis = selected_coordinates(
-                    json.loads(original_index[0]).get("coordinates"),
-                    combined,
-                    schema=json.loads(original_index[0])["schema"],
-                )
-                rows = (
-                    original["rows"]
-                    if not combined
-                    else sum(item["_rows"] for item in axis)
-                )
-                if axis is None:
-                    complete_facts = False
-                else:
-                    facts.extend(axis)
-                if rows or not selected:
-                    selected.append(
-                        {"reference": original, "filters": combined, "rows": rows}
+                    complete_facts = (
+                        complete_facts and index.get("coordinates") is not None
                     )
+                    if rows or not selected:
+                        selected.append(
+                            {"reference": original, "filters": combined, "rows": rows}
+                        )
         if schema is None:
             raise ValueError("BT composition needs at least one registered table")
         payload = {"format": "concat", "parts": selected}
@@ -1121,20 +1165,19 @@ class BTStore:
             "rows": sum(item["rows"] for item in selected),
             **payload,
         }
+        header = self._index_schema(
+            reference,
+            schema,
+            coordinates={"composition": True} if complete_facts else None,
+        )
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_publication_files(
+                {str(i): part["reference"] for i, part in enumerate(selected)}
+            )
             connection.execute(
                 "INSERT OR IGNORE INTO bt_table_index VALUES(?,?,?)",
-                (
-                    identity,
-                    _json(reference),
-                    self._index_schema(
-                        reference,
-                        schema,
-                        coordinates=combine_coordinates(facts, schema=schema)
-                        if complete_facts
-                        else None,
-                    ),
-                ),
+                (identity, _json(reference), header),
             )
         return self.describe_reference(reference)
 
@@ -1197,90 +1240,97 @@ class BTStore:
     def _reference_evidence(
         self, reference, predicates, *, cutoff=None, time_column="time"
     ):
+        from .evidence_groups import evidence_groups
+
+        with self._metadata.fence(), evidence_groups() as groups:
+            return self._collect_reference_evidence(
+                reference, predicates, groups, cutoff=cutoff, time_column=time_column
+            )
+
+    def _collect_reference_evidence(
+        self, reference, predicates, groups, *, cutoff=None, time_column="time"
+    ):
+        from .evidence_groups import add_groups, date_identities
+
         reference = self.describe_reference(reference)
         parts = reference.get("parts", ({"reference": reference, "filters": []},))
-        combined, catalog, schema = {}, {}, None
+        catalog, schema = {}, None
         axes = None
         for part in parts:
-            original = self.describe_reference(part["reference"])
-            with self._read_connection() as connection:
-                row = connection.execute(
-                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
-                    (original["table_id"],),
-                ).fetchone()
-            index = None if row is None else json.loads(row[0])
-            evidence = None if index is None else index.get("evidence")
-            if (
-                evidence is None
-                or index["schema"].get(time_column) != "Date"
-                or time_column not in evidence["axes"]
-            ):
-                return None
-            if schema is not None and (
-                schema != index["schema"] or axes != evidence["axes"]
-            ):
-                raise ValueError("BT evidence composition schema differs")
-            schema, axes = index["schema"], evidence["axes"]
-            selected = [*part["filters"], *predicates]
-            if cutoff is not None and "available_date" in axes:
-                selected.append(
-                    {
-                        "column": "available_date",
-                        "operation": "le",
-                        "value": str(cutoff),
-                    }
-                )
-            if any(item["column"] not in axes for item in selected):
-                return None
-            for group in evidence["groups"]:
-                values = dict(zip(axes, group[:-3], strict=True))
-                keep = True
-                for item in selected:
-                    value, limit = values[item["column"]], item["value"]
-                    if hasattr(limit, "isoformat"):
-                        limit = limit.isoformat()
-                    if value is None:
-                        keep = item["column"] == "available_date" and cutoff is not None
-                    else:
-                        keep = (
-                            value == limit
-                            if item["operation"] == "eq"
-                            else value >= limit
-                            if item["operation"] == "ge"
-                            else value <= limit
-                        )
-                    if not keep:
-                        break
-                if keep:
-                    key = tuple(group[:-3])
-                    prior = combined.setdefault(key, [0, 0, 0])
-                    prior[0] += group[-3]
-                    prior[1] = (prior[1] + int(group[-2], 16)) % (1 << 64)
-                    prior[2] = (prior[2] + int(group[-1], 16)) % (1 << 64)
-            for name, item in evidence["factors"].items():
-                if name in catalog and catalog[name]["family"] != item["family"]:
-                    raise ValueError("BT factor catalogue family differs")
+            with self._describe_reference_read(part["reference"]) as registered:
+                index = self._fresh_reference_index(registered)
+                evidence = None if index is None else index.get("evidence")
                 if (
-                    name not in catalog
-                    or item["first_seen"] < catalog[name]["first_seen"]
+                    evidence is None
+                    or index["schema"].get(time_column) != "Date"
+                    or time_column not in evidence["axes"]
                 ):
-                    catalog[name] = dict(item)
-        by_date = {}
+                    return None
+                if schema is not None and (
+                    schema != index["schema"] or axes != evidence["axes"]
+                ):
+                    raise ValueError("BT evidence composition schema differs")
+                schema, axes = index["schema"], evidence["axes"]
+                selected = [*part["filters"], *predicates]
+                if cutoff is not None and "available_date" in axes:
+                    selected.append(
+                        {
+                            "column": "available_date",
+                            "operation": "le",
+                            "value": str(cutoff),
+                        }
+                    )
+                if any(item["column"] not in axes for item in selected):
+                    return None
+
+                def records(evidence=evidence, selected=selected, axes=axes):
+                    for group in self._metadata.groups(evidence, selected):
+                        values = dict(zip(axes, group[:-3], strict=True))
+                        keep = True
+                        for item in selected:
+                            value, limit = values[item["column"]], item["value"]
+                            if hasattr(limit, "isoformat"):
+                                limit = limit.isoformat()
+                            if value is None:
+                                keep = (
+                                    item["column"] == "available_date"
+                                    and cutoff is not None
+                                )
+                            else:
+                                keep = (
+                                    value == limit
+                                    if item["operation"] == "eq"
+                                    else value >= limit
+                                    if item["operation"] == "ge"
+                                    else value <= limit
+                                )
+                            if not keep:
+                                break
+                        if keep:
+                            key = group[:-3]
+                            yield (
+                                _json(key),
+                                key[axes.index(time_column)],
+                                *group[-3:],
+                            )
+
+                add_groups(groups, records())
+                for name, item in evidence["factors"].items():
+                    if name in catalog and catalog[name]["family"] != item["family"]:
+                        raise ValueError("BT factor catalogue family differs")
+                    if (
+                        name not in catalog
+                        or item["first_seen"] < catalog[name]["first_seen"]
+                    ):
+                        catalog[name] = dict(item)
+                self._fresh_reference_index(registered)
         if axes is None:
             return None
-        for key, value in sorted(combined.items(), key=lambda item: _json(item[0])):
-            day = key[axes.index(time_column)]
-            by_date.setdefault(day, []).append(
-                [*key, value[0], format(value[1], "016x"), format(value[2], "016x")]
-            )
         return {
             "schema": schema,
             "time_column": time_column,
             "factors": catalog,
-            "dates": {
-                day: _identity({"axes": axes, "groups": values})
-                for day, values in by_date.items()
-            },
+            "dates": date_identities(groups, axes),
         }
 
     def index_plan(
@@ -1294,7 +1344,7 @@ class BTStore:
         tables = {}
         if not self.meta_path.is_file():
             return {
-                "version": "bt.table.index.v2",
+                "version": "bt.table.index.v3",
                 "meta_path": str(self.meta_path),
                 "tables": [],
             }
@@ -1336,13 +1386,13 @@ class BTStore:
                     index = None if row is None else json.loads(row[0])
                     if (
                         index is None
-                        or "evidence" not in index
+                        or index.get("evidence") is None
                         or time_column not in index["evidence"]["axes"]
                     ):
                         needed[key] = ref
                 tables = needed
         return {
-            "version": "bt.table.index.v2",
+            "version": "bt.table.index.v3",
             "meta_path": str(self.meta_path),
             "tables": [tables[key] for key in sorted(tables)],
         }
@@ -1363,7 +1413,7 @@ class BTStore:
         tables[reference["table_id"]] = reference
         return self.build_index(
             {
-                "version": "bt.table.index.v2",
+                "version": "bt.table.index.v3",
                 "meta_path": str(self.meta_path),
                 "tables": list(tables.values()),
             },
@@ -1374,7 +1424,7 @@ class BTStore:
         self, plan, *, check_canceled=lambda: None, progress=lambda *_: None
     ):
         """Explicitly audit historical tables and register derived descriptors."""
-        if plan.get("version") != "bt.table.index.v2" or plan.get("meta_path") != str(
+        if plan.get("version") != "bt.table.index.v3" or plan.get("meta_path") != str(
             self.meta_path
         ):
             raise ValueError("BT index plan belongs to another authority/version")
@@ -1390,7 +1440,10 @@ class BTStore:
             )
         for position, ref in enumerate(plan["tables"], 1):
             check_canceled()
-            if self._registered_table(ref["table_id"], original=True) != ref:
+            original = self._registered_table(ref["table_id"], original=True)
+            if (original is not None and original != ref) or self._registered_table(
+                ref["table_id"]
+            ) != ref:
                 raise ValueError("BT index plan reference changed")
             paths = (
                 [
@@ -1406,7 +1459,39 @@ class BTStore:
                 continue
             if ref.get("format") == "concat":
                 self.verify_reference(ref, deep=True)
-                frame = self.read_reference(ref)
+                # Leaves are the sole coordinate authority. Explicit maintenance
+                # must not republish a composed historical grid.
+                with self._registered_table_read(ref["table_id"]) as registered:
+                    index = registered["index"]
+                if index is None:
+                    with self._registered_table_read(
+                        ref["parts"][0]["reference"]["table_id"]
+                    ) as leaf:
+                        index = {
+                            key: leaf["index"][key] for key in ("schema", "columns")
+                        }
+                schema = self._seal_index(
+                    ref,
+                    {
+                        **{
+                            key: value
+                            for key, value in index.items()
+                            if key != "digest"
+                        },
+                        "coordinates": {"composition": True},
+                    },
+                )
+                with self._connect() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    check_canceled()
+                    self._require_publication_files({"composed": ref})
+                    connection.execute(
+                        "INSERT OR REPLACE INTO bt_table_index VALUES(?,?,?)",
+                        (ref["table_id"], _json(ref), schema),
+                    )
+                progress(position, len(plan["tables"]))
+                completed += 1
+                continue
             else:
                 path = paths[0]
                 if _file_hash(path) != ref["checksum"]:
@@ -1414,11 +1499,11 @@ class BTStore:
                 frame = pl.read_parquet(_path(path))
                 if hash_dataframe(frame) != ref["table_id"]:
                     raise ValueError("BT table logical identity differs")
-            schema = self._index_schema(ref, frame.schema, frame=frame)
-            del frame
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 check_canceled()
+                schema = self._index_schema(ref, frame.schema, frame=frame)
+                del frame
                 connection.execute(
                     "INSERT OR REPLACE INTO bt_table_index VALUES(?,?,?)",
                     (ref["table_id"], _json(ref), schema),
@@ -1450,22 +1535,23 @@ class BTStore:
                 return reader.read_reference(
                     reference, filters=filters, coordinates=coordinates
                 )
-        with self._describe_reference_read(reference) as registered:
+        with (
+            self._metadata.fence(),
+            self._describe_reference_read(reference) as registered,
+        ):
             return self._read_registered_reference(
                 registered, filters=filters, coordinates=coordinates
             )
 
     def _read_registered_reference(self, registered, *, filters, coordinates):
         reference = registered["reference"]
-        index = facts = None
+        index = None
         try:
             from .table_composition import (
                 COORDINATES,
                 admit_coordinates,
                 select,
                 select_keys,
-                selected_coordinates,
-                selected_keys,
             )
             from .table_composition import filters as admit_filters
 
@@ -1490,12 +1576,9 @@ class BTStore:
             if coordinates is not None:
                 coordinates = admit_coordinates(coordinates, index["schema"])
             if predicates or coordinates is not None:
-                facts = selected_coordinates(
-                    index.get("coordinates"), predicates, schema=index["schema"]
+                expected = self._selected_count(
+                    reference, index, predicates, coordinates
                 )
-                if coordinates is not None:
-                    facts = selected_keys(facts, coordinates, schema=index["schema"])
-                expected = sum(item["_rows"] for item in facts)
             if (predicates or coordinates is not None) and expected == 0:
                 return self._empty_indexed_table(
                     index["schema"], columns=index.get("columns")
@@ -1577,7 +1660,7 @@ class BTStore:
             return frame
         finally:
             # Clear only aliases owned by this reader; preserve exception identity.
-            index = facts = None
+            index = None
 
     def _reference_stamp(self, reference):
         leaves = (
@@ -1735,41 +1818,48 @@ class BTStore:
             self._verify_coordinates(reference, frame)
 
     def _verify_coordinates(self, reference, frame):
-        from .table_composition import coordinates
+        from .index_blocks import coordinate_frame, evidence_frame
 
         with self._read_connection() as connection:
-            row = (
-                connection.execute(
-                    "SELECT schema_json FROM bt_table_index WHERE table_id=?",
-                    (reference["table_id"],),
-                ).fetchone()
-                if connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
-                ).fetchone()
-                else None
+            row = connection.execute(
+                "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                (reference["table_id"],),
+            ).fetchone()
+        if row is None:
+            return
+        index = json.loads(row[0])
+        if index.get("columns") != frame.columns:
+            raise ValueError(
+                "BT original-column index differs from original table columns"
             )
-        if row is not None:
-            index = json.loads(row[0])
-            if "columns" in index and index["columns"] != frame.columns:
-                raise ValueError(
-                    "BT original-column index differs from original table columns"
-                )
-            actual = coordinates(frame)
-            recorded = index.get("coordinates")
-            if recorded:
-                columns = [name for name in recorded[0] if name != "_rows"]
-                if any(name not in frame.columns for name in columns):
-                    raise ValueError("BT coordinate index names absent table columns")
-                actual = coordinates(frame.select(columns))
-            if recorded is not None and recorded != actual:
-                raise ValueError("BT coordinate index differs from original table rows")
-            index = json.loads(row[0])
-            if "evidence" in index and index["evidence"] != _table_evidence(
-                frame, axes=index["evidence"]["axes"]
-            ):
+        recorded = index.get("coordinates")
+        if recorded is not None and not recorded.get("composition"):
+            columns = [name for name in recorded["columns"] if name != "_rows"]
+            actual = coordinate_frame(frame.select(columns))
+            self._verify_metadata_frame(actual, recorded)
+        if index.get("evidence") is not None:
+            evidence, groups = evidence_frame(frame, axes=index["evidence"]["axes"])
+            if evidence != {
+                k: v for k, v in index["evidence"].items() if k != "groups"
+            }:
                 raise ValueError(
                     "BT numerical summary evidence differs from original table rows"
                 )
+            self._verify_metadata_frame(groups, index["evidence"]["groups"])
+
+    def _verify_metadata_frame(self, actual, descriptor):
+        offset = 0
+        for frame in self._metadata.frames(descriptor):
+            expected = actual.slice(offset, frame.height)
+            # Counts are exact integers; old metadata may have UInt64 counts.
+            expected = expected.cast(frame.schema)
+            if not frame.equals(expected):
+                raise ValueError(
+                    "BT coordinate/evidence index differs from original table rows"
+                )
+            offset += frame.height
+        if offset != actual.height:
+            raise ValueError("BT coordinate/evidence index row count differs")
 
     def verify_receipt(self, receipt: Mapping[str, Any]) -> None:
         """Verify all referenced tables, including those not selected for display."""
@@ -1928,6 +2018,21 @@ class BTStore:
                 raise ValueError(
                     "BT publication artifact is missing; explicit recovery is required"
                 )
+            with self._read_connection() as connection:
+                for original in [reference, *originals]:
+                    row = connection.execute(
+                        "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                        (original["table_id"],),
+                    ).fetchone()
+                    if row is not None:
+                        for identifier in self._metadata.identifiers(
+                            json.loads(row[0])
+                        ):
+                            if not self._metadata.path(identifier).is_file():
+                                raise ValueError(
+                                    "BT publication metadata block is missing; "
+                                    "explicit recovery required"
+                                )
 
     def publish_shared(
         self,
@@ -2401,16 +2506,69 @@ class BTStore:
                         "ctime_ns": stat.st_ctime_ns,
                     }
                 )
+        metadata_blocks = self._metadata_cleanup_candidates(
+            excluded={row["table_id"] for row in candidates},
+            created_before=created_before,
+        )
         payload = {
             "schema": "bt.cleanup.v1",
             "retained": sorted(retained),
             "candidates": candidates,
+            "metadata_blocks": metadata_blocks,
             "table_ids": None if scope is None else sorted(scope),
             "created_before": None
             if created_before is None
             else created_before.isoformat(),
         }
         return {**payload, "id": _identity(payload)}
+
+    def _metadata_cleanup_candidates(self, *, excluded=(), created_before=None):
+        """Keep every block used by a retained descriptor, even shared grids."""
+        retained = set()
+        if self.meta_path.is_file():
+            with self._read_connection() as connection:
+                if not connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='bt_table_index'"
+                ).fetchone():
+                    return []  # Missing authority never authorizes block deletion.
+                for row in connection.execute(
+                    "SELECT table_id,schema_json FROM bt_table_index"
+                ):
+                    if row[0] not in excluded:
+                        retained.update(self._metadata.identifiers(json.loads(row[1])))
+        if not self._metadata.root.exists():
+            return []
+        if self._metadata.root.is_symlink():
+            raise ValueError("BT metadata block directory is a symbolic link")
+        candidates = []
+        for path in sorted(self._metadata.root.iterdir()):
+            identifier = path.stem
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.suffix != ".parquet"
+                or len(identifier) != 64
+                or any(char not in "0123456789abcdef" for char in identifier)
+                or identifier in retained
+            ):
+                continue
+            facts = path.stat()
+            if (
+                created_before is not None
+                and facts.st_mtime > created_before.timestamp()
+            ):
+                continue
+            if _file_hash(path) != identifier:
+                continue  # Unknown/corrupt evidence is never a cleanup candidate.
+            candidates.append(
+                {
+                    "block_id": identifier,
+                    "size": facts.st_size,
+                    "mtime_ns": facts.st_mtime_ns,
+                    "ctime_ns": facts.st_ctime_ns,
+                }
+            )
+        return candidates
 
     def cleanup(
         self,
@@ -2482,4 +2640,39 @@ class BTStore:
                     "UPDATE bt_cleanup_receipts SET completed_json=? WHERE id=?",
                     (_json(completed), plan["id"]),
                 )
-        return {"id": plan["id"], "status": "complete", "deleted": len(completed)}
+        for candidate in plan.get("metadata_blocks", ()):
+            key = "block:" + candidate["block_id"]
+            if key in completed:
+                continue
+            check_canceled()
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT 1 FROM bt_table_index, json_tree(schema_json) j "
+                    "WHERE j.key='id' AND j.value=? LIMIT 1",
+                    (candidate["block_id"],),
+                ).fetchone()
+                if row is not None:
+                    raise RuntimeError("BT metadata block is now referenced")
+                path = self._metadata.path(candidate["block_id"])
+                if path.exists():
+                    facts = path.stat()
+                    if (
+                        facts.st_size != candidate["size"]
+                        or facts.st_mtime_ns != candidate["mtime_ns"]
+                        or facts.st_ctime_ns != candidate["ctime_ns"]
+                        or _file_hash(path) != candidate["block_id"]
+                    ):
+                        raise RuntimeError("BT metadata cleanup candidate changed")
+                    path.unlink()
+                completed.append(key)
+                connection.execute(
+                    "UPDATE bt_cleanup_receipts SET completed_json=? WHERE id=?",
+                    (_json(completed), plan["id"]),
+                )
+        return {
+            "id": plan["id"],
+            "status": "complete",
+            "deleted": sum(not item.startswith("block:") for item in completed),
+            "metadata_deleted": sum(item.startswith("block:") for item in completed),
+        }
