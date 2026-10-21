@@ -455,13 +455,11 @@ class BTStore:
             ).fetchall()
         except sqlite3.DatabaseError as error:
             raise ValueError(
-                "BT metadata is incompatible; initialize a fresh store or run the "
-                "offline converter"
+                "BT metadata is incompatible; initialize a fresh store"
             ) from error
         if len(versions) != 1 or versions[0][0] != 2:
             raise ValueError(
-                "BT metadata schema 2 required; run python -m "
-                "bagelquant_bt.metadata_upgrade explicitly offline"
+                "BT metadata schema 2 required; initialize a fresh store"
             )
 
     def initialize(self) -> None:

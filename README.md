@@ -34,9 +34,9 @@ and explicitly supplies its market rules and annualization 240; BT defaults to
 artifacts, receipts, integrity, invalidation and recovery. Consumers use public
 read/publication APIs and retain opaque receipt references. No Workbench database
 or backend-file access is required for standalone evaluation or caching.
-Schema 2 uses bounded shared columnar metadata. See [metadata storage and explicit
-offline conversion](docs/en/metadata-storage.md) for schema-1 preservation,
-backup, verification, retry and rollback. Runtime never upgrades automatically.
+Schema 2 uses bounded shared columnar metadata. See [metadata storage](docs/en/metadata-storage.md)
+for initialization, verification, finite caches and inventory. Incompatible stores
+require fresh initialization; no converter or compatibility reader is provided.
 
 `BTExecutionOptions` and `run_evaluation_batch` accept explicit worker and Core
 resource limits for independent evaluations. One account is causal and sequential;

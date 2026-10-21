@@ -13,10 +13,9 @@ BTStore owns its SQLite metadata, immutable Parquet tables, numerical identity,
 receipts, publication integrity, invalidation, recovery and cleanup APIs.
 Schema 2 keeps compact headers in SQLite and exact bounded Zstd Parquet metadata
 blocks under the BT artifact root. Ordinary startup rejects schema 1.
-The user-authorized offline converter is a separate module, never a runtime
-compatibility path. Preserve receipt/reference bytes, verify backup/WAL and
-source fences, publish blocks before the database switch, and retain rollback
-evidence. See [metadata storage](../../docs/en/metadata-storage.md).
+No schema converter or legacy index parser is provided. Incompatible stores
+require explicitly authorized fresh initialization; never rewrite retained
+receipt/reference bytes. See [metadata storage](../../docs/en/metadata-storage.md).
 Workbench owns app/global-version bindings, governance and backend references;
 it uses public APIs rather than BT tables/files or duplicate numerical caches.
 Core owns graphs/numerical/model artifacts; Data owns source datasets/PIT/input

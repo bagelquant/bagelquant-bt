@@ -71,5 +71,5 @@ BT metadata schema 2 uses compact SQLite headers and bounded immutable Zstd
 Parquet coordinate/evidence blocks. Compositions retain original part references;
 explicit maintenance never recreates their expanded coordinate grids. The
 [metadata storage guide](metadata-storage.md) owns block verification, finite
-caches, cleanup, owner storage inventory and explicit offline schema-1 conversion.
+caches, cleanup, owner storage inventory and fresh schema-2 initialization.
 Normal runtime has no legacy reader or automatic migration.
