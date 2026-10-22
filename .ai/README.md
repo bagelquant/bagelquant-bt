@@ -1,5 +1,11 @@
 # BT AI workflow and rule routes
 
+After validating an integrated workspace, use its `.ai/README.md` engineering
+skill matrix, `docs/ai-system-map.md` and `scripts/contracts.py --list`. Select
+standalone BT checks and affected Workbench caller/consumer composition.
+Performance/documentation/verification skills route to these owner contracts;
+standalone work retains the local rules/tests without a workspace dependency.
+
 Read [development](rules/development.md) first, then only affected topic rules.
 Metadata schema 2, owner storage inventories and fresh initialization
 are documented in [metadata storage](../docs/en/metadata-storage.md).
