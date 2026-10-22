@@ -7,6 +7,13 @@ coordinate counts and content evidence are immutable Zstd Parquet blocks in
 Numerical files, table references, evaluation/chapter/shared receipts and their
 identities retain their original meaning.
 
+A descriptor-index miss checks candidate original receipts without expanding
+unrelated historical file trees. A literal hexadecimal table ID or a JSON
+Unicode escape must occur before the original lookup traverses a receipt.
+Candidates still require the exact nested table match and original receipt
+authentication. Missing indexes never grant authority, backfill themselves or
+authorize replacement of missing original bytes. Explicit audits remain separate.
+
 Descriptors read compact headers only. Date/range/exact-key selections prune
 blocks before decoding and count exact matching coordinates; empty keys read
 no blocks. Compositions retain ordered original references, predicates and

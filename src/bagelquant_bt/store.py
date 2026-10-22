@@ -807,9 +807,14 @@ class BTStore:
                         row = connection.execute(
                             f"SELECT manifest_json,j.value FROM {table},"
                             "json_tree(manifest_json,'$.files') j "
-                            "WHERE j.type='object' AND "
+                            # A literal hex ID or a Unicode escape must occur
+                            # before this receipt can contain the original.
+                            # Filter impossible candidates before expanding a
+                            # potentially large historical composition tree.
+                            "WHERE (instr(manifest_json,?)>0 OR "
+                            "instr(manifest_json,?)>0) AND j.type='object' AND "
                             "json_extract(j.value,'$.table_id')=? LIMIT 1",
-                            (table_id,),
+                            (table_id, "\\u", table_id),
                         ).fetchone()
                         if row is not None:
                             receipt = json.loads(row[0])
