@@ -103,3 +103,36 @@ def test_legacy_evidence_requires_explicit_index_maintenance_preserving_receipts
             connection.execute("SELECT schema_json FROM bt_table_index").fetchone()[0]
         )
     assert index["evidence"]["groups"]["rows"] == 11
+
+
+def test_filtered_daily_evidence_matches_consumed_maturity_without_value_reads(
+    tmp_path, monkeypatch
+):
+    days, frame = inputs()
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    reference = store.publish_table(frame)
+    clipped = store.publish_table(frame.filter(pl.col("available_date") <= days[7]))
+    before = store.meta_path.read_bytes()
+    monkeypatch.setattr(
+        pl,
+        "read_parquet",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("proof read values")),
+    )
+    monkeypatch.setattr(
+        pl,
+        "scan_parquet",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("proof scanned values")),
+    )
+    actual = store.reference_evidence(
+        reference,
+        filters=[{"column": "available_date", "operation": "le", "value": days[7]}],
+    )
+    assert actual["dates"] == store.reference_evidence(clipped)["dates"]
+    assert sum(actual["date_rows"].values()) == clipped["rows"]
+    later = store.reference_evidence(
+        reference,
+        filters=[{"column": "available_date", "operation": "le", "value": days[9]}],
+    )
+    assert all(later["dates"][day] == token for day, token in actual["dates"].items())
+    assert store.meta_path.read_bytes() == before

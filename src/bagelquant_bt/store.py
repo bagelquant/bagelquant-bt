@@ -1327,7 +1327,11 @@ class BTStore:
         return self.describe_reference(reference)
 
     def reference_evidence(
-        self, reference: Mapping[str, Any], *, time_column: str = "time"
+        self,
+        reference: Mapping[str, Any],
+        *,
+        time_column: str = "time",
+        filters: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any] | None:
         """Read compact date content and causal factor catalog from owner records.
 
@@ -1335,7 +1339,22 @@ class BTStore:
         table or implicitly prepares legacy indexes.
         """
         _identifier(time_column, "time column")
-        return self._reference_evidence(reference, (), time_column=time_column)
+        from .table_composition import COORDINATES
+        from .table_composition import filters as validate_filters
+
+        with self._describe_reference_read(reference) as registered:
+            index = self._fresh_reference_index(registered)
+            if index is None:
+                return None
+            predicates = validate_filters(
+                filters,
+                {
+                    key: value
+                    for key, value in index["schema"].items()
+                    if key in COORDINATES
+                },
+            )
+        return self._reference_evidence(reference, predicates, time_column=time_column)
 
     def reference_interval_identity(
         self,
@@ -1476,6 +1495,11 @@ class BTStore:
             "time_column": time_column,
             "factors": catalog,
             "dates": date_identities(groups, axes),
+            "date_rows": dict(
+                groups.execute(
+                    "SELECT day,sum(n) FROM groups GROUP BY day ORDER BY day"
+                )
+            ),
         }
 
     def index_plan(

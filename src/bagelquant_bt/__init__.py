@@ -9,6 +9,7 @@ from .benchmarks import (
 from .config import (
     TransactionCostConfig,
 )
+from .correlation import PAIR_CORRELATION_POLICY, pair_correlation
 from .diagnostics import (
     aggregate_exposures,
     alpha_evaluation_contract,
@@ -154,6 +155,7 @@ __all__ = [
     "DAILY_ROLLING_IC_OBSERVATIONS",
     "DAILY_SESSION_WINDOWS",
     "DAILY_SUMMARY_AUTOCORRELATION_LAGS",
+    "PAIR_CORRELATION_POLICY",
     "PERSISTENCE_SUMMARY_POLICY",
     "RISK_PROFILE_POLICY",
     "RISK_UPDATE_POLICY",
@@ -229,6 +231,7 @@ __all__ = [
     "monthly_rank_returns",
     "non_overlapping_cohort_statistics",
     "one_sample_t_test",
+    "pair_correlation",
     "partial_rank_ic",
     "plan_risk_factor_update",
     "plan_risk_profile_update",

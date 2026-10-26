@@ -171,3 +171,10 @@ resolved sample to derived windows instead of re-gating a sliced interval.
 Fresh diagnostic restarts are caller-owned calendar/input choices, with no old
 state. Risk's optional original `factor_catalogue` preserves first_seen metadata
 under a late start without pre-start observations or warm-up credit.
+
+
+Public `pair_correlation` owns incremental saved-input return/daily cross-section
+statistics. Match finite coordinates before rank ties, retain unaffected daily
+summaries and remove replaced/deleted days. Applications prove complete holdings
+sessions before requesting absent-key zero fill. Account/holdings date evidence
+is captured on publication or explicit original-bound maintenance, never browsing.

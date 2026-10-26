@@ -16,7 +16,7 @@ Supply `previous_input_proof` from the latest original input receipts to attest
 the complete prefix before a repair, including its saved specific-return halo.
 Simultaneous repair/append needs separate admitted plans.
 
-`BTStore.reference_evidence(reference)` returns registered typed schema,
+`BTStore.reference_evidence(reference, filters=())` returns registered typed schema,
 factor/family/first-seen catalogue and date-content tokens.
 `reference_interval_identity(reference, start=..., end=..., cutoff=...)` combines
 compact date/availability summaries independently of artifact fragmentation,
@@ -145,3 +145,30 @@ source/sidecar preservation for setup and installation.
 local evaluation work and keeps inner execution serial. This execution-only
 admission is excluded from option equality and all numerical identity. Without
 it, `workers` retains the standalone bounded-thread behavior.
+
+
+`pair_correlation(left, right, *, kind, method="pearson", changed_dates,
+previous=None, start=None, end=None, zero_missing=False, ...)` computes saved-input
+return or daily cross-section correlation. Inputs are typed Date `time`, Float64
+`value`, plus String `asset_id` for cross-sections; keys are unique. Return
+correlation uses the common finite dates, default minimum 12, and Pearson only.
+Cross-sections use common finite assets, default minimum three, Pearson or average
+tie-ranked Spearman after matching, and an equal mean over valid dates. Constant
+or insufficient samples are unavailable with a reason. `zero_missing=True` uses
+the union of assets held by either account, excluding keys with zero weight in
+both accounts and filling absent keys only; callers must first prove both daily
+snapshots complete. Explicit nulls/nonfinite values never become zero.
+
+The result includes compact daily `state`, `processed_dates`, correlation, sample
+counts and coverage. A same-policy previous state retains unchanged dates; only
+`changed_dates` are replaced or deleted and final range clipping uses summaries.
+The caller owns source/access identity, batching, resource admission and memory
+lifetime. BT never persists this transient state. Account unit-return and actual
+holdings references now capture compact date evidence during publication. Older
+ones return unknown until explicit original-bound `index_plan(evidence=True,
+references=[...])` / `build_index` maintenance; passive reads never backfill.
+
+Optional validated coordinate filters restrict daily evidence before hashing,
+including maturity axes. `date_rows` reports exact selected counts for bounded
+reader admission. Extending a cutoff preserves unchanged per-date tokens;
+metadata reads never register a new composed reference or read numerical bodies.

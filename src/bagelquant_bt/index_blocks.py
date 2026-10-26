@@ -44,12 +44,16 @@ def evidence_frame(frame: pl.DataFrame, *, axes=None):
             "factor_return" in frame.columns
             or ("gross_return" in frame.columns and "asset_id" not in frame.columns)
             or "specific_return" in frame.columns
+            or ("unit_return" in frame.columns and "asset_id" not in frame.columns)
+            or ("actual_weight" in frame.columns and "asset_id" in frame.columns)
         )
     ):
         return None
     axes = (
         axes
         if axes is not None
+        else ["time"]
+        if "actual_weight" in frame.columns and "asset_id" in frame.columns
         else [name for name in table_composition.COORDINATES if name in frame.columns]
     )
     canonical = frame.select(sorted(frame.columns))
@@ -231,12 +235,9 @@ class MetadataBlocks:
             value = _value(item["value"])
             op = item["operation"]
             if (
-                (op == "eq"
-                and (value < bound["min"] or value > bound["max"]))
-                or (op == "ge"
-                and value > bound["max"])
-                or (op == "le"
-                and value < bound["min"])
+                (op == "eq" and (value < bound["min"] or value > bound["max"]))
+                or (op == "ge" and value > bound["max"])
+                or (op == "le" and value < bound["min"])
             ):
                 return True
         return False
