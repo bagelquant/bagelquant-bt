@@ -322,7 +322,8 @@ def test_t1_parse_failure_clears_only_own_record_and_keeps_exception_identity(
             local = traceback.tb_frame.f_locals
             assert local["registered"] == {}
             assert all(
-                local[name] is None for name in ("row", "reference", "index", "receipt")
+                local.get(name) is None
+                for name in ("row", "reference", "index", "receipt")
             )
             checked += 1
         traceback = traceback.tb_next

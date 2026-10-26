@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from copy import copy
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -23,6 +25,15 @@ from bagelquant_core.inspection import open_metadata_snapshot
 
 if TYPE_CHECKING:
     from .input_maintenance import SharedInputEvidence
+
+_TABLE_ID_LITERAL = re.compile(r'"([0-9a-f]{64})"')
+
+
+@dataclass
+class _PublicationTables:
+    references: dict[str, Any]
+    frontier: tuple[int, int] | None = None
+
 
 _SCHEMA = """
 CREATE TABLE bt_store_schema(version INTEGER NOT NULL);
@@ -458,9 +469,7 @@ class BTStore:
                 "BT metadata is incompatible; initialize a fresh store"
             ) from error
         if len(versions) != 1 or versions[0][0] != 2:
-            raise ValueError(
-                "BT metadata schema 2 required; initialize a fresh store"
-            )
+            raise ValueError("BT metadata schema 2 required; initialize a fresh store")
 
     def initialize(self) -> None:
         """Create a fresh store; incompatible stores are never migrated."""
@@ -588,11 +597,23 @@ class BTStore:
             raise ValueError("BT table reference escapes the artifact root")
         return path
 
-    def _save_table(self, frame: pl.DataFrame, check_canceled: Callable[[], None]):
+    def _save_table(
+        self,
+        frame: pl.DataFrame,
+        check_canceled: Callable[[], None],
+        *,
+        _prepared=None,
+    ):
         if not isinstance(frame, pl.DataFrame):
             raise TypeError("BT tables must be Polars DataFrames")
-        digest = hash_dataframe(frame)
-        registered = self._registered_table(digest)
+        if _prepared is None:
+            digest = hash_dataframe(frame)
+            registered = self._registered_table(digest)
+        else:
+            digest, lookup = _prepared
+            registered = self._fresh_publication_reference(
+                digest, lookup, check_canceled
+            )
         if registered is not None:
             if not self._table_path(digest).is_file():
                 raise ValueError(
@@ -603,6 +624,17 @@ class BTStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         check_canceled()
         existing = path.exists()
+        if existing and _prepared is not None:
+            # A writer may have published since the batch's read transaction.
+            # Resolve its original before treating an existing file as an orphan.
+            registered = self._registered_table(digest)
+            if registered is not None:
+                if not path.is_file():
+                    raise ValueError(
+                        "Registered BT artifact is missing; "
+                        "explicit recovery is required"
+                    )
+                return registered
         if not path.exists():
             temporary = path.with_name(digest + "." + uuid.uuid4().hex + ".tmp.parquet")
             try:
@@ -737,14 +769,14 @@ class BTStore:
             return registered["reference"]
 
     @contextmanager
-    def _registered_table_read(self, table_id: str, *, original=False):
+    def _registered_table_read(self, table_id: str, *, original=False, _originals=None):
         """Validate one row in T1; close its transaction before yielding.
 
         Raw serialization and the decoded index belong only to this call. The
         public descriptor and numerical reader use this one validation path.
         """
         registered = {"reference": None, "index": None, "raw": None}
-        row = reference = index = receipt = None
+        row = reference = index = None
         try:
             with self._read_connection() as connection:
                 if (
@@ -803,30 +835,140 @@ class BTStore:
                             reference=reference, index=index, raw=(row[0], row[1])
                         )
                 if registered["reference"] is None:
-                    for table in ("bt_shared", "bt_chapters"):
-                        row = connection.execute(
-                            f"SELECT manifest_json,j.value FROM {table},"
-                            "json_tree(manifest_json,'$.files') j "
-                            # A literal hex ID or a Unicode escape must occur
-                            # before this receipt can contain the original.
-                            # Filter impossible candidates before expanding a
-                            # potentially large historical composition tree.
-                            "WHERE (instr(manifest_json,?)>0 OR "
-                            "instr(manifest_json,?)>0) AND j.type='object' AND "
-                            "json_extract(j.value,'$.table_id')=? LIMIT 1",
-                            (table_id, "\\u", table_id),
-                        ).fetchone()
-                        if row is not None:
-                            receipt = json.loads(row[0])
-                            _verify_record(receipt, receipt["schema"])
-                            registered["reference"] = json.loads(row[1])
-                            break
+                    originals = (
+                        self._original_table_references(connection, {table_id})
+                        if _originals is None
+                        else _originals
+                    )
+                    registered["reference"] = originals.get(table_id)
             # Do not retain sqlite rows or duplicate parsed aliases across yield.
-            row = reference = index = receipt = None
+            row = reference = index = None
             yield registered
         finally:
-            row = reference = index = receipt = None
+            row = reference = index = None
             registered.clear()
+
+    @staticmethod
+    def _original_table_references(connection, table_ids, check_canceled=lambda: None):
+        """Find requested originals in one streamed pass, without decoding others.
+
+        Literal tokens only reject impossible candidates. Any Unicode escape
+        keeps a receipt eligible; only an exact files-subtree match authenticated
+        by its original receipt supplies authority. Nothing survives this call.
+        """
+        remaining = set(table_ids)
+        references = {}
+        row = raw = receipt = matched = value = None
+        pending = []
+        returned = False
+        try:
+            if not remaining:
+                returned = True
+                return references
+            singleton = next(iter(remaining)) if len(remaining) == 1 else None
+            for table in ("bt_shared", "bt_chapters"):
+                check_canceled()
+                query, parameters = f"SELECT manifest_json FROM {table}", ()
+                if singleton is not None:
+                    # Scalar reads filter in SQLite instead of copying unrelated
+                    # receipt bodies through Python for one requested ID.
+                    query += (
+                        " WHERE instr(manifest_json,?)>0 OR instr(manifest_json,?)>0"
+                    )
+                    parameters = (singleton, "\\u")
+                for row in connection.execute(query, parameters):
+                    check_canceled()
+                    raw = row[0]
+                    if "\\u" not in raw and not any(
+                        match[1] in remaining
+                        for match in _TABLE_ID_LITERAL.finditer(raw)
+                    ):
+                        continue
+                    receipt = json.loads(raw)
+                    matched = {}
+                    pending = [iter((receipt.get("files", {}),))]
+                    while pending:
+                        check_canceled()
+                        try:
+                            value = next(pending[-1])
+                        except StopIteration:
+                            pending.pop()
+                            continue
+                        if isinstance(value, dict):
+                            identifier = value.get("table_id")
+                            if isinstance(identifier, str) and identifier in remaining:
+                                matched.setdefault(identifier, value)
+                            pending.append(iter(value.values()))
+                        elif isinstance(value, list):
+                            pending.append(iter(value))
+                    if matched:
+                        _verify_record(receipt, receipt["schema"])
+                        references.update(matched)
+                        remaining.difference_update(matched)
+                        if not remaining:
+                            returned = True
+                            return references
+            returned = True
+            return references
+        finally:
+            # Release only owned aliases, including iterators, on every exit.
+            # Foreign exception frames and returned descriptors remain intact.
+            row = raw = receipt = matched = value = None
+            pending.clear()
+            remaining.clear()
+            if not returned:
+                references.clear()
+
+    @staticmethod
+    def _receipt_frontier(connection):
+        # Owner APIs append immutable receipts. Invalidation changes only
+        # invalid_reason; cleanup never removes historical receipt rows.
+        return tuple(
+            connection.execute(
+                f"SELECT coalesce(max(rowid),0) FROM {table}"
+            ).fetchone()[0]
+            for table in ("bt_shared", "bt_chapters")
+        )
+
+    def _publication_table_references(self, table_ids, check_canceled):
+        """Resolve indexed hits normally, then all misses in one finite read."""
+        references = dict.fromkeys(table_ids)
+        lookup = _PublicationTables(references)
+        for identifier in references:
+            check_canceled()
+            # Reuse the descriptor validator while deferring original lookup.
+            with self._registered_table_read(identifier, _originals=references) as row:
+                references[identifier] = row["reference"]
+        missing = {key for key, value in references.items() if value is None}
+        if missing:
+            with self._read_connection() as connection:
+                references.update(
+                    self._original_table_references(connection, missing, check_canceled)
+                )
+                lookup.frontier = self._receipt_frontier(connection)
+        return lookup
+
+    def _fresh_publication_reference(self, identifier, lookup, check_canceled):
+        references = lookup.references
+        if references[identifier] is not None:
+            return references[identifier]
+        # A concurrent publisher may have registered this original, even if its
+        # numerical file is now absent. Never recreate it from a stale miss.
+        with self._registered_table_read(identifier, _originals=references) as row:
+            references[identifier] = row["reference"]
+        if references[identifier] is None:
+            with self._read_connection() as connection:
+                frontier = self._receipt_frontier(connection)
+                if frontier != lookup.frontier:
+                    references.update(
+                        self._original_table_references(
+                            connection,
+                            {key for key, ref in references.items() if ref is None},
+                            check_canceled,
+                        )
+                    )
+                    lookup.frontier = frontier
+        return references[identifier]
 
     def _fresh_reference_index(self, registered):
         """Observe T2/T3 afresh; reuse decoding only for the exact T1 row.
@@ -866,7 +1008,7 @@ class BTStore:
             return registered["reference"]
 
     @contextmanager
-    def _describe_reference_read(self, reference):
+    def _describe_reference_read(self, reference, *, _originals=None):
         if reference.get("backend") != "bt":
             raise ValueError("reference is not a BT table")
         self._table_path(str(reference.get("table_id", "")))
@@ -886,7 +1028,7 @@ class BTStore:
                 raise ValueError("BT composition metadata identity differs")
         self._table_path(str(reference.get("table_id", "")))
         with self._registered_table_read(
-            str(reference.get("table_id", ""))
+            str(reference.get("table_id", "")), _originals=_originals
         ) as registered:
             if registered["reference"] is None or registered["reference"] != dict(
                 reference
@@ -1985,25 +2127,48 @@ class BTStore:
         for name in dict.fromkeys(names):
             if not name.replace("_", "").isalnum():
                 raise ValueError("invalid BT primitive name")
+        hashes = {}
+        for name, frame in frames.items():
+            check_canceled()
+            if not isinstance(frame, pl.DataFrame):
+                raise TypeError("BT tables must be Polars DataFrames")
+            hashes[name] = hash_dataframe(frame)
+        lookup = self._publication_table_references(
+            [
+                *hashes.values(),
+                *(
+                    str(ref.get("table_id", ""))
+                    for ref in (file_references or {}).values()
+                ),
+            ],
+            check_canceled,
+        )
+        for name in dict.fromkeys(names):
             check_canceled()
             ref = (file_references or {}).get(name)
             if ref is not None:
-                ref = self.describe_reference(ref)
+                with self._describe_reference_read(
+                    ref, _originals=lookup.references
+                ) as row:
+                    ref = row["reference"]
                 if name in frames and ref.get("format") == "concat":
                     raise ValueError(
                         "Composed BT publication accepts references only; "
                         "omit the supplied frame"
                     )
-                if (
-                    name in frames
-                    and hash_dataframe(frames[name]) != ref["logical_hash"]
-                ):
+                if name in frames and hashes[name] != ref["logical_hash"]:
                     raise ValueError(
                         "BT primitive reference does not match supplied rows"
                     )
                 files[name] = dict(ref)
             else:
-                files[name] = self._save_table(frames[name], check_canceled)
+                digest = hashes[name]
+                files[name] = self._save_table(
+                    frames[name],
+                    check_canceled,
+                    _prepared=(digest, lookup),
+                )
+                lookup.references[digest] = files[name]
         return files
 
     def _require_publication_files(self, files):

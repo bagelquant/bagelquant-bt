@@ -7,12 +7,20 @@ coordinate counts and content evidence are immutable Zstd Parquet blocks in
 Numerical files, table references, evaluation/chapter/shared receipts and their
 identities retain their original meaning.
 
-A descriptor-index miss checks candidate original receipts without expanding
-unrelated historical file trees. A literal hexadecimal table ID or a JSON
-Unicode escape must occur before the original lookup traverses a receipt.
-Candidates still require the exact nested table match and original receipt
-authentication. Missing indexes never grant authority, backfill themselves or
-authorize replacement of missing original bytes. Explicit audits remain separate.
+A publication hashes supplied frames once and resolves their indexed descriptors
+together with supplied references. All unresolved table IDs share one streamed
+pass over historical receipts. A quoted hexadecimal token matching the requested
+set, or any JSON Unicode escape, keeps a receipt eligible for exact nested
+files-subtree matching and original receipt authentication. Scalar lookup filters
+candidates in SQLite. Receipts excluded by the candidate filter are not decoded;
+only authenticated exact matches are retained.
+
+Before saving a prepared miss, publication checks fresh indexed authority and
+the append-only receipt frontier. Another publisher's new receipt refreshes all
+remaining misses together. These operation-local observations expire after the
+publication; they are not a persistent negative cache. Missing indexes never
+grant authority, backfill themselves or authorize replacement of missing original
+bytes. Explicit audits remain separate.
 
 Descriptors read compact headers only. Date/range/exact-key selections prune
 blocks before decoding and count exact matching coordinates; empty keys read

@@ -90,11 +90,16 @@ Explicit `verify` retains full byte/logical/index checks and expiring context pr
 `publish_shared/publish_chapter(file_references=...)` resolve registered original descriptors;
 new frames retain canonical hashes, and unregistered conflicting files require canonical proof.
 Optional table descriptor maintenance uses public `index_plan/build_index`; no implicit backfill.
-Original-receipt fallback rejects impossible literal-ID candidates before JSON
-tree expansion; Unicode-escaped receipts remain eligible. This negative filter
-never supplies authority: exact nested references and original receipt identities
-still validate. New table publication must not walk unrelated historical file
-trees merely to establish an absent table ID.
+Publication hashes frames once and resolves all descriptor misses in one streamed
+original-receipt pass per batch. Literal-token rejection never supplies authority;
+Unicode-escaped candidates still require exact nested files matches and receipt
+authentication. Prepared misses recheck indexed authority and the append-only
+receipt frontier; concurrent new receipts refresh remaining misses together.
+Never infer new-table authority from index or file absence. Keep receipt rows
+append-only (invalidation changes only status); cleanup never removes them.
+Release owned raw/decoded/traversal aliases on failure without clearing foreign
+exception frames. Scalar reads retain SQLite candidate filtering. New table
+publication must not walk unrelated historical file trees to prove absence.
 `read_context(cache_bytes=...)` splits its one finite cache budget between
 metadata (one quarter) and numerical frames (the remainder), bounding both memos
 (64 MiB default, zero disables it). It expires on exit/failure, rechecks source

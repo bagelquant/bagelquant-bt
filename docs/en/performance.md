@@ -125,6 +125,30 @@ the standalone bounded thread pool. Its ready slots refill after any completed
 future; results retain input order and failure stops further admission.
 
 
+## Publication lookup work
+
+Shared and chapter publication resolve a batch of new table IDs with one
+historical-receipt pass, rather than a separate scan for each table. Lookup work
+therefore grows with historical metadata plus the output batch. It is still
+history-dependent: publishing one new table is not a constant-time operation
+when its descriptor is absent. Indexed hits avoid historical lookup.
+
+The batch retains only requested matches. Original descriptors, nested
+compositions and receipt authentication remain authoritative; a missing optional
+index cannot authorize recreating a lost original. Fresh indexed checks and a
+receipt frontier catch intervening owner publications. Owner receipt rows are
+append-only; invalidation changes status and cleanup retains receipt history.
+On interruption, lookup releases its own raw/decoded receipt and traversal
+aliases without altering another frame's exception state. Formulas, table and
+receipt identities, schemas and native resource limits are unchanged.
+
+A controlled local comparison on Python 3.13 with six Polars threads used three
+paired trials per case and identical one-row outputs. With 64 MiB of unrelated
+chapter receipts, 32-table shared publication changed from 3.15 s to 0.21 s;
+chapter publication changed from 3.15 s to 0.20 s. Table and receipt identities
+matched. At zero history, the extra fresh checks added about 0.5 ms per new
+table. These are publication measurements, not a complete Alpha latency promise.
+
 ## Call-local table-index decoding
 
 An ordinary `BTStore.read_reference` shares the canonical registered-reference
