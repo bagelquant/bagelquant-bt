@@ -127,7 +127,14 @@ authority. Record actual authors when maintaining wiki content.
 
 
 `BTExecutionOptions.native_admission` is an optional identity-neutral caller
-context factory. Mixed evaluation units acquire it around complete work and
-execute serially with the full supplied local budget, preventing nested native
-executors. Standalone options retain bounded threads, ready-future refill and
-ordered results. BT never imports the caller's admission implementation.
+context factory. Mixed evaluation units retain serial inner native work.
+An explicit `window_dispatch` may admit a staged independent horizon batch:
+the caller ends its parent native phase, drains child work and restores the
+parent permit before BT reads/validates results. Idle successful workers may
+remain for the operation; cancellation/failure reaps them before staging expires.
+`HorizonWork` and
+`compute_horizon_work` use the same window kernel as inline evaluation. BT
+supplies complete workspace/retention estimates; caller policy selects fixed
+CPU/memory shares before imports. No stores or publication run in children.
+Standalone options retain bounded threads, ready-future refill and ordered
+results. BT never imports the caller's admission implementation.

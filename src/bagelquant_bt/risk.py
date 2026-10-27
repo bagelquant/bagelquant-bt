@@ -133,9 +133,10 @@ def fit_risk_factor_returns(
         contrast = dummies[:, others] - dummies[:, [reference]] * (
             industry_caps[others] / industry_caps[reference]
         )
-        x = np.column_stack(
-            [np.ones(sample.height), contrast, sample.select(styles).to_numpy()]
-        )
+        columns = [np.ones(sample.height), contrast]
+        if styles:
+            columns.append(sample.select(styles).to_numpy())
+        x = np.column_stack(columns)
         weights = np.sqrt(caps)
         weights /= weights.sum()
         a = x * np.sqrt(weights)[:, None]
@@ -183,6 +184,7 @@ def rolling_risk_profile(
     calendar: Sequence[date],
     *,
     regression_window: int = 240,
+    regression_min_periods: int | None = None,
     volatility_window: int = 120,
     annualization: int = 240,
     ridge: float = 1.0,
@@ -200,7 +202,9 @@ def rolling_risk_profile(
     family/factor_return. Calendar gaps are never compressed into valid rows.
     A factor absent before its first historical appearance is inactive (zero);
     an explicit null factor return always means unavailable. Factors enter the
-    output population only at their first causal appearance (policy v2).
+    output population only at their first causal appearance. Partial training
+    uses valid matured rows within the same calendar window; omitted
+    ``regression_min_periods`` requires the complete window.
 
     A previous result needs its compact original state and only the saved
     specific-return halo, not historical regressions/exposures. Gross/factor
@@ -211,7 +215,8 @@ def rolling_risk_profile(
     pre-start regression observations or advance a factor's causal appearance.
     """
     policy = risk_profile_policy(
-        regression_window, volatility_window, annualization, ridge
+        regression_window, volatility_window, annualization, ridge,
+        regression_min_periods,
     )
     cancel = check_canceled or (lambda: None)
     cancel()
@@ -233,6 +238,7 @@ def rolling_risk_profile(
             through=calendar[-1],
             input_proof=input_proof,
             regression_window=regression_window,
+            regression_min_periods=regression_min_periods,
             volatility_window=volatility_window,
             annualization=annualization,
             ridge=ridge,
@@ -448,18 +454,20 @@ def rolling_risk_profile(
         )
         sample_count = int((valid & matured).sum()) if active_count else 0
         constant_count = 0
-        if first_position + i < regression_window:
+        if first_position + i < policy["regression_min_periods"]:
             reason = "regression_warmup"
         elif not active_count or not np.isfinite(current_x).all():
             reason = "factor_return_unavailable"
         elif not np.isfinite(y[i]) or i + 1 >= n:
             reason = "return_unavailable"
         else:
-            if sample_count != regression_window:
+            if sample_count < policy["regression_min_periods"]:
                 reason = "incomplete_training_window"
             elif available[i] is None or available[i] != sessions[i + 1]:
                 reason = "return_interval_mismatch"
             else:
+                history_x = history_x[valid & matured]
+                history_y = history_y[valid & matured]
                 mean, scale = history_x.mean(axis=0), history_x.std(axis=0, ddof=0)
                 identifiable = scale > 1e-12
                 constant_count = int((~identifiable).sum())
@@ -526,6 +534,7 @@ def rolling_risk_profile(
                 "r_squared": r_squared,
                 "constant_factor_count": constant_count,
                 "regression_window": regression_window,
+                "regression_min_periods": policy["regression_min_periods"],
                 "ridge": ridge,
             }
         )
@@ -603,6 +612,7 @@ def _risk_profile_result(output, exposures, diagnostics, state, solves):
                 "r_squared": pl.Float64,
                 "constant_factor_count": pl.Int64,
                 "regression_window": pl.Int64,
+                "regression_min_periods": pl.Int64,
                 "ridge": pl.Float64,
             },
         ),

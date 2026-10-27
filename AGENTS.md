@@ -62,5 +62,8 @@ options; execution evidence stays separate from numerical metrics and identity.
 `evaluation_sample` supplies neutral effective dates/counts/missingness from saved signal/economic observations; callers supply minimum calendar-history policy. Leading unavailable history is excluded, genuine zero returns and subsequent gaps retained. Return statistics expose empirical daily ES95 with explicit sample requirements.
 
 Caller native admission wraps complete mixed evaluation work and keeps its
-inner execution serial; standalone BT retains explicit bounded threads. Ready
+inner execution serial, except explicit staged horizon batches whose caller
+pauses the parent permit and enforces fixed child shares. BT owns the same
+window kernel and typed work/results; the coordinator owns publication.
+Standalone BT retains explicit bounded threads. Ready
 slots refill after any completion while result order and cancellation persist.

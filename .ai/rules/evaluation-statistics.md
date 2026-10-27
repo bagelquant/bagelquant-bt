@@ -42,11 +42,15 @@ old numerical bytes, rather than compare/decode complete historical frames.
 The host declares causal diagnostic population policy; a current-day observed
 coordinate union need not equal a retired rectangular monthly population.
 
-Risk-profile policy `rolling_risk_profile.v2` uses the factor population visible
+Risk-profile policy `rolling_risk_profile.v3` uses the factor population visible
 on each economic date. Future industries cannot add historical zero-exposure
 rows or constant-factor counts. Newly visible industries retain structural-zero
 training history; ridge, complete-case rules and next-session maturity stay
-unchanged. `plan_risk_profile_update` checks registered prefix metadata before
+unchanged. Optional regression_min_periods defaults to the full regression
+window; explicit partial minima count only valid, matured joint rows inside
+that calendar window. Training and standardization use that same filtered set.
+The resolved minimum is bound into policy and continuation state.
+`plan_risk_profile_update` checks registered prefix metadata before
 reading bounded gross/factor inputs and saved specific-return halos. Append only
 revisits pending maturity and new dates. A fixed-population input repair widens
 at most regression_window + volatility_window - 1 sessions, selects a proved
@@ -150,6 +154,10 @@ Alpha horizon windows may run independently under caller execution options;
 merge frames in requested window order before global summaries, BH/HAC and
 rolling inference. Cancellation checks separate window stages and global
 aggregation. No worker mutates shared inputs or publishes artifacts.
+Same-boundary `up_to_date` results retain their original primitive objects and
+state. Consumers reuse original references while publishing any newly proved
+input binding under ordinary fences; they must not turn the read halo into
+new output. `derived_refresh` replaces only the changed derived summary.
 
 Signal persistence keeps ranks after the common-asset join and collects each
 bounded pair chunk as one query. Its public wrapper validates factor/session

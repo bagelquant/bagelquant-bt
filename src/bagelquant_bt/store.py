@@ -14,8 +14,10 @@ from contextlib import contextmanager
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -27,6 +29,30 @@ if TYPE_CHECKING:
     from .input_maintenance import SharedInputEvidence
 
 _TABLE_ID_LITERAL = re.compile(r'"([0-9a-f]{64})"')
+
+
+def _publication_timed(stage):
+    def decorate(function):
+        @wraps(function)
+        def invoke(self, *args, **kwargs):
+            started = perf_counter()
+            failed = False
+            try:
+                return function(self, *args, **kwargs)
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                if self.publication_observer is not None:
+                    try:
+                        self.publication_observer(stage, perf_counter() - started)
+                    except Exception:
+                        if not failed:
+                            raise
+
+        return invoke
+
+    return decorate
 
 
 @dataclass
@@ -300,9 +326,16 @@ class BTStore:
 
         return store_usage(self.meta_path, self.artifact_path, within_root=within_root)
 
-    def __init__(self, meta_path: str | Path, artifact_path: str | Path):
+    def __init__(
+        self,
+        meta_path: str | Path,
+        artifact_path: str | Path,
+        *,
+        publication_observer: Callable[[str, float], None] | None = None,
+    ):
         self.meta_path = Path(meta_path).resolve()
         self.artifact_path = Path(artifact_path).resolve()
+        self.publication_observer = publication_observer
         self._verification: ArtifactVerification | None = None
         self._frame_cache: _FrameReadCache | None = None
         from .index_blocks import MetadataBlocks
@@ -684,6 +717,7 @@ class BTStore:
                 )
         return reference
 
+    @_publication_timed("indexing")
     def _index_schema(self, reference, schema, *, frame=None, coordinates=None):
         from .index_blocks import coordinate_frame, evidence_frame
 
@@ -930,6 +964,7 @@ class BTStore:
             for table in ("bt_shared", "bt_chapters")
         )
 
+    @_publication_timed("lookup")
     def _publication_table_references(self, table_ids, check_canceled):
         """Resolve indexed hits normally, then all misses in one finite read."""
         references = dict.fromkeys(table_ids)
@@ -1185,7 +1220,10 @@ class BTStore:
             and (type(output_end) is not date or output_end < output_start)
         ):
             raise ValueError("BT continuation needs ordered Date output bounds")
-        references = {}
+        # Validate the complete admitted batch before saving any delta. Resolve
+        # new IDs together: a scalar publication per primitive scans retained
+        # receipts repeatedly when its optional descriptor is absent.
+        axes = {}
         for name, frame in frames.items():
             check_canceled()
             axis = next(
@@ -1210,6 +1248,23 @@ class BTStore:
                 raise ValueError(
                     "BT delta rows must lie inside their admitted output interval"
                 )
+            axes[name] = axis
+        # Continuation keys label returned references; they have never been
+        # shared/chapter primitive names. Preserve that public mapping contract.
+        names = {
+            name: f"delta_{index}"
+            for index, (name, frame) in enumerate(frames.items())
+            if frame.height or name not in previous
+        }
+        published = self._publication_files(
+            {internal: frames[name] for name, internal in names.items()},
+            None,
+            check_canceled,
+        )
+        references = {}
+        for name, frame in frames.items():
+            check_canceled()
+            axis = axes[name]
             parts = []
             original = previous.get(name)
             if original is not None:
@@ -1226,13 +1281,7 @@ class BTStore:
                     }
                 )
             if frame.height or original is None:
-                parts.append(
-                    {
-                        "reference": self.publish_table(
-                            frame, check_canceled=check_canceled
-                        )
-                    }
-                )
+                parts.append({"reference": published[names[name]]})
             if original is not None and output_end is not None:
                 parts.append(
                     {
@@ -1249,6 +1298,7 @@ class BTStore:
             references[name] = self.compose_reference(parts)
         return references
 
+    @_publication_timed("composition")
     def compose_reference(self, parts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         """Compose original references and exact counts, never expanded grids."""
         from .table_composition import COORDINATES, filters
@@ -2151,12 +2201,7 @@ class BTStore:
         for name in dict.fromkeys(names):
             if not name.replace("_", "").isalnum():
                 raise ValueError("invalid BT primitive name")
-        hashes = {}
-        for name, frame in frames.items():
-            check_canceled()
-            if not isinstance(frame, pl.DataFrame):
-                raise TypeError("BT tables must be Polars DataFrames")
-            hashes[name] = hash_dataframe(frame)
+        hashes = self._publication_hashes(frames, check_canceled)
         lookup = self._publication_table_references(
             [
                 *hashes.values(),
@@ -2194,6 +2239,20 @@ class BTStore:
                 )
                 lookup.references[digest] = files[name]
         return files
+
+    @_publication_timed("hashing")
+    def _publication_hashes(self, frames, check_canceled):
+        hashes = {}
+        aliases = {}
+        for name, frame in frames.items():
+            check_canceled()
+            if not isinstance(frame, pl.DataFrame):
+                raise TypeError("BT tables must be Polars DataFrames")
+            key = id(frame)
+            if key not in aliases:
+                aliases[key] = hash_dataframe(frame)
+            hashes[name] = aliases[key]
+        return hashes
 
     def _require_publication_files(self, files):
         """Fence artifact existence against cleanup under the metadata writer."""

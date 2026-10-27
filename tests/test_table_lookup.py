@@ -179,6 +179,71 @@ def test_batch_hashes_each_supplied_frame_once_and_reuses_aliases(store, monkeyp
     assert receipt["files"]["first"] == receipt["files"]["alias"]
 
 
+@pytest.mark.parametrize("tables", [2, 12])
+def test_continuation_searches_history_once_for_the_whole_delta(
+    store, monkeypatch, tables
+):
+    days = [date(2024, 1, 2), date(2024, 1, 3)]
+    old = store.publish_shared(
+        "old",
+        "signal",
+        "old",
+        {
+            f"rows_{i}": pl.DataFrame({"time": days[:1], "value": [float(i)]})
+            for i in range(tables)
+        },
+    )
+    store.publish_shared(
+        "unrelated", "signal", "history", {}, metadata={"history": "x" * 65536}
+    )
+    read = store._read_connection
+    searches = []
+
+    @contextmanager
+    def monitored():
+        with read() as connection:
+            connection.set_trace_callback(
+                lambda query: (
+                    searches.append(query)
+                    if query.startswith("SELECT manifest_json FROM bt_")
+                    else None
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(store, "_read_connection", monitored)
+    deltas = {
+        f"rows_{i}": pl.DataFrame({"time": days[1:], "value": [float(i + 100)]})
+        for i in range(tables)
+    }
+    references = store.publish_continuation(
+        deltas, previous=old["files"], output_start=days[1], output_end=days[1]
+    )
+    assert len(searches) <= 2, searches
+    for name, reference in references.items():
+        expected = pl.concat([store.read_reference(old["files"][name]), deltas[name]])
+        assert store.read_reference(reference).equals(expected)
+
+
+def test_continuation_keys_are_labels_not_shared_primitive_names(store):
+    first = date(2024, 1, 2)
+    last = date(2024, 1, 3)
+    old = store.publish_table(pl.DataFrame({"time": [first], "value": [1.0]}))
+    frame = pl.DataFrame({"time": [last], "value": [2.0]})
+    keys = ["daily-returns", "收益", "with space"]
+    refs = store.publish_continuation(
+        {key: frame for key in keys},
+        previous={key: old for key in keys},
+        output_start=last,
+        output_end=last,
+    )
+    assert set(refs) == set(keys)
+    assert all(
+        store.read_reference(reference)["value"].to_list() == [1.0, 2.0]
+        for reference in refs.values()
+    )
+
+
 @pytest.mark.parametrize("escaped", [0, 1, 64])
 def test_batch_resolves_supplied_references_and_new_frames_together(
     store, monkeypatch, escaped

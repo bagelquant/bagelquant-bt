@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 
 from bagelquant_core.resources import ResourceLimits, resource_limits
 
+from .finite_horizon import HorizonDispatch
+
 
 @dataclass(frozen=True, slots=True)
 class BTExecutionOptions:
@@ -26,10 +28,20 @@ class BTExecutionOptions:
     native_admission: Callable[[str], AbstractContextManager] | None = field(
         default=None, compare=False, repr=False
     )
+    window_dispatch: HorizonDispatch | None = field(
+        default=None, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self.native_admission is not None and not callable(self.native_admission):
             raise ValueError("native_admission must be callable")
+        if self.window_dispatch is not None and any(
+            not callable(getattr(self.window_dispatch, name, None))
+            for name in ("admit_horizons", "dispatch_horizons")
+        ):
+            raise ValueError(
+                "window_dispatch must admit and execute finite horizon batches"
+            )
         if isinstance(self.workers, bool) or not isinstance(self.workers, int):
             raise ValueError("workers must be a positive integer")
         if self.workers < 1 or self.workers > self.limits.total_threads:
@@ -60,8 +72,11 @@ def run_evaluation_batch[Input, Output](
     total = len(items) if hasattr(items, "__len__") else None
 
     def invoke(item: Input) -> Output:
-        admission = (selected.native_admission("mixed")
-                     if selected.native_admission is not None else nullcontext())
+        admission = (
+            selected.native_admission("mixed")
+            if selected.native_admission is not None
+            else nullcontext()
+        )
         with resource_limits(limits), admission:
             check_canceled()
             result = evaluate(item)

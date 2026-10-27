@@ -47,6 +47,27 @@ def test_constrained_wls_recovers_known_returns():
     ].sum() == pytest.approx(0)
 
 
+def test_country_and_industry_fit_needs_no_style_columns():
+    frame = pl.DataFrame({"asset_id": ["A", "B", "C", "D"],
+        "industry": ["first", "first", "second", "second"],
+        "market_cap": [1.0, 1.0, 1.0, 1.0],
+        "forward_return": [0.01, 0.01, 0.03, 0.03]})
+    result = fit_risk_factor_returns(frame, styles=(), minimum_assets=1,
+        observations_per_parameter=1)
+    assert result.reason is None
+    assert result.sample_count == 4 and result.rank == result.parameter_count == 2
+    values = dict(result.factor_returns.select("factor", "factor_return").iter_rows())
+    assert values == pytest.approx({"market": 0.02,
+        "industry:first": -0.01, "industry:second": 0.01})
+    industry_sum = 2 * values["industry:first"] + 2 * values["industry:second"]
+    assert industry_sum == pytest.approx(0)
+    fitted = [
+        values["market"] + values[f"industry:{industry}"]
+        for industry in frame["industry"]
+    ]
+    assert fitted == pytest.approx(frame["forward_return"].to_list())
+
+
 def _profile_inputs():
     sessions = [date(2020, 1, 1) + timedelta(days=i) for i in range(361)]
     rng = np.random.default_rng(8)
@@ -107,6 +128,34 @@ def test_missing_training_day_is_not_compressed_and_late_labels_are_rejected():
         result.diagnostics.filter(pl.col("time") == days[240])["reason"][0]
         == "incomplete_training_window"
     )
+
+
+def test_partial_profile_uses_sixty_matured_valid_rows_and_keeps_calendar_gaps():
+    days, returns, factors = _profile_inputs()
+    factors = factors.with_columns(pl.when(pl.col("time") == days[10]).then(None)
+        .otherwise(pl.col("factor_return")).alias("factor_return"))
+    result = rolling_risk_profile(returns, factors, days, regression_min_periods=60)
+    assert result.exposures["time"].min() == days[61]
+    row = result.diagnostics.filter(pl.col("time") == days[60]).row(0, named=True)
+    assert row["sample_count"] == 59 and row["reason"] == "incomplete_training_window"
+    first = result.exposures.filter(pl.col("time") == days[61])["beta"][0]
+    # For one standardized predictor and y=constant+2*x, Ridge1 gives 2*n/(n+1).
+    assert first == pytest.approx(2 * 60 / 61)
+    assert result.diagnostics.filter(pl.col("time") == days[61])[
+        "sample_count"][0] == 60
+    assert result.state["policy"]["regression_min_periods"] == 60
+    changed = factors.with_columns(pl.when(pl.col("time") > days[100]).then(100.)
+        .otherwise(pl.col("factor_return")).alias("factor_return"))
+    later = rolling_risk_profile(returns, changed, days, regression_min_periods=60)
+    assert result.exposures.filter(pl.col("time") <= days[100]).equals(
+        later.exposures.filter(pl.col("time") <= days[100]))
+
+
+@pytest.mark.parametrize("minimum", [True, 1, 241, 2.5])
+def test_partial_profile_rejects_invalid_minimum(minimum):
+    days, returns, factors = _profile_inputs()
+    with pytest.raises(ValueError, match="regression_min_periods"):
+        rolling_risk_profile(returns, factors, days, regression_min_periods=minimum)
 
 
 def test_linked_contributions_reconcile_and_rebase():

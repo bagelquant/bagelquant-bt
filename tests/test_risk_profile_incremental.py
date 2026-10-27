@@ -111,7 +111,11 @@ def merged(old, delta, start):
     )
 
 
-def test_append_uses_only_input_and_saved_specific_halos_and_counts_solves(monkeypatch):
+@pytest.mark.parametrize("minimum", [None, 3])
+def test_append_uses_only_input_and_saved_specific_halos_and_counts_solves(
+    monkeypatch, minimum,
+):
+    monkeypatch.setitem(SETTINGS, "regression_min_periods", minimum)
     days, returns, factors = inputs()
     old = evaluate(days, returns, factors, days[17])
     calendar = days[:19]
@@ -217,7 +221,11 @@ def test_metadata_repeat_and_missing_or_changed_proofs_never_run_regressions(
     assert blocked.mode == "blocked"
 
 
-def test_affected_repair_selects_proven_original_state_and_matches_full():
+@pytest.mark.parametrize("minimum", [None, 3])
+def test_affected_repair_selects_proven_original_state_and_matches_full(
+    monkeypatch, minimum,
+):
+    monkeypatch.setitem(SETTINGS, "regression_min_periods", minimum)
     days, returns, factors = inputs()
     early = evaluate(days, returns, factors, days[9])
     latest = evaluate(days, returns, factors, days[18])

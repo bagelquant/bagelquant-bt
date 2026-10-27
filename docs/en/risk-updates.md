@@ -28,3 +28,19 @@ retains null withdrawal coordinates and excludes unobserved coordinates; its
 eligible/excluded diagnostic counts differ from an earlier rectangular monthly
 grid. Finite complete-case samples, coefficients, constraints, rank checks and
 economic maturity formulas remain unchanged.
+
+## Partial regression history
+
+`rolling_risk_profile` and `plan_risk_profile_update` accept
+`regression_min_periods`. `None` requires the full `regression_window`, preserving
+the generic default. An explicit integer between 2 and the window size permits
+an earlier fit after that many usable joint observations. The numerical policy
+is `rolling_risk_profile.v3`; state and continuation identities include the
+resolved minimum, so policies cannot share incompatible continuation state.
+
+The window still counts calendar sessions. Filter its training rows to finite
+joint factor/return values whose labels have matured by the decision date,
+then standardize and regress only those rows. Missing rows never extend the
+lookback, train the estimator, or contribute to its sample count. For example,
+a host may request a 240-session window and a minimum of 60; 59 usable pairs
+remain unavailable, while 60 admit a fit if the other numerical checks pass.

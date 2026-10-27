@@ -54,6 +54,13 @@ from .factor_analysis import (
     monthly_rank_returns,
     partial_rank_ic,
 )
+from .finite_horizon import (
+    HorizonDispatch,
+    HorizonFrame,
+    HorizonResult,
+    HorizonWork,
+    compute_horizon_work,
+)
 from .horizon import (
     DAILY_ALPHA_RETURN_LAGS,
     DAILY_BOOK_LEAD_LAGS,
@@ -173,6 +180,10 @@ __all__ = [
     "ExecutionEvaluationResult",
     "ExecutionStateCheckpoint",
     "HACMeanTest",
+    "HorizonDispatch",
+    "HorizonFrame",
+    "HorizonResult",
+    "HorizonWork",
     "InputValidationError",
     "IntegerTargetAllocation",
     "OneSampleTest",
@@ -204,6 +215,7 @@ __all__ = [
     "common_alpha_ic",
     "common_sample_comparison",
     "compare_portfolio_to_benchmarks",
+    "compute_horizon_work",
     "cross_sectional_factor_returns",
     "deflated_sharpe",
     "drawdown",

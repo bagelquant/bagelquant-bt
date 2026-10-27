@@ -133,6 +133,16 @@ therefore grows with historical metadata plus the output batch. It is still
 history-dependent: publishing one new table is not a constant-time operation
 when its descriptor is absent. Indexed hits avoid historical lookup.
 
+Admitted delta continuation uses the same batch resolver before composing
+original prefix/suffix references. It validates every output interval first,
+hashes each supplied frame once (sharing an identical frame object's hash),
+and resolves all missing new IDs together. An unchanged receipt frontier needs
+one history pass for the whole batch. Concurrent publication can require a
+fresh pass; missing optional indexes still cannot authorize recreating a lost
+original. `BTStore(publication_observer=...)` optionally reports inclusive
+`hashing`, `lookup`, `indexing` and `composition` seconds, including failures.
+These nested observations must not be summed as exclusive elapsed time.
+
 The batch retains only requested matches. Original descriptors, nested
 compositions and receipt authentication remain authoritative; a missing optional
 index cannot authorize recreating a lost original. Fresh indexed checks and a
@@ -148,6 +158,42 @@ chapter receipts, 32-table shared publication changed from 3.15 s to 0.21 s;
 chapter publication changed from 3.15 s to 0.20 s. Table and receipt identities
 matched. At zero history, the extra fresh checks added about 0.5 ms per new
 table. These are publication measurements, not a complete Alpha latency promise.
+
+An additional Python 3.13/six-Polars-thread continuation comparison used three
+paired trials, 277 tiny delta tables and 64 MiB of unrelated receipt metadata.
+Median publication changed from 32.98 s to 3.38 s; history passes changed from
+277 to one. Table/composition references and values matched exactly. At zero
+history with 32 tables, medians were 0.35 s and 0.38 s. These component probes
+vary metadata separately from numerical input size and do not certify a
+production five-minute evaluation target.
+
+## Isolated horizon workers
+
+`BTExecutionOptions.window_dispatch` accepts a caller implementing
+`HorizonDispatch`. BT provides complete child workspace and coordinator retained
+input/output estimates before staging. The caller may reduce admission to one,
+which uses the ordinary inline path without staged transport. An admitted batch
+stages shared inputs once and supplies immutable `HorizonWork` descriptors.
+`compute_horizon_work` calls the same window kernel, writes private bounded
+outputs and returns `HorizonResult`; it never opens a backend store.
+
+The caller drains parent native work before children run and restores the parent
+permit before BT validates and reads outputs. Results merge in requested window
+order before inference/reductions. Actual worker counts and CPU seconds remain
+execution evidence, outside mathematical identities. Cancellation must reap
+children before temporary staging disappears. Same-boundary reuse bypasses the
+dispatcher. Causal weight/account paths retain their sequential state.
+
+On an isolated six-thread/16-GiB synthetic full-Alpha workload with 4,096
+sessions and 1,024 assets, three alternating paired trials gave median kernel
+times of 108.82 s inline and 104.36 s with two three-thread children. All table
+hashes and state matched exactly; two children were active. The same comparison
+at 1,024 sessions and 512 assets was effectively neutral (12.12/12.13 s).
+Workbench therefore keeps Auto inline below a 1 GiB estimated child workspace,
+including its interpreter reserve; descriptor and coordinator sizing can reduce
+admission further. Child inputs use immutable mapped Arrow buffers, while parent
+outputs are copied before staging expires. This kernel probe includes all 87
+causal paths but excludes Workbench preparation, chapters and report export.
 
 ## Call-local table-index decoding
 

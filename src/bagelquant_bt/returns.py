@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import polars as pl
 
 from .exceptions import InputValidationError
-from .inputs import ASSET_ID, TIME
+from .inputs import ASSET_ID, TIME, validate_prices
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +57,7 @@ def prepare_price_data(prices: pl.DataFrame) -> PreparedPriceData:
     zero return and the cumulative move is recognized only on resumption.
     """
 
-    return _prepare_price_data(prices, inputs_sorted=False)
+    return _prepare_price_data(validate_prices(prices), inputs_sorted=True)
 
 
 def _prepare_price_data(

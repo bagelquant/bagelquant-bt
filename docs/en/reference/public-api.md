@@ -1,5 +1,29 @@
 # Public API — BT 0.12
 
+`prepare_price_data(prices)` validates unique time/asset keys and finite positive
+prices before preparing returns. It applies the same missing-price policy as
+`validate_prices` and retains extra input columns. `fit_risk_factor_returns`
+accepts `styles=()` for a market-and-industry-only fit, using the same weighted
+industry constraint as fits with style columns.
+
+`BTExecutionOptions(window_dispatch=...)` optionally supplies a
+`HorizonDispatch` implementation. `admit_horizons(working_bytes, retained_bytes,
+ready_units)` returns the admitted worker count; one selects the existing inline
+kernel. `dispatch_horizons(work, *, progress)` returns ordered `HorizonResult`
+descriptors and must drain children on success/failure/cancellation before
+returning. `HorizonWork`/`HorizonResult` provide JSON-compatible `to_dict` and
+`from_dict` methods. `compute_horizon_work(work)` consumes caller-owned temporary
+Arrow references and computes only, under supplied limits. Work includes shared
+inputs, private retained state, the original SessionWindow and output/workspace
+bounds; results retain typed row/schema descriptors and worker CPU/elapsed
+seconds. Neither work descriptors nor execution measurements change numerical
+identity. See [resource execution](../performance.md#isolated-horizon-workers).
+
+`BTStore(meta_path, artifact_path, publication_observer=None)` accepts an optional
+keyword observer receiving `(phase, inclusive_seconds)` for publication hashing,
+lookup, indexing and composition. It is operation-local instrumentation; the
+existing immutable authority, schemas and explicit audit behavior remain intact.
+
 `plan_risk_profile_update(previous_state, *, calendar, through,
 affected_intervals=(), preceding=(), input_proof=None, ...)` returns a
 `RiskProfileUpdatePlan` with mode, read_start/read_end, output_start/output_end,

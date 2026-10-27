@@ -51,3 +51,9 @@ A late-start `rolling_risk_profile` can receive `factor_catalogue` with original
 factor family and first-seen dates. This preserves causal population metadata
 without admitting pre-start regression observations. Warm-up counts begin with
 the supplied calendar; continuation still requires original state and proofs.
+
+`regression_min_periods=None` requires a full regression window. Hosts can choose
+an earlier minimum, such as 60 inside the previous 240 sessions. Only finite,
+matured joint rows train the regression, and calendar gaps retain their position.
+The resolved minimum participates in policy `rolling_risk_profile.v3` and saved
+continuation identity. See [Daily risk updates](../risk-updates.md).

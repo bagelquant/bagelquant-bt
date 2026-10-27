@@ -49,10 +49,18 @@ from .portfolio_mechanics import (
 from .runtime import BTExecutionOptions, run_evaluation_batch
 from .statistics import return_statistics
 
-_ALPHA_COMPONENTS = frozenset((
-    "horizons", "rolling_ic", "book_tail", "turnover", "lead_lag",
-    "persistence", "alpha_return", "quantiles",
-))
+_ALPHA_COMPONENTS = frozenset(
+    (
+        "horizons",
+        "rolling_ic",
+        "book_tail",
+        "turnover",
+        "lead_lag",
+        "persistence",
+        "alpha_return",
+        "quantiles",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,33 +742,54 @@ def alpha_update_plan(
         raise InputValidationError("Alpha update planning needs a nonempty calendar")
     if not isinstance(available_date, date):
         raise InputValidationError("Alpha update planning needs a date cutoff")
-    options = dict(calendar=sessions, components=components, windows=windows,
-                   persistence_lags=persistence_lags, lead_lags=lead_lags,
-                   alpha_return_lags=alpha_return_lags)
+    options = dict(
+        calendar=sessions,
+        components=components,
+        windows=windows,
+        persistence_lags=persistence_lags,
+        lead_lags=lead_lags,
+        alpha_return_lags=alpha_return_lags,
+    )
 
     def result(status, *, index=None, start=None, output=None, reason=None):
-        return {"status": status, "previous_index": index, "read_start": start,
-                "output_start": output, "through": days[-1], "reason": reason}
+        return {
+            "status": status,
+            "previous_index": index,
+            "read_start": start,
+            "output_start": output,
+            "through": days[-1],
+            "reason": reason,
+        }
 
     def saved(value):
-        if (isinstance(value, Mapping)
-                and set(value.get("components", ())) & {"horizons", "rolling_ic"}
-                and "pending_horizon_start" not in value):
+        if (
+            isinstance(value, Mapping)
+            and set(value.get("components", ())) & {"horizons", "rolling_ic"}
+            and "pending_horizon_start" not in value
+        ):
             raise ValueError(
                 "saved Alpha metadata lacks pending-label scope; "
                 "explicit state recovery is required"
             )
-        return value if isinstance(value, EvaluationResult) else EvaluationResult(
-            {}, {}, state=dict(value))
+        return (
+            value
+            if isinstance(value, EvaluationResult)
+            else EvaluationResult({}, {}, state=dict(value))
+        )
 
     def prefix_equal(candidate):
         state = candidate.state
         if state.get("input_prefix") is None or state.get("cutoff") is None:
             return False
-        return input_proof is None or input_proof(
-            days[0], date.fromisoformat(state["through"]),
-            date.fromisoformat(state["cutoff"]),
-        ) == state["input_prefix"]
+        return (
+            input_proof is None
+            or input_proof(
+                days[0],
+                date.fromisoformat(state["through"]),
+                date.fromisoformat(state["cutoff"]),
+            )
+            == state["input_prefix"]
+        )
 
     if previous is None:
         return result("initialize", start=days[0], output=days[0])
@@ -769,67 +798,105 @@ def alpha_update_plan(
         boundary = date.fromisoformat(current.state["through"])
         cutoff = date.fromisoformat(current.state["cutoff"])
         if boundary not in days or available_date < cutoff:
-            return result("blocked", reason=(
-                "saved observation/information boundaries regress "
-                "or leave the admitted calendar"))
+            return result(
+                "blocked",
+                reason=(
+                    "saved observation/information boundaries regress "
+                    "or leave the admitted calendar"
+                ),
+            )
         changes = []
         for first, last in affected_intervals:
-            if (not isinstance(first, date) or not isinstance(last, date)
-                    or first > last):
+            if (
+                not isinstance(first, date)
+                or not isinstance(last, date)
+                or first > last
+            ):
                 raise InputValidationError(
-                    "affected intervals require ordered date bounds")
+                    "affected intervals require ordered date bounds"
+                )
             if first <= days[-1] and last >= days[0]:
                 changes.append(max(first, days[0]))
         if not changes:
             if not prefix_equal(current):
-                return result("blocked", reason=(
-                    "changed input prefix requires source-owned "
-                    "affected intervals and preceding state"))
+                return result(
+                    "blocked",
+                    reason=(
+                        "changed input prefix requires source-owned "
+                        "affected intervals and preceding state"
+                    ),
+                )
             start = alpha_input_start(current, **options)
             selected = set(_ALPHA_COMPONENTS if components is None else components)
-            if (days[-1] == boundary and available_date == cutoff
-                    and selected == set(current.state.get("components", ()))):
+            if (
+                days[-1] == boundary
+                and available_date == cutoff
+                and selected == set(current.state.get("components", ()))
+            ):
                 return result("up_to_date", index=-1)
             output = days[min(days.index(boundary) + 1, len(days) - 1)]
             return result("append", index=-1, start=start, output=output)
         selected = set(_ALPHA_COMPONENTS if components is None else components)
-        halo = max([0,
-            *(window.end_session for window in windows
-              if selected & {"horizons", "rolling_ic"}),
-            *(persistence_lags if selected & {"horizons", "persistence"} else ()),
-            *(abs(lag) for lag in lead_lags if "lead_lag" in selected),
-            *(alpha_return_lags if "alpha_return" in selected else ())])
+        halo = max(
+            [
+                0,
+                *(
+                    window.end_session
+                    for window in windows
+                    if selected & {"horizons", "rolling_ic"}
+                ),
+                *(persistence_lags if selected & {"horizons", "persistence"} else ()),
+                *(abs(lag) for lag in lead_lags if "lead_lag" in selected),
+                *(alpha_return_lags if "alpha_return" in selected else ()),
+            ]
+        )
         affected = days[max(0, bisect_left(days, min(changes)) - halo)]
-        candidates = [(-1, current),
-                      *((index, saved(value))
-                        for index, value in enumerate(preceding))]
+        candidates = [
+            (-1, current),
+            *((index, saved(value)) for index, value in enumerate(preceding)),
+        ]
         candidates.sort(key=lambda pair: pair[1].state.get("through", ""), reverse=True)
         for index, candidate in candidates:
             state = candidate.state
-            if (state.get("policy") != current.state.get("policy")
-                    or set(state.get("components", ()))
-                    != set(current.state.get("components", ()))):
+            if state.get("policy") != current.state.get("policy") or set(
+                state.get("components", ())
+            ) != set(current.state.get("components", ())):
                 continue
             end = date.fromisoformat(state["through"])
-            if (end >= affected or end not in days
-                    or date.fromisoformat(state["cutoff"]) > available_date
-                    or not prefix_equal(candidate)):
+            if (
+                end >= affected
+                or end not in days
+                or date.fromisoformat(state["cutoff"]) > available_date
+                or not prefix_equal(candidate)
+            ):
                 continue
-            if any(value is not None and date.fromisoformat(value["time"]) >= affected
-                   for value in state.get("paths", {}).values()):
+            if any(
+                value is not None and date.fromisoformat(value["time"]) >= affected
+                for value in state.get("paths", {}).values()
+            ):
                 continue
             start = alpha_input_start(candidate, **options)
-            return result("repair", index=index, start=start,
-                          output=days[days.index(end) + 1])
-        return result("blocked", output=affected,
-                      reason=("affected Alpha interval has no proven preceding "
-                              "saved checkpoint; retain existing results and "
-                              "restore original state before repair"))
+            return result(
+                "repair", index=index, start=start, output=days[days.index(end) + 1]
+            )
+        return result(
+            "blocked",
+            output=affected,
+            reason=(
+                "affected Alpha interval has no proven preceding "
+                "saved checkpoint; retain existing results and "
+                "restore original state before repair"
+            ),
+        )
     except (KeyError, TypeError, ValueError) as error:
         if isinstance(error, InputValidationError):
             raise
-        return result("blocked", reason=(
-            "saved Alpha metadata needs explicit state recovery before planning"))
+        return result(
+            "blocked",
+            reason=(
+                "saved Alpha metadata needs explicit state recovery before planning"
+            ),
+        )
 
 
 def evaluate_alpha(
@@ -1093,7 +1160,8 @@ def evaluate_alpha(
             selected_options.limits.cache_mib,
             selected_options.limits.memory_target_mib // 4,
         )
-        if has_paths else 0
+        if has_paths
+        else 0
     )
     saved_paths = previous_state.get("paths", {})
     after = (
@@ -1105,7 +1173,8 @@ def evaluate_alpha(
     )
     return_preparation = (
         _WeightReturnPreparation(labels, reserve_mib * 1024 * 1024, after=after)
-        if has_paths else None
+        if has_paths
+        else None
     )
     try:
         reserved_options = replace(
@@ -1256,21 +1325,10 @@ def evaluate_alpha(
             )
             if progress:
                 progress(0, len(resolved_windows))
-            window_frames = run_evaluation_batch(
-                resolved_windows,
-                lambda window: _alpha_window_frames(
-                    window,
-                    factor=work_factor,
-                    labels=labels,
-                    sessions=sessions,
-                    book=book,
-                    tail=tail,
-                    quantiles=quantiles,
-                    factor_standardization=factor_standardization,
-                    quantile_membership=membership,
-                    prepared_factor=prepared_factor,
-                    check_canceled=cancel,
-                    previous=None
+
+            def retained_window(window):
+                return (
+                    {}
                     if previous is None
                     or not prior_components & {"horizons", "rolling_ic"}
                     else {
@@ -1289,12 +1347,102 @@ def evaluate_alpha(
                             "horizon_quantile_structure",
                             "horizon_factor_returns",
                         }
-                    },
-                ),
-                options=window_options,
-                check_canceled=cancel,
-                progress=progress or (lambda *_: None),
+                    }
+                )
+
+            inputs = {
+                "factor": work_factor,
+                "labels": labels,
+                "sessions": sessions,
+                "book": book,
+                "tail": tail,
+                "quantile_membership": membership,
+                "prepared_factor": prepared_factor,
+            }
+            payload_bytes = sum(frame.estimated_size() for frame in inputs.values())
+            prior_bytes = (
+                0
+                if previous is None
+                else sum(frame.estimated_size() for frame in previous.tables.values())
             )
+            # Retained parent frames, path preparation and all returned window
+            # outputs remain charged while children own their fixed slices.
+            output_bytes = sessions.height * (quantiles + 2) * 16 * 128
+            working_bytes = (
+                256 * 1024**2  # Fresh numerical interpreter/native runtime reserve.
+                + payload_bytes
+                + 2 * prior_bytes
+                + output_bytes
+                + max(
+                    64 * 1024**2,
+                    8 * (work_factor.estimated_size() + labels.estimated_size()),
+                )
+            )
+            retained_bytes = payload_bytes + prior_bytes + reserve_mib * 1024**2
+            retained_bytes += (
+                values.estimated_size()
+                + forward_returns.estimated_size()
+                + 256 * 1024**2
+            )
+            retained_bytes += output_bytes * len(resolved_windows)
+            dispatch = selected_options.window_dispatch
+            workers = (
+                dispatch.admit_horizons(
+                    working_bytes,
+                    retained_bytes,
+                    min(len(resolved_windows), selected_options.workers),
+                )
+                if dispatch is not None
+                and factor.height >= 1024
+                and selected_options.workers > 1
+                else 1
+            )
+            if workers > 1:
+                from .finite_horizon import read_horizon_result, staged_horizon_batch
+
+                with staged_horizon_batch(
+                    resolved_windows,
+                    inputs,
+                    previous=retained_window,
+                    quantiles=quantiles,
+                    factor_standardization=factor_standardization,
+                    limits=selected_options.limits,
+                    working_bytes=working_bytes,
+                    check_canceled=cancel,
+                ) as work:
+                    results = dispatch.dispatch_horizons(
+                        work, progress=progress or (lambda *_: None)
+                    )
+                    if len(results) != len(work):
+                        raise ValueError(
+                            "Horizon dispatcher returned an incomplete batch"
+                        )
+                    window_frames = []
+                    for unit, result in zip(work, results, strict=True):
+                        cancel()
+                        window_frames.append(read_horizon_result(unit, result))
+                execution.update(
+                    actual_workers=workers,
+                    dispatched_windows=len(work),
+                    worker_cpu_seconds=sum(result.cpu_seconds for result in results),
+                    per_window_bytes=working_bytes,
+                    coordinator_retained_bytes=retained_bytes,
+                )
+            else:
+                window_frames = run_evaluation_batch(
+                    resolved_windows,
+                    lambda window: _alpha_window_frames(
+                        window,
+                        **inputs,
+                        quantiles=quantiles,
+                        factor_standardization=factor_standardization,
+                        check_canceled=cancel,
+                        previous=retained_window(window),
+                    ),
+                    options=window_options,
+                    check_canceled=cancel,
+                    progress=progress or (lambda *_: None),
+                )
             cancel()
             families = {
                 name: [frames[name] for frames in window_frames]
