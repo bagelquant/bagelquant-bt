@@ -6,6 +6,7 @@ Core owns value/model computation and Data owns data and PIT evidence.
 
 - [Quick start](quick-start.md)
 - [Architecture and artifact ownership](architecture.md)
+- [Engineering contracts](engineering/index.md)
 - [Workers and resource limits](performance.md)
 - [Public API](reference/public-api.md)
 - [Daily risk update planning and state](risk-updates.md)

@@ -46,7 +46,7 @@ and machine policy.
 See [quick start](docs/en/quick-start.md), [public API](docs/en/reference/public-api.md),
 [execution](docs/en/reference/account-backtest.md), [costs](docs/en/reference/transaction-costs.md),
 and [research statistics](docs/en/reference/research-statistics.md).
-AI contributors start with [AGENTS.md](AGENTS.md).
+For development setup, checks and engineering contracts, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 uv run ruff check .

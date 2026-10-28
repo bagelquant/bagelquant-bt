@@ -1,4 +1,4 @@
-# BT development rules
+# BT ownership, storage and execution contracts
 
 ## Current BT 0.12 stage-4 contracts
 
@@ -15,7 +15,7 @@ Schema 2 keeps compact headers in SQLite and exact bounded Zstd Parquet metadata
 blocks under the BT artifact root. Ordinary startup rejects schema 1.
 No schema converter or legacy index parser is provided. Incompatible stores
 require explicitly authorized fresh initialization; never rewrite retained
-receipt/reference bytes. See [metadata storage](../../docs/en/metadata-storage.md).
+receipt/reference bytes. See [metadata storage](../metadata-storage.md).
 Workbench owns app/global-version bindings, governance and backend references;
 it uses public APIs rather than BT tables/files or duplicate numerical caches.
 Core owns graphs/numerical/model artifacts; Data owns source datasets/PIT/input
@@ -24,41 +24,6 @@ Workbench. Stage 5 implements thin Workbench composition. Stage 6 installs
 services in Setup mode and initializes fresh stores only on explicit completion.
 Live database/service operations remain subject to the current authorization.
 
-## Engineering and validation
-
-The supported platform is macOS. Run validation locally; GitHub Actions is disabled.
-
-Inspect tracked/untracked Git state, README, pyproject and routed owner docs.
-Preserve unrelated changes and each repository's Git metadata. Use Python 3.13,
-uv, pathlib and explicit deterministic ordering. Keep one authoritative model,
-formula, engine, execution path and artifact owner; remove dead exports/tests/
-configuration/docs together, with no unrequested compatibility/migration layers.
-
-Validate typed inputs at boundaries with actionable errors. Financial state is
-causal; outputs use bounded columnar row buffers. Prefer vectorized numerical
-kernels where causality permits. Formula changes require hand-checkable examples,
-reference comparisons and sparse/missing/duplicate/empty input cases.
-
-Local parallelism uses BTExecutionOptions and caller Core resource ceilings.
-No CPU/RAM probing or automatic global allocation. Resource/batch/worker settings
-are identity-neutral; numerical settings, cost rules and source receipts are not.
-Cancellation stops admission and running causal account work cooperatively.
-
-Run `uv run ruff check .` and `uv run pytest` in this owner, then affected
-consumers. Full work receives independent review. Verify standalone APIs,
-immutable publication, changed-prefix rejection, append/full equivalence,
-corruption/recovery and cleanup. Tests use synthetic data and isolated temporary
-stores; never touch the real workspace data root or call providers.
-
-Use owning generators for generated references, catalogs, OpenAPI and types.
-Architectural changes update entrances/rules/docs and distinguish implementation
-from remaining gaps. Record per-owner actual verification and unrun checks.
-
-No commit/push/PR/merge/release/deploy/service/provider call/real data update or
-governance transition without explicit authorization. Never delete authored
-research, immutable historical evidence, recovery material, credentials,
-environments or ignored machine state as source cleanup. Formal task metadata
-belongs to one workspace coordinator, with disjoint subagent scopes.
 
 BTStore.inspect is the public read-only setup probe; construction/inspection
 create no storage or recovery state and reject mismatched versions, tables or
@@ -113,18 +78,6 @@ and interval_end are indexed Date axes. Callers align numerical inputs from thei
 actual saved economic intervals, never a guessed date shift. Missing captured
 economic-axis summaries require explicit original-reference index maintenance.
 
-## English documentation and private wiki
-
-Active UI/documentation and new task text use English; preserve historical
-evidence, imported source documents, market identifiers and Unicode tests.
-Changes to public behavior, formulas, metrics, PIT/data contracts or workflows
-update owning documentation and relevant private wiki pages in the same task.
-Record affected page UUIDs and checks, or a justified no-impact assessment.
-In an integrated checkout, read workspace `.ai/rules/wiki.md`; required missing
-wiki access blocks task completion. Keep package docs and generated references
-here, and reference them from wiki knowledge/workflows without duplicating API
-authority. Record actual authors when maintaining wiki content.
-
 
 `BTExecutionOptions.native_admission` is an optional identity-neutral caller
 context factory. Mixed evaluation units retain serial inner native work.
@@ -138,3 +91,5 @@ supplies complete workspace/retention estimates; caller policy selects fixed
 CPU/memory shares before imports. No stores or publication run in children.
 Standalone options retain bounded threads, ready-future refill and ordered
 results. BT never imports the caller's admission implementation.
+
+Local parallelism uses explicit BTExecutionOptions and caller Core resource ceilings; resource settings are identity-neutral. BT never probes CPU/RAM or allocates a global budget.
