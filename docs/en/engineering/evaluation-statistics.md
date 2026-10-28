@@ -112,6 +112,12 @@ references/bytes, independent metrics and checkpoints. Never overwrite an old
 chapter or claim an old summary has the new policy merely because inputs match.
 Default annualization is 252 and quantiles 10. Workbench explicitly supplies
 240 and its China label adapter (decision t -> adjusted t+1 to t+2 open).
+Saved Alpha Return comparisons use `alpha_return_comparison`: statistics and
+drawdown inputs come from the same common-lag zero rows as the lag-zero curve.
+Never overwrite these with full-path statistics or fall back to full returns
+when comparison history is empty. Root coverage and comparison metadata remain
+separate. Sharpe consumers use `return_metrics`/`return_statistics` with frozen
+annualization; ICIR charts consume the explicitly annualized horizon field.
 Book/Spread paths use normalized virtual NAV with proportional full-L1 costs.
 Each independent weight path preserves its causal daily state, but only its
 final mature checkpoint is materialized; null-return values/observation masks

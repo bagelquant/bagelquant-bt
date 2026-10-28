@@ -172,6 +172,21 @@ def return_statistics(
     return metrics
 
 
+def annualized_turnover(
+    mean_daily_turnover: float | None, *, annualization: int
+) -> float | None:
+    """Scale mean daily full-L1 turnover to a yearly fraction (1 = 100%/year).
+
+    The caller selects the observations, including any initial-entry exclusion.
+    Missing/nonfinite means remain unavailable; no half-L1 adjustment is made.
+    """
+    return_metrics([], annualization)
+    if mean_daily_turnover is None or not math.isfinite(mean_daily_turnover):
+        return None
+    result = float(mean_daily_turnover) * annualization
+    return result if math.isfinite(result) else None
+
+
 @dataclass(frozen=True, slots=True)
 class OneSampleTest:
     """Result of a two-sided one-sample Student t-test."""

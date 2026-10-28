@@ -1,5 +1,12 @@
 # Public API — BT 0.12
 
+`alpha_return_comparison(lag_returns, *, annualization)` consumes authorized,
+mature saved Alpha lag rows and returns common-date Book/Tail statistics and
+plot tables. `annualized_turnover(mean_daily_turnover, *, annualization)` scales
+a caller-selected mean daily full-L1 turnover to a yearly fraction. See
+[saved research statistics](research-statistics.md#annualized-metrics-and-alpha-return-comparisons)
+for sample metadata, units and undefined values.
+
 `prepare_price_data(prices)` validates unique time/asset keys and finite positive
 prices before preparing returns. It applies the same missing-price policy as
 `validate_prices` and retains extra input columns. `fit_risk_factor_returns`

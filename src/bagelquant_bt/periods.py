@@ -235,7 +235,7 @@ def aggregate_saved_window(
         ic_annualization=annualization,
     )
     for label, name in (("book", "daily_book_returns"), ("tail", "daily_tail_returns")):
-        if name in sample:
+        if name in sample and section != "alpha_return":
             metrics[label] = return_statistics(
                 sample[name], annualization=annualization
             )

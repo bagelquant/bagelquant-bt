@@ -10,6 +10,7 @@ import polars as pl
 
 from ._quantiles import sort_quantile_frame
 from .benchmarks import benchmark_performance, top_n_excess_returns
+from .exceptions import InputValidationError
 from .horizon import (
     SIGNAL_PERSISTENCE_HORIZONS,
     build_statistical_inference,
@@ -19,6 +20,7 @@ from .horizon import (
 from .inputs import TIME
 from .performance import rolling_performance
 from .statistics import (
+    annualized_turnover,
     one_sample_t_test,
     quantile_rank_information_coefficients,
     return_metrics,
@@ -38,7 +40,7 @@ def compute_window_tables(
     ic_annualization: int,
     periods: pl.DataFrame | None = None,
     benchmark_returns: pl.DataFrame | None = None,
-) -> tuple[dict[str, bool | float | int | str | None], dict[str, pl.DataFrame]]:
+) -> tuple[dict[str, object], dict[str, pl.DataFrame]]:
     """Build one result section from already-windowed primitive series."""
 
     selected = set(items)
@@ -75,7 +77,7 @@ def compute_window_tables(
             "regression_window": 240,
             "ridge": 1.0,
             "volatility_window": 120,
-            "annualization": 240,
+            "annualization": annualization,
         }, {
             name: series.get(name, pl.DataFrame())
             for name in (
@@ -86,13 +88,10 @@ def compute_window_tables(
             )
         }
     if section == "alpha_return":
-        return {}, {
-            "alpha_return_lag_returns": series.get(
-                "daily_alpha_return_lag_returns", pl.DataFrame()
-            ),
-            "book_daily_returns": series.get("daily_book_returns", pl.DataFrame()),
-            "tail_daily_returns": series.get("daily_tail_returns", pl.DataFrame()),
-        }
+        return alpha_return_comparison(
+            series.get("daily_alpha_return_lag_returns", pl.DataFrame()),
+            annualization=annualization,
+        )
     if section == "quantile_test":
         return {}, _daily_quantile_test_tables(
             series.get("daily_quantile_returns", pl.DataFrame()),
@@ -206,6 +205,76 @@ def compute_window_tables(
             ),
         }
     raise ValueError(f"unknown result section: {section}")
+
+
+def alpha_return_comparison(
+    lag_returns: pl.DataFrame, *, annualization: int
+) -> tuple[dict[str, object], dict[str, pl.DataFrame]]:
+    """Summarize saved Alpha lag paths on their shared dates, without replay.
+
+    Input rows use Date ``time``, ``path_kind`` (book/tail), integer ``lag``
+    and Gross/Net returns. Apply authorization and label maturity before calling.
+    Preserve saved causal returns and gaps; never restart paths at the window
+    boundary. Missing lag zero is unavailable, with no full-path fallback.
+    """
+    # Validate the annualization even when there is no comparison history.
+    return_metrics([], annualization)
+    required = {TIME, "path_kind", "lag", "gross_return", "net_return"}
+    if not lag_returns.is_empty():
+        if not required.issubset(lag_returns.columns):
+            raise InputValidationError(
+                "Alpha Return comparison needs saved lag returns"
+            )
+        if lag_returns.schema[TIME] != pl.Date:
+            raise InputValidationError("Alpha Return comparison requires Date time")
+        if (
+            not lag_returns.schema["lag"].is_integer()
+            or lag_returns.select(
+                pl.any_horizontal(
+                    pl.col(TIME).is_null(),
+                    pl.col("lag").is_null(),
+                    ~pl.col("path_kind").is_in(["book", "tail"]).fill_null(False),
+                ).any()
+            ).item()
+        ):
+            raise InputValidationError("invalid Alpha Return lag coordinates")
+        keys = [TIME, "path_kind", "lag"]
+        if lag_returns.select(keys).n_unique() != lag_returns.height:
+            raise InputValidationError("duplicate Alpha Return lag coordinates")
+        groups = lag_returns.select("path_kind", "lag").n_unique()
+        common = lag_returns.group_by(TIME).len().filter(pl.col("len") == groups)
+        lag_returns = lag_returns.join(common.select(TIME), on=TIME, how="inner")
+        lag_returns = lag_returns.sort("path_kind", "lag", TIME)
+    elif not required.issubset(lag_returns.columns):
+        lag_returns = pl.DataFrame(
+            schema={
+                TIME: pl.Date,
+                "path_kind": pl.String,
+                "lag": pl.Int64,
+                "gross_return": pl.Float64,
+                "net_return": pl.Float64,
+            }
+        )
+    dates = lag_returns[TIME].unique().sort()
+    metrics = {
+        "comparison_sample": {
+            "basis": "common_lag_dates",
+            "start": str(dates[0]) if len(dates) else None,
+            "end": str(dates[-1]) if len(dates) else None,
+            "observations": len(dates),
+            "annualization": annualization,
+        }
+    }
+    tables = {"alpha_return_lag_returns": lag_returns}
+    for path in ("book", "tail"):
+        daily = (
+            lag_returns.filter((pl.col("path_kind") == path) & (pl.col("lag") == 0))
+            .drop("path_kind", "lag")
+            .sort(TIME)
+        )
+        tables[f"{path}_daily_returns"] = daily
+        metrics[path] = return_statistics(daily, annualization=annualization)
+    return metrics, tables
 
 
 def _daily_quantile_test_tables(
@@ -701,11 +770,7 @@ def _annualized_turnover(turnover: pl.DataFrame, annualization: int) -> float | 
     values = turnover.get_column("turnover").drop_nulls()
     values = values.filter(values.is_finite())
     mean = values.mean()
-    return (
-        float(mean) * annualization
-        if mean is not None and math.isfinite(float(mean))
-        else None
-    )
+    return annualized_turnover(mean, annualization=annualization)
 
 
 def _difference(left: float | None, right: float | None) -> float | None:

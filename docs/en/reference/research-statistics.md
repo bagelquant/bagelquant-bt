@@ -23,6 +23,37 @@ missing/negative/nonfinite coverage or a zero denominator is unavailable. This
 is diagnostic capacity, not a fill limit. `execution_stress_scenarios` supplies
 nine native-rule one-factor cases with independent accounts.
 
+## Annualized metrics and Alpha Return comparisons
+
+Sharpe uses the arithmetic daily mean divided by sample standard deviation
+(`ddof=1`), multiplied by `sqrt(A)`, with zero risk-free return. `A` is the
+caller's frozen annualization. Annualized volatility uses the same square-root
+factor; annualized return compounds wealth over the finite observation count.
+ICIR exposes both raw and annualized fields. For a horizon covering `w` market
+sessions, `annualized_icir = icir * sqrt(A / w)`; bucket width includes both ends.
+
+`alpha_return_comparison(lag_returns, annualization=A)` returns `(metrics,
+tables)` from saved Date `time`, `path_kind` (Book/Tail), integer `lag`, and
+Gross/Net return rows. Apply authorization and maturity bounds first. It retains
+shared lag dates and derives Book/Tail table statistics and daily drawdown inputs
+from lag zero, using `return_statistics`. An absent/empty lag-zero sample stays
+unavailable; full-path returns cannot supply a fallback. Null/nonfinite returns
+remain unavailable observations and genuine zeros remain valid. Saved causal
+returns are never restarted or simulated at a window boundary.
+
+`metrics.comparison_sample` identifies the comparison's `start`, `end`,
+`observations`, `annualization` and `basis="common_lag_dates"`. The ordinary
+`sample` still describes root signal coverage. `aggregate_saved_window` uses
+this comparison for the Alpha Return section; other sections keep their own
+declared samples.
+
+`annualized_turnover(mean_daily_turnover, annualization=A)` multiplies the mean
+daily full-L1 turnover by `A`. The result is a yearly fraction: `3.0` means
+300%/year. The caller selects observations and excludes initial entry when its
+protocol requires that exclusion. This does not divide full-L1 turnover by two.
+Daily curves, IC, hit rates, drawdowns and daily expected shortfall keep their
+original units; they are not annualized ratios.
+
 ## Effective sample and downside risk
 
 `evaluation_sample(frames, start=..., end=..., minimum_history_years=None)` reports requested/effective dates, first signal/economic dates, observation counts, leading exclusions, missingness and warnings. Signal coverage is authoritative when supplied; otherwise finite saved economic observations set the start after maturity filtering. Zero returns are valid. Subsequent gaps stay in the calendar. Calendar-history thresholds are caller policy.

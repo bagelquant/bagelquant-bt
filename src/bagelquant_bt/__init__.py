@@ -144,6 +144,7 @@ from .sample import SAMPLE_POLICY, evaluation_sample
 from .statistics import (
     OneSampleTest,
     annualized_return,
+    annualized_turnover,
     cross_sectional_factor_returns,
     one_sample_t_test,
     quantile_rank_information_coefficients,
@@ -153,6 +154,7 @@ from .store import (
     BTStore,
     evaluation_identity,
 )
+from .window import alpha_return_comparison
 
 __all__ = [
     "DAILY_ALPHA_RETURN_LAGS",
@@ -202,9 +204,11 @@ __all__ = [
     "allocate_integer_positions",
     "alpha_evaluation_contract",
     "alpha_input_start",
+    "alpha_return_comparison",
     "alpha_update_plan",
     "annualized_ratio",
     "annualized_return",
+    "annualized_turnover",
     "benchmark_performance",
     "benjamini_hochberg",
     "build_alpha_weights",

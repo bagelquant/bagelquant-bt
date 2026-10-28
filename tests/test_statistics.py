@@ -7,10 +7,22 @@ import polars as pl
 import pytest
 
 from bagelquant_bt import (
+    annualized_turnover,
     cross_sectional_factor_returns,
     one_sample_t_test,
     quantile_rank_information_coefficients,
 )
+from bagelquant_bt.exceptions import InputValidationError
+
+
+def test_annualized_turnover_uses_full_l1_fraction_and_unavailable_mean():
+    assert annualized_turnover(0.25, annualization=240) == 60.0
+    assert annualized_turnover(0.25, annualization=12) == 3.0
+    assert annualized_turnover(0.0, annualization=240) == 0.0
+    assert annualized_turnover(None, annualization=240) is None
+    assert annualized_turnover(float("nan"), annualization=240) is None
+    with pytest.raises(InputValidationError, match="annualization"):
+        annualized_turnover(0.25, annualization=0)
 
 
 def test_cross_sectional_factor_returns_match_hand_checked_ols_slopes() -> None:
