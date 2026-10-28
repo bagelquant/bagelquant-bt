@@ -58,7 +58,7 @@ def _publication_timed(stage):
 @dataclass
 class _PublicationTables:
     references: dict[str, Any]
-    frontier: tuple[int, int] | None = None
+    frontier: tuple[int, ...] | None = None
 
 
 _SCHEMA = """
@@ -900,14 +900,22 @@ class BTStore:
 
     @staticmethod
     def _receipt_frontier(connection):
-        # Owner APIs append immutable receipts. Invalidation changes only
-        # invalid_reason; cleanup never removes historical receipt rows.
-        return tuple(
+        # Normal publication appends receipts; explicit release changes the
+        # frontier even if a subsequent publication reuses a SQLite rowid.
+        rows = tuple(
             connection.execute(
                 f"SELECT coalesce(max(rowid),0) FROM {table}"
             ).fetchone()[0]
             for table in ("bt_shared", "bt_chapters")
         )
+        release_count = 0
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='bt_release_plans'"
+        ).fetchone():
+            release_count = connection.execute(
+                "SELECT count(*) FROM bt_release_plans"
+            ).fetchone()[0]
+        return (*rows, release_count)
 
     @_publication_timed("lookup")
     def _publication_table_references(self, table_ids, check_canceled):
@@ -2656,6 +2664,34 @@ class BTStore:
             if metadata_corrupt
             else self.cleanup_plan()["candidates"],
         }
+
+    def release_status(self, plan_id: str) -> str:
+        """Return unknown, pending or completed for a release request."""
+        if not self.meta_path.is_file():
+            return "unknown"
+        with self._read_connection() as connection:
+            if not connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='bt_release_plans'"
+            ).fetchone():
+                return "unknown"
+            row = connection.execute(
+                "SELECT completed FROM bt_release_plans WHERE id=?", (plan_id,)
+            ).fetchone()
+        return "unknown" if row is None else "completed" if row[0] else "pending"
+
+    def plan_release(
+        self, evaluation_ids: Sequence[str], *, owner_ids: Sequence[str] = ()
+    ) -> dict[str, Any]:
+        """Preview explicit retirement while retaining shared files."""
+        from .release import plan_release
+
+        return plan_release(self, evaluation_ids, owner_ids=owner_ids)
+
+    def apply_release(self, plan: Mapping[str, Any]) -> dict[str, Any]:
+        """Resume an exact release; keep original receipts in its audit journal."""
+        from .release import apply_release
+
+        return apply_release(self, plan)
 
     def cleanup_plan(
         self,

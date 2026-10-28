@@ -60,8 +60,7 @@ original-receipt pass per batch. Literal-token rejection never supplies authorit
 Unicode-escaped candidates still require exact nested files matches and receipt
 authentication. Prepared misses recheck indexed authority and the append-only
 receipt frontier; concurrent new receipts refresh remaining misses together.
-Never infer new-table authority from index or file absence. Keep receipt rows
-append-only (invalidation changes only status); cleanup never removes them.
+Never infer new-table authority from index or file absence. Keep receipt rows append-only during ordinary publication/invalidation; orphan cleanup never removes them. Explicit retirement uses the separate audited release contract below.
 Release owned raw/decoded/traversal aliases on failure without clearing foreign
 exception frames. Scalar reads retain SQLite candidate filtering. New table
 publication must not walk unrelated historical file trees to prove absence.
@@ -93,3 +92,19 @@ Standalone options retain bounded threads, ready-future refill and ordered
 results. BT never imports the caller's admission implementation.
 
 Local parallelism uses explicit BTExecutionOptions and caller Core resource ceilings; resource settings are identity-neutral. BT never probes CPU/RAM or allocates a global budget.
+
+## Explicit evaluation retirement
+
+`BTStore.plan_release(evaluation_ids, owner_ids=...)` previews selected evaluations
+and owner continuations. `apply_release(plan)` preserves their complete original
+receipt rows in an optional release journal before retiring active rows. It
+unlinks only registered table/index files not needed by surviving originals or
+new publication. This explicit action differs from ordinary orphan cleanup.
+No caller opens BT files or tables to perform deletion.
+
+The optional journal is created only by explicit release. Retried pending plans
+resume after missing files, preserve newly shared content, and account for actual
+removed bytes per file. `release_status(plan_id)` reports unknown/pending/completed.
+Metadata integrity and publication writer fences remain mandatory even without
+optional table indexes. Republishing identical numerical content registers new
+active receipts and never treats deliberately released bytes as a corrupt hit.
