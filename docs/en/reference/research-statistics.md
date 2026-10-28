@@ -55,5 +55,11 @@ the supplied calendar; continuation still requires original state and proofs.
 `regression_min_periods=None` requires a full regression window. Hosts can choose
 an earlier minimum, such as 60 inside the previous 240 sessions. Only finite,
 matured joint rows train the regression, and calendar gaps retain their position.
-The resolved minimum participates in policy `rolling_risk_profile.v3` and saved
+The resolved minimum participates in policy `rolling_risk_profile.v4` and saved
 continuation identity. See [Daily risk updates](../risk-updates.md).
+
+
+Hosts can supply causal `industry_activity` and enable `require_continuity` for
+masked rolling regressions. Inactive terms are omitted without inventing return
+rows. Missing active observations or mature Gross block after the supported
+start. Industry-only and style-only fits share the public WLS kernel.

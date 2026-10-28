@@ -8,12 +8,16 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-RISK_PROFILE_POLICY = "rolling_risk_profile.v3"
+RISK_PROFILE_POLICY = "rolling_risk_profile.v4"
 
 
 def risk_profile_policy(
-    regression_window: int, volatility_window: int, annualization: int, ridge: float,
+    regression_window: int,
+    volatility_window: int,
+    annualization: int,
+    ridge: float,
     regression_min_periods: int | None = None,
+    require_continuity: bool = False,
 ) -> dict[str, Any]:
     if (
         isinstance(regression_window, bool)
@@ -30,8 +34,11 @@ def risk_profile_policy(
     minimum = (
         regression_window if regression_min_periods is None else regression_min_periods
     )
-    if (isinstance(minimum, bool) or not isinstance(minimum, int)
-            or not 2 <= minimum <= regression_window):
+    if (
+        isinstance(minimum, bool)
+        or not isinstance(minimum, int)
+        or not 2 <= minimum <= regression_window
+    ):
         raise ValueError(
             "risk profile regression_min_periods must be between 2 "
             "and regression_window"
@@ -40,6 +47,8 @@ def risk_profile_policy(
 
     if isinstance(ridge, bool) or not math.isfinite(ridge) or ridge <= 0:
         raise ValueError("invalid risk profile ridge penalty")
+    if not isinstance(require_continuity, bool):
+        raise ValueError("require_continuity must be Boolean")
     return {
         "kernel": RISK_PROFILE_POLICY,
         "regression_window": regression_window,
@@ -47,6 +56,7 @@ def risk_profile_policy(
         "volatility_window": volatility_window,
         "annualization": annualization,
         "ridge": float(ridge),
+        "require_continuity": require_continuity,
     }
 
 
@@ -93,6 +103,7 @@ def plan_risk_profile_update(
     volatility_window: int = 120,
     annualization: int = 240,
     ridge: float = 1.0,
+    require_continuity: bool = False,
 ) -> RiskProfileUpdatePlan:
     """Plan initialization/append/repair without reading numerical history.
 
@@ -111,8 +122,12 @@ def plan_risk_profile_update(
         raise ValueError("risk profile planning needs a sorted nonempty date calendar")
     days = sessions[: bisect_right(sessions, through)]
     policy = risk_profile_policy(
-        regression_window, volatility_window, annualization, ridge,
+        regression_window,
+        volatility_window,
+        annualization,
+        ridge,
         regression_min_periods,
+        require_continuity,
     )
 
     def result(mode, *, index=None, output=None, end=None, reason=None, retained=None):

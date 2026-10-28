@@ -44,6 +44,11 @@ def evidence_frame(frame: pl.DataFrame, *, axes=None):
             "factor_return" in frame.columns
             or ("gross_return" in frame.columns and "asset_id" not in frame.columns)
             or "specific_return" in frame.columns
+            or (
+                frame.schema.get("factor") == pl.String
+                and frame.schema.get("active") == pl.Boolean
+                and "asset_id" not in frame.columns
+            )
             or ("unit_return" in frame.columns and "asset_id" not in frame.columns)
             or ("actual_weight" in frame.columns and "asset_id" in frame.columns)
         )

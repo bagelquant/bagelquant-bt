@@ -78,7 +78,12 @@ def compute_window_tables(
             "annualization": 240,
         }, {
             name: series.get(name, pl.DataFrame())
-            for name in ("risk_returns", "risk_exposures", "risk_diagnostics")
+            for name in (
+                "risk_returns",
+                "risk_exposures",
+                "risk_diagnostics",
+                "risk_panel_status",
+            )
         }
     if section == "alpha_return":
         return {}, {

@@ -70,6 +70,54 @@ def test_interval_proof_and_catalog_are_metadata_only_and_fragmentation_invarian
     )
 
 
+def test_factor_activity_proof_is_published_bounded_and_metadata_only(
+    tmp_path, monkeypatch
+):
+    days, factors = inputs()
+    activity = factors.select("time", "available_date", "factor").with_columns(
+        pl.lit(True).alias("active"),
+        pl.lit(20).alias("eligible_count"),
+        pl.lit(19).alias("sample_count"),
+    )
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    original = store.publish_table(activity)
+    split = store.compose_reference(
+        [
+            {"reference": store.publish_table(part)}
+            for part in activity.partition_by("factor")
+        ]
+    )
+    clipped = store.publish_table(activity.filter(pl.col("available_date") <= days[7]))
+    changed = store.publish_table(
+        activity.with_columns(
+            pl.when(pl.col("time") == days[6])
+            .then(18)
+            .otherwise(pl.col("sample_count"))
+            .alias("sample_count")
+        )
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("activity proof decoded original values")
+
+    monkeypatch.setattr(BTStore, "read_reference", forbidden)
+    proof = store.reference_interval_identity(
+        original, start=days[0], end=days[8], cutoff=days[7]
+    )
+    assert proof is not None
+    assert proof == store.reference_interval_identity(
+        split, start=days[0], end=days[8], cutoff=days[7]
+    )
+    assert proof == store.reference_interval_identity(
+        clipped, start=days[0], end=days[8]
+    )
+    assert proof != store.reference_interval_identity(
+        changed, start=days[0], end=days[8], cutoff=days[7]
+    )
+    assert store.index_plan(evidence=True, references=[original])["tables"] == []
+
+
 def test_legacy_evidence_requires_explicit_index_maintenance_preserving_receipts(
     tmp_path, monkeypatch
 ):

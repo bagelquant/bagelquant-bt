@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from typing import cast
 
@@ -12,7 +12,7 @@ import polars as pl
 from .inputs import validate_prices
 from .risk import fit_risk_factor_returns, risk_interval_returns
 
-RISK_UPDATE_POLICY = "daily_risk_maturity.v1"
+RISK_UPDATE_POLICY = "daily_risk_maturity.v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +183,7 @@ class RiskFactorResult:
     price_carry: pl.DataFrame
     state: dict
     fit_count: int
+    industry_activity: pl.DataFrame = field(default_factory=pl.DataFrame)
 
 
 def evaluate_risk_factor_returns(
@@ -191,9 +192,13 @@ def evaluate_risk_factor_returns(
     plan: RiskFactorUpdatePlan,
     *,
     styles: Sequence[str],
+    industry_controls: bool = True,
+    weighting: str = "sqrt_cap",
     minimum_assets: int = 200,
     observations_per_parameter: int = 5,
     population: pl.DataFrame | None = None,
+    require_continuity: bool = False,
+    valid_start: date | None = None,
     check_canceled: Callable[[], None] = lambda: None,
 ) -> RiskFactorResult:
     """Fit exactly admitted maturity dates, retaining original price carry dates.
@@ -205,13 +210,23 @@ def evaluate_risk_factor_returns(
     """
     if plan.complete:
         raise ValueError("a completed risk update needs no numerical execution")
-    if (
-        not styles
-        or len(set(styles)) != len(styles)
-        or any(not isinstance(style, str) or not style for style in styles)
+    if valid_start is not None and type(valid_start) is not date:
+        raise ValueError("valid_start must be a Date")
+    if len(set(styles)) != len(styles) or any(
+        not isinstance(style, str) or not style for style in styles
     ):
         raise ValueError("risk styles must be unique nonempty names")
-    required = {"time", "asset_id", "market_cap", "industry", *styles}
+    if not styles and not industry_controls:
+        raise ValueError("risk fitting requires styles or industry controls")
+    if weighting not in {"sqrt_cap", "equal"}:
+        raise ValueError("risk weighting must be sqrt_cap or equal")
+    required = {"time", "asset_id", *styles}
+    numeric = ["forward_return", *styles]
+    if weighting == "sqrt_cap":
+        required.add("market_cap")
+        numeric.append("market_cap")
+    if industry_controls:
+        required.add("industry")
     if not required <= set(exposures.columns):
         raise ValueError(
             f"missing risk exposures: {sorted(required - set(exposures.columns))}"
@@ -262,7 +277,7 @@ def evaluate_risk_factor_returns(
             for part in population.partition_by("time", maintain_order=True)
         }
     )
-    factors, diagnostics = [], []
+    factors, diagnostics, activity = [], [], []
     for row in plan.schedule.iter_rows(named=True):
         check_canceled()
         cross = exposure_groups.get(row["decision_date"], exposures.head(0))
@@ -280,9 +295,43 @@ def evaluate_risk_factor_returns(
         fit = fit_risk_factor_returns(
             cross,
             styles=styles,
+            industry_controls=industry_controls,
+            weighting=weighting,
             minimum_assets=minimum_assets,
             observations_per_parameter=observations_per_parameter,
         )
+        if industry_controls:
+            known = cross.filter(
+                pl.col("industry").is_not_null()
+                & (pl.col("industry").cast(pl.String).str.len_chars() > 0)
+            )
+            for group in known.partition_by("industry"):
+                valid = pl.all_horizontal(
+                    [pl.col(name).is_finite().fill_null(False) for name in numeric]
+                )
+                if weighting == "sqrt_cap":
+                    valid &= pl.col("market_cap") > 0
+                complete = group.filter(valid)
+                activity.append(
+                    {
+                        **row,
+                        "factor": "industry:" + str(group["industry"][0]),
+                        "active": True,
+                        "eligible_count": group.height,
+                        "sample_count": complete.height,
+                    }
+                )
+            # A dated anchor certifies the complete activity inventory even
+            # when no industry has members. Absence is never inferred from fits.
+            activity.append(
+                {
+                    **row,
+                    "factor": "market",
+                    "active": True,
+                    "eligible_count": cross.height,
+                    "sample_count": fit.sample_count,
+                }
+            )
         factors.append(
             fit.factor_returns.with_columns(
                 pl.lit(row["time"]).alias("time"),
@@ -336,6 +385,29 @@ def evaluate_risk_factor_returns(
             "reason": pl.String,
         },
     )
+    for diagnostic in diagnostic_frame.sort("time").iter_rows(named=True):
+        if (
+            require_continuity
+            and valid_start is not None
+            and diagnostic["reason"] is None
+            and diagnostic["time"] < valid_start
+        ):
+            raise ValueError(
+                "RISK_START_REPAIR_REQUIRED: explicitly audit "
+                "the earlier supported prefix"
+            )
+        if valid_start is None and diagnostic["reason"] is None:
+            valid_start = diagnostic["time"]
+        if (
+            require_continuity
+            and valid_start is not None
+            and diagnostic["time"] >= valid_start
+            and diagnostic["reason"] is not None
+        ):
+            raise ValueError(
+                f"RISK_CONTINUITY_REQUIRED: {diagnostic['time']}: "
+                f"{diagnostic['reason']}; start={valid_start}"
+            )
     carry = (
         prices.filter(pl.col("time") <= plan.carry_boundary)
         .sort("asset_id", "time")
@@ -347,6 +419,25 @@ def evaluate_risk_factor_returns(
         "through": plan.through.isoformat(),
         "carry_boundary": plan.carry_boundary.isoformat(),
         "styles": list(styles),
+        "industry_controls": industry_controls,
+        "weighting": weighting,
+        "valid_start": None if valid_start is None else str(valid_start),
+        "fit_coverage": {
+            "times": [str(day) for day in diagnostic_frame["time"]],
+            "first_valid": (
+                None
+                if diagnostic_frame.filter(pl.col("reason").is_null()).is_empty()
+                else str(
+                    diagnostic_frame.filter(pl.col("reason").is_null())["time"].min()
+                )
+            ),
+            "unavailable": [
+                {"time": str(row["time"]), "reason": row["reason"]}
+                for row in diagnostic_frame.filter(
+                    pl.col("reason").is_not_null()
+                ).iter_rows(named=True)
+            ],
+        },
         "minimum_assets": minimum_assets,
         "observations_per_parameter": observations_per_parameter,
         "pending_decisions": [
@@ -360,6 +451,18 @@ def evaluate_risk_factor_returns(
         carry,
         state,
         len(diagnostics),
+        pl.DataFrame(
+            activity,
+            schema={
+                "decision_date": pl.Date,
+                "time": pl.Date,
+                "available_date": pl.Date,
+                "factor": pl.String,
+                "active": pl.Boolean,
+                "eligible_count": pl.Int64,
+                "sample_count": pl.Int64,
+            },
+        ).sort("time", "factor"),
     )
 
 

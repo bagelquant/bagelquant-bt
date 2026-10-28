@@ -33,20 +33,24 @@ Daily risk fitting uses `plan_risk_factor_update` and the same
 Plan before loading exposures/prices; `windows(sessions=32)` bounds independent
 fit batches. Decision t uses next-session-open to following-session-open,
 maturing at the following session. Preserve null/complete-case exclusion,
-normalized sqrt(cap) WLS, cap-constrained industry coefficients, rank checks
+the caller-selected weighting and constraint, rank checks
 and sorted industry/asset ordering. A preceding price carry retains actual
 observation dates, including suspended assets; never invent observation dates.
 Core owns exposure numerical artifacts; BTStore owns returns, diagnostics and
 carry/state via shared receipts. Append registered delta references and preserve
 old numerical bytes, rather than compare/decode complete historical frames.
+Default sqrt-cap WLS uses the cap-weighted industry constraint. Explicit equal
+weighting requires no cap input and uses stock counts in that constraint; its
+industry-only factors are exact group means relative to the whole stock mean.
 The host declares causal diagnostic population policy; a current-day observed
 coordinate union need not equal a retired rectangular monthly population.
 
-Risk-profile policy `rolling_risk_profile.v3` uses the factor population visible
+Risk-profile policy `rolling_risk_profile.v4` uses the factor population visible
 on each economic date. Future industries cannot add historical zero-exposure
-rows or constant-factor counts. Newly visible industries retain structural-zero
-training history; ridge, complete-case rules and next-session maturity stay
-unchanged. Optional regression_min_periods defaults to the full regression
+rows or constant-factor counts. Explicit industry_activity proves dated activity independently of fits. Masked
+regressions omit inactive terms and never manufacture factor-return observations.
+Center/scaling moments use the same admitted calendar. Missing active inputs and
+missing mature Gross block strict publication; new unidentifiable betas remain null. Optional regression_min_periods defaults to the full regression
 window; explicit partial minima count only valid, matured joint rows inside
 that calendar window. Training and standardization use that same filtered set.
 The resolved minimum is bound into policy and continuation state.
@@ -143,6 +147,10 @@ share supplied read-only inputs, not cash/state. Opaque custom rules require
 caller-declared scenarios rather than inferred fee components.
 
 BTStore owns evaluation paths/checkpoints/primitives/chapters and integrity.
+Factor-activity tables with Date time, String factor, Boolean active and no
+asset_id receive the same typed date/maturity evidence at publication. Hash the
+complete row, including eligible/sample counts. Missing old summaries require
+explicit scoped owner index maintenance, never implicit reads or refits.
 Workbench retains application authorization/governance and backend references.
 Publication is immutable and failures preserve valid receipts; prefix append
 must match full computation and revisit newly mature labels. Source changes

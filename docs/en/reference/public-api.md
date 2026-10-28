@@ -4,7 +4,20 @@
 prices before preparing returns. It applies the same missing-price policy as
 `validate_prices` and retains extra input columns. `fit_risk_factor_returns`
 accepts `styles=()` for a market-and-industry-only fit, using the same weighted
-industry constraint as fits with style columns.
+industry constraint as fits with style columns. `industry_controls=False` fits
+the intercept and selected styles without requiring an industry column. Industry
+bases and their cap constraint use the actual complete-case fitting sample.
+Both fit/update APIs accept weighting="equal" to use equal objective weights
+and a stock-count-weighted industry constraint, without a market_cap column.
+In an industry-only equal-weight fit, Market is the admitted stock mean and
+each industry factor is its group mean minus Market. cap_coverage is unavailable
+for this cap-independent definition; sample/exclusion counts remain actual.
+`evaluate_risk_factor_returns(..., require_continuity=True, valid_start=...)`
+retains the first supported fit and rejects any later unavailable fit. Its
+compact state includes the exact admitted `fit_coverage` calendar, first valid
+date and unavailable reasons; hosts can validate cached batches without reading
+numerical history. `industry_activity` records known industries independently
+of observed prices and styles.
 
 `BTExecutionOptions(window_dispatch=...)` optionally supplies a
 `HorizonDispatch` implementation. `admit_horizons(working_bytes, retained_bytes,
@@ -28,7 +41,8 @@ existing immutable authority, schemas and explicit audit behavior remain intact.
 affected_intervals=(), preceding=(), input_proof=None, ...)` returns a
 `RiskProfileUpdatePlan` with mode, read_start/read_end, output_start/output_end,
 specific_start and previous_index. Unknown state/prefix yields blocked work.
-`rolling_risk_profile(..., previous=selected, plan=plan, input_proof=...)`
+`rolling_risk_profile(..., previous=selected, plan=plan, input_proof=...,
+industry_activity=..., require_continuity=True)`
 returns delta returns/exposures/diagnostics, compact state and an identity-neutral
 solve_count. The default 240-session regression needs only its input halo and
 119 saved specific returns. State retains policy, calendar_start, through/cutoff,
@@ -39,6 +53,10 @@ repair uses a proved preceding state and a finite regression/volatility halo.
 Supply `previous_input_proof` from the latest original input receipts to attest
 the complete prefix before a repair, including its saved specific-return halo.
 Simultaneous repair/append needs separate admitted plans.
+Profile v4 binds strict continuity and industry activity. Causally absent
+industry terms are excluded through masks; active missing returns and missing
+mature Gross after the saved start block continuation. Neither raw returns nor
+cumulative paths are filled or reset.
 
 `BTStore.reference_evidence(reference, filters=())` returns registered typed schema,
 factor/family/first-seen catalogue and date-content tokens.

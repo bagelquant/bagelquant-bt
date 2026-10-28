@@ -257,61 +257,6 @@ def _equal_ordered_prefix(before, current, axis):
     return prefix[-1] if prefix.len() else None
 
 
-def _table_evidence(frame, *, axes=None):
-    """Compact commutative typed row summaries, captured at publication only."""
-    from .table_composition import COORDINATES
-
-    if frame.schema.get("time") != pl.Date or not (
-        "factor_return" in frame.columns
-        or ("gross_return" in frame.columns and "asset_id" not in frame.columns)
-        or "specific_return" in frame.columns
-    ):
-        return None
-    axes = (
-        axes
-        if axes is not None
-        else [name for name in COORDINATES if name in frame.columns]
-    )
-    if len(set(axes)) != len(axes) or any(
-        name not in COORDINATES or name not in frame.columns for name in axes
-    ):
-        raise ValueError("BT summary evidence axes differ from original table columns")
-    canonical = frame.select(sorted(frame.columns))
-    rows = (
-        frame.select(axes)
-        .with_columns(
-            canonical.hash_rows(seed=0, seed_1=0, seed_2=0, seed_3=0).alias("_a"),
-            canonical.hash_rows(seed=41, seed_1=67, seed_2=97, seed_3=131).alias("_b"),
-        )
-        .group_by(axes)
-        .agg(pl.len().alias("_rows"), pl.col("_a").sum(), pl.col("_b").sum())
-        .sort(axes)
-    )
-    groups = [
-        [
-            *(str(value) if isinstance(value, date) else value for value in row[:-3]),
-            row[-3],
-            format(row[-2], "016x"),
-            format(row[-1], "016x"),
-        ]
-        for row in rows.iter_rows()
-    ]
-    factors = {}
-    if {"factor", "family"}.issubset(frame.columns):
-        for name, family, first in (
-            frame.group_by("factor", "family").agg(pl.col("time").min()).iter_rows()
-        ):
-            if name in factors and factors[name]["family"] != family:
-                return None
-            factors[name] = {"family": family, "first_seen": str(first)}
-    return {
-        "schema": "bt.reference.evidence.v1",
-        "axes": axes,
-        "groups": groups,
-        "factors": factors,
-    }
-
-
 class BTStore:
     """An explicit SQLite authority with immutable, content-addressed Parquet.
 
