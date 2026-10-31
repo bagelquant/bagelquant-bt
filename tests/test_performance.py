@@ -1,14 +1,39 @@
 import math
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
 
 from bagelquant_bt.performance import rolling_performance
+from bagelquant_bt.returns import drawdown
 from bagelquant_bt.statistics import (
     annualized_return,
     return_metrics,
     return_statistics,
 )
+
+
+@pytest.mark.parametrize(
+    "returns,expected",
+    [
+        ([-0.1], [-0.1]),
+        ([-0.1, 0.05, 0.1], [-0.1, -0.055, 0.0]),
+        ([-1.0, 0.0], [-1.0, -1.0]),
+        ([0.1, -0.1], [0.0, -0.1]),
+    ],
+)
+def test_public_drawdown_includes_initial_wealth(returns, expected):
+    frame = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 1) + timedelta(days=i) for i in range(len(returns))],
+            "return": returns,
+        }
+    )
+    result = drawdown(frame, "return")
+    assert result["drawdown"].to_list() == pytest.approx(expected)
+    assert result["drawdown"].min() == pytest.approx(
+        return_metrics(returns, 252)["max_drawdown"]
+    )
 
 
 def test_negative_terminal_wealth_has_no_real_annualized_return():

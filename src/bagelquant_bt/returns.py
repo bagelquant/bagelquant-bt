@@ -547,5 +547,7 @@ def value_path(
 
 
 def drawdown(returns: pl.DataFrame, column: str) -> pl.DataFrame:
+    """Compute drawdowns in supplied row order, including initial wealth one."""
     wealth = (1.0 + pl.col(column).fill_null(0.0)).cum_prod()
-    return returns.select(TIME, (wealth / wealth.cum_max() - 1.0).alias("drawdown"))
+    peak = pl.max_horizontal(wealth.cum_max(), pl.lit(1.0))
+    return returns.select(TIME, (wealth / peak - 1.0).alias("drawdown"))

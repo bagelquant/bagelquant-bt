@@ -11,7 +11,7 @@ from bagelquant_core import quantile_rank_information_coefficient
 
 from ._quantiles import ordered_quantile_labels, quantile_number
 from .exceptions import InputValidationError
-from .inputs import ASSET_ID, TIME
+from .inputs import ASSET_ID, TIME, validate_panel_frame
 
 
 def annualized_return(growth: float, *, periods: int, annualization: int) -> float:
@@ -355,7 +355,16 @@ def cross_sectional_factor_returns(
     factor: pl.DataFrame,
     forward_returns: pl.DataFrame,
 ) -> pl.DataFrame:
-    """Estimate per-date OLS factor-return slopes with an intercept."""
+    """Estimate per-date OLS slopes from unique, pairwise finite observations.
+
+    Coordinates are normalized by the panel validator. Nonfinite pairs are
+    unavailable; at least three finite pairs and factor variation are required.
+    """
+
+    factor = validate_panel_frame(factor, label="factor", value_columns=("factor",))
+    forward_returns = validate_panel_frame(
+        forward_returns, label="forward_returns", value_columns=("forward_return",)
+    )
 
     paired = (
         factor.select(TIME, ASSET_ID, "factor")
@@ -364,7 +373,7 @@ def cross_sectional_factor_returns(
             on=[TIME, ASSET_ID],
             how="inner",
         )
-        .drop_nulls(["factor", "forward_return"])
+        .filter(pl.col("factor").is_finite() & pl.col("forward_return").is_finite())
     )
     if paired.is_empty():
         return pl.DataFrame(
@@ -373,7 +382,7 @@ def cross_sectional_factor_returns(
     return (
         paired.group_by(TIME)
         .agg(
-            pl.len().alias("sample_size"),
+            pl.len().cast(pl.Int64).alias("sample_size"),
             pl.col("factor").n_unique().alias("_factor_values"),
             pl.col("factor").var().alias("_factor_variance"),
             pl.cov("factor", "forward_return").alias("_covariance"),

@@ -423,6 +423,90 @@ def test_unregistered_conflicting_file_cannot_be_published(tmp_path):
     assert store.shared_receipt("root", "path") is None
 
 
+def test_table_publication_distinguishes_reordered_named_values(tmp_path):
+    store = _store(tmp_path)
+    first = pl.DataFrame({"gross_return": [0.1], "net_return": [0.2]})
+    second = pl.DataFrame({"net_return": [0.1], "gross_return": [0.2]})
+    left = store.publish_table(first)
+    right = store.publish_table(second)
+    assert left != right
+    assert store.read_reference(left).equals(first)
+    assert store.read_reference(right).equals(second)
+    assert store.publish_table(second) == right
+    chapter = store.begin("root", settings={}, through="2024-01-03")
+    result = store.publish_chapter(
+        chapter, "summary", {"first": first, "second": second}
+    )
+    assert result["files"]["first"] != result["files"]["second"]
+    shared = store.publish_shared(
+        "root", "path", "new", {"first": first, "second": second}
+    )
+    assert shared["files"]["first"] != shared["files"]["second"]
+
+
+def test_original_table_policy_remains_readable_and_auditable(tmp_path):
+    import hashlib
+
+    from bagelquant_core.hashing import (
+        DATAFRAME_HASH_V1,
+        DATAFRAME_HASH_V2,
+        hash_dataframe,
+    )
+
+    store = _store(tmp_path)
+    frame = pl.DataFrame({"gross_return": [0.1], "net_return": [0.2]})
+    digest = hash_dataframe(frame, policy=DATAFRAME_HASH_V1)
+    path = store._table_path(digest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(path)
+    original = {
+        "backend": "bt",
+        "table_id": digest,
+        "logical_hash": digest,
+        "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "rows": 1,
+    }
+    with store._connect() as db:
+        db.execute(
+            "INSERT INTO bt_table_index VALUES(?,?,?)",
+            (
+                digest,
+                json.dumps(original),
+                store._index_schema(original, frame.schema, frame=frame),
+            ),
+        )
+    before = path.read_bytes()
+    saved = store.publish_shared(
+        "root", "original", "old", {}, file_references={"path": original}
+    )
+    store.verify_reference(original, deep=True)
+    assert store.read_reference(original).equals(frame)
+    current = store.publish_table(frame)
+    assert current["hash_policy"] == DATAFRAME_HASH_V2
+    assert current["table_id"] != original["table_id"]
+    assert (
+        store.publish_shared(
+            "root", "same", "old", {"path": frame}, file_references={"path": original}
+        )["files"]["path"]
+        == original
+    )
+    with pytest.raises(ValueError, match="ordered schema"):
+        store.publish_shared(
+            "root",
+            "wrong",
+            "old",
+            {"path": pl.DataFrame({"net_return": [0.1], "gross_return": [0.2]})},
+            file_references={"path": original},
+        )
+    assert path.read_bytes() == before
+    assert store.shared_receipt("root", "original") == saved
+    # Explicit index maintenance verifies the retained policy rather than
+    # relabelling its original descriptor with the current writer policy.
+    assert store.build_index(store.index_plan())["status"] == "complete"
+    assert store.describe_reference(original) == original
+    store.verify_reference(original, deep=True)
+
+
 def test_new_publication_indexes_only_new_table_in_index_free_store(tmp_path):
     store = _store(tmp_path)
     original = store.publish_shared("root", "path", "old", {"path": _frame()})

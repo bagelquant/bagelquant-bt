@@ -15,6 +15,39 @@ from bagelquant_bt import (
 from bagelquant_bt.exceptions import InputValidationError
 
 
+@pytest.mark.parametrize("column", ["factor", "forward_return"])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf"), None])
+def test_cross_sectional_ols_excludes_nonfinite_pairs(column, invalid):
+    factor = pl.DataFrame(
+        {
+            "time": [date(2024, 1, 1)] * 4,
+            "asset_id": list("ABCD"),
+            "factor": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    returns = factor.select(
+        "time", "asset_id", (pl.col("factor") * 0.01).alias("forward_return")
+    )
+    if column == "factor":
+        factor = factor.with_columns(pl.Series("factor", [1.0, 2.0, 3.0, invalid]))
+    else:
+        returns = returns.with_columns(
+            pl.Series("forward_return", [0.01, 0.02, 0.03, invalid])
+        )
+    result = cross_sectional_factor_returns(factor, returns)
+    assert result["lambda_return"].to_list() == pytest.approx([0.01])
+    assert result["sample_size"].to_list() == [3]
+    assert result.schema["sample_size"] == pl.Int64
+    assert cross_sectional_factor_returns(factor.head(2), returns)[
+        "lambda_return"
+    ].to_list() == [None]
+    assert (
+        cross_sectional_factor_returns(factor.head(0), returns).schema == result.schema
+    )
+    with pytest.raises(InputValidationError, match="unique"):
+        cross_sectional_factor_returns(pl.concat([factor.head(1), factor]), returns)
+
+
 def test_annualized_turnover_uses_full_l1_fraction_and_unavailable_mean():
     assert annualized_turnover(0.25, annualization=240) == 60.0
     assert annualized_turnover(0.25, annualization=12) == 3.0

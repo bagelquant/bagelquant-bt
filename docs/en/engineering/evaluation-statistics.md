@@ -1,5 +1,14 @@
 # Saved evaluation and statistical evidence
 
+The public `drawdown` utility includes initial wealth one in the running peak,
+as do saved-window summaries: an initial 10% loss is a -10% drawdown and immediate
+bankruptcy is -100%. It consumes the supplied row order and retains the existing
+null-as-zero path convention. `cross_sectional_factor_returns` validates unique
+normalized panel keys and uses only matched finite factor/return pairs. Its
+sample count is Int64 in empty and populated results; fewer than three finite
+pairs or no factor variation leaves the slope unavailable. These utility fixes
+do not rewrite previously saved numerical tables or chapters.
+
 Explicit `BTStore.maintain_shared_inputs` admits retained legacy signal primitives
 only at their original observation and maturity boundaries. It requires an
 immutable original execution request, numerical identity reproduction, a source

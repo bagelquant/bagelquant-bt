@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from bagelquant_core import ArtifactVerification
-from bagelquant_core.hashing import hash_dataframe
+from bagelquant_core.hashing import DATAFRAME_HASH_V1, DATAFRAME_HASH_V2, hash_dataframe
 from bagelquant_core.inspection import open_metadata_snapshot
 
 if TYPE_CHECKING:
@@ -183,7 +183,13 @@ def evaluation_identity(
 def _normalize_inputs(value):
     if isinstance(value, pl.DataFrame):
         selected = value.select(sorted(value.columns))
-        return {"table": hash_dataframe(selected.sort(selected.columns))}
+        # The input identity already fixes column and row order. Preserve
+        # original numerical identities independently of table publication.
+        return {
+            "table": hash_dataframe(
+                selected.sort(selected.columns), policy=DATAFRAME_HASH_V1
+            )
+        }
     if isinstance(value, Mapping):
         return {str(name): _normalize_inputs(item) for name, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -255,6 +261,13 @@ def _equal_ordered_prefix(before, current, axis):
         return before[axis][-1]
     prefix = before[axis].filter(before[axis] < first)
     return prefix[-1] if prefix.len() else None
+
+
+def _table_hash_policy(reference):
+    policy = reference.get("hash_policy", DATAFRAME_HASH_V1)
+    if policy not in {DATAFRAME_HASH_V1, DATAFRAME_HASH_V2}:
+        raise ValueError("Unknown BT table hash policy")
+    return policy
 
 
 class BTStore:
@@ -638,6 +651,7 @@ class BTStore:
                 raise ValueError("unregistered BT artifact differs from publication")
         reference = {
             "backend": "bt",
+            "hash_policy": DATAFRAME_HASH_V2,
             "table_id": digest,
             "checksum": _file_hash(path),
             "logical_hash": digest,
@@ -1014,6 +1028,8 @@ class BTStore:
                 or reference["rows"] != sum(part["rows"] for part in reference["parts"])
             ):
                 raise ValueError("BT composition metadata identity differs")
+        else:
+            _table_hash_policy(reference)
         self._table_path(str(reference.get("table_id", "")))
         with self._registered_table_read(
             str(reference.get("table_id", "")), _originals=_originals
@@ -1669,7 +1685,9 @@ class BTStore:
                 if _file_hash(path) != ref["checksum"]:
                     raise ValueError("corrupt BT artifact")
                 frame = pl.read_parquet(_path(path))
-                if hash_dataframe(frame) != ref["table_id"]:
+                if hash_dataframe(
+                    frame, policy=_table_hash_policy(ref)
+                ) != ref["table_id"]:
                     raise ValueError("BT table logical identity differs")
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1985,7 +2003,9 @@ class BTStore:
         )
         if deep:
             frame = self.read_reference(reference)
-            if hash_dataframe(frame) != reference.get("logical_hash"):
+            if hash_dataframe(
+                frame, policy=_table_hash_policy(reference)
+            ) != reference.get("logical_hash"):
                 raise ValueError("BT table logical identity differs")
             self._verify_coordinates(reference, frame)
 
@@ -2173,15 +2193,45 @@ class BTStore:
                     ref, _originals=lookup.references
                 ) as row:
                     ref = row["reference"]
+                    if (
+                        name in frames
+                        and ref.get("format") != "concat"
+                        and _table_hash_policy(ref) == DATAFRAME_HASH_V1
+                    ):
+                        index = row["index"]
+                        if index is None or index.get("columns") is None:
+                            raise ValueError(
+                                "BT frame/reference equality needs explicit "
+                                "original-column index maintenance"
+                            )
+                        frame = frames[name]
+                        if (
+                            frame.columns != index["columns"]
+                            or {
+                                column: str(dtype)
+                                for column, dtype in frame.schema.items()
+                            }
+                            != index["schema"]
+                        ):
+                            raise ValueError(
+                                "BT primitive reference ordered schema differs "
+                                "from supplied rows"
+                            )
                 if name in frames and ref.get("format") == "concat":
                     raise ValueError(
                         "Composed BT publication accepts references only; "
                         "omit the supplied frame"
                     )
-                if name in frames and hashes[name] != ref["logical_hash"]:
-                    raise ValueError(
-                        "BT primitive reference does not match supplied rows"
+                if name in frames:
+                    digest = (
+                        hashes[name]
+                        if _table_hash_policy(ref) == DATAFRAME_HASH_V2
+                        else hash_dataframe(frames[name], policy=DATAFRAME_HASH_V1)
                     )
+                    if digest != ref["logical_hash"]:
+                        raise ValueError(
+                            "BT primitive reference does not match supplied rows"
+                        )
                 files[name] = dict(ref)
             else:
                 digest = hashes[name]

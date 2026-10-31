@@ -1,5 +1,17 @@
 # BT ownership, storage and execution contracts
 
+New primitive table publications use `core.dataframe.v2` and record `hash_policy`
+in their references. The digest binds physical column names/types in order as
+well as positional values, so reordered named values cannot alias another
+table. Unmarked original references retain v1 verification, reads and explicit
+index maintenance. New writes use only the v2 namespace; original files and
+receipts remain immutable and metadata schema 2 is unchanged. Supplying both an
+original v1 reference and a frame also requires its registered ordered-column
+index; a missing index requires explicit maintenance, never a historical body
+read during admission. Reference-only reuse does not require that index.
+Canonical evaluation input identities retain their original policy because they
+already normalize column and row order independently of table publication.
+
 ## Current BT 0.12 stage-4 contracts
 
 BT evaluates saved Core numeric/prediction Nodes (`evaluate_alpha`), saved
