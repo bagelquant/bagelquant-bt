@@ -223,3 +223,15 @@ statistics. Match finite coordinates before rank ties, retain unaffected daily
 summaries and remove replaced/deleted days. Applications prove complete holdings
 sessions before requesting absent-key zero fill. Account/holdings date evidence
 is captured on publication or explicit original-bound maintenance, never browsing.
+
+`industry_exposure_strength` computes each date's L2 industry-beta norm against
+the causal population: without explicit activity, each factor becomes expected
+at its first supplied appearance. Adding a future industry cannot erase an
+earlier norm; a missing previously seen or nonfinite beta remains unavailable.
+Optional `industry_activity` declares only industry factors with nonnull Date
+`time`, String `factor` and Boolean `active` coordinates. It distinguishes
+structural inactivity from missing active betas and admits zero for an explicitly
+empty active population. Clipped histories need the complete prior population
+history or explicit dated activity; exposure rows alone cannot prove that an
+omitted factor was inactive. This saved-value presentation does not rewrite
+original profile results or refit regressions.

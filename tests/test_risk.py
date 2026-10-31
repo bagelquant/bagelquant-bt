@@ -261,5 +261,61 @@ def test_industry_exposure_strength_preserves_offsets_and_rejects_missing():
     result = industry_exposure_strength(exposures)
     assert result["beta"].to_list() == [5.0, 0.0, None, None, None]
     assert industry_exposure_strength(exposures.clear()).is_empty()
+    assert industry_exposure_strength(pl.DataFrame()).is_empty()
     with pytest.raises(ValueError, match="unique"):
         industry_exposure_strength(pl.concat([exposures, exposures.head(1)]))
+
+
+def test_industry_strength_is_prefix_invariant_and_retains_missing_members():
+    from bagelquant_bt import industry_exposure_strength
+
+    days = [date(2024, 1, day) for day in range(1, 5)]
+    exposures = pl.DataFrame(
+        {
+            "time": [days[0], days[1], days[1], days[2], days[3], days[3]],
+            "factor": ["a", "a", "b", "a", "a", "b"],
+            "family": ["industry"] * 6,
+            "beta": [3.0, 3.0, 4.0, 3.0, 3.0, 4.0],
+        }
+    )
+    actual = industry_exposure_strength(exposures)
+    assert actual["beta"].to_list() == [3.0, 5.0, None, 5.0]
+    for end in days:
+        prefix = exposures.filter(pl.col("time") <= end)
+        assert industry_exposure_strength(prefix).equals(
+            actual.filter(pl.col("time") <= end)
+        )
+
+
+def test_industry_strength_uses_explicit_activity_for_inactive_and_missing_members():
+    from bagelquant_bt import industry_exposure_strength
+
+    days = [date(2024, 1, day) for day in range(1, 5)]
+    exposures = pl.DataFrame(
+        {
+            "time": [days[0], days[1], days[2], days[2]],
+            "factor": ["a", "a", "a", "b"],
+            "family": ["industry"] * 4,
+            "beta": [3.0, 3.0, 3.0, 4.0],
+        }
+    )
+    activity = pl.DataFrame(
+        {
+            "time": [day for day in days for _ in range(2)],
+            "factor": ["a", "b"] * 4,
+            "active": [True, True, True, False, True, True, False, False],
+        }
+    )
+    result = industry_exposure_strength(exposures, industry_activity=activity)
+    assert result["time"].to_list() == days
+    assert result["beta"].to_list() == [None, 3.0, 5.0, 0.0]
+    empty = industry_exposure_strength(pl.DataFrame(), industry_activity=activity)
+    assert empty["beta"].to_list() == [None, None, None, 0.0]
+    contradictory = activity.with_columns(
+        pl.when((pl.col("time") == days[0]) & (pl.col("factor") == "a"))
+        .then(False)
+        .otherwise(pl.col("active"))
+        .alias("active")
+    )
+    with pytest.raises(ValueError, match="activity"):
+        industry_exposure_strength(exposures, industry_activity=contradictory)

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import io
 import json
 import os
 import re
@@ -677,11 +680,23 @@ class BTStore:
         return reference
 
     @_publication_timed("indexing")
-    def _index_schema(self, reference, schema, *, frame=None, coordinates=None):
+    def _index_schema(
+        self, reference, schema, *, frame=None, coordinates=None, schema_ipc=None
+    ):
         from .index_blocks import coordinate_frame, evidence_frame
 
         values = {name: str(dtype) for name, dtype in schema.items()}
         payload: dict[str, Any] = {"schema": values, "columns": list(schema)}
+        if schema_ipc is None and all(
+            not isinstance(dtype, str) for dtype in schema.values()
+        ) and any(not hasattr(pl, name) for name in values.values()):
+            # An empty Arrow IPC schema retains nested/parameterized dtypes,
+            # without copying any numerical rows or importing PyArrow.
+            schema_ipc = base64.b64encode(
+                pl.DataFrame(schema=schema).write_ipc(None).getvalue()
+            ).decode("ascii")
+        if schema_ipc is not None:
+            payload["schema_ipc"] = schema_ipc
         if frame is not None:
             facts = coordinate_frame(frame)
             payload["coordinates"] = (
@@ -809,6 +824,11 @@ class BTStore:
                                 **(
                                     {"columns": index["columns"]}
                                     if "columns" in index
+                                    else {}
+                                ),
+                                **(
+                                    {"schema_ipc": index["schema_ipc"]}
+                                    if "schema_ipc" in index
                                     else {}
                                 ),
                                 **(
@@ -1272,7 +1292,7 @@ class BTStore:
         """Compose original references and exact counts, never expanded grids."""
         from .table_composition import COORDINATES, filters
 
-        selected, schema, complete_facts = [], None, True
+        selected, schema, schema_ipc, complete_facts = [], None, None, True
         for part in parts:
             reference = self.describe_reference(part["reference"])
             with self._registered_table_read(reference["table_id"]) as registered:
@@ -1286,6 +1306,8 @@ class BTStore:
                     schema = {name: index["schema"][name] for name in index["columns"]}
                 elif schema != index["schema"]:
                     raise ValueError("BT composition table schemas differ")
+                if schema_ipc is None:
+                    schema_ipc = index.get("schema_ipc")
                 predicates = filters(
                     part.get("filters", ()),
                     {
@@ -1333,6 +1355,7 @@ class BTStore:
             reference,
             schema,
             coordinates={"composition": True} if complete_facts else None,
+            schema_ipc=schema_ipc,
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1641,6 +1664,64 @@ class BTStore:
                 if ref.get("format") == "concat"
                 else [self._table_path(ref["table_id"])]
             )
+            with self._registered_table_read(ref["table_id"]) as registered:
+                index, original_row = registered["index"], registered["raw"]
+            if (
+                index is not None
+                and "columns" in index
+                and "schema_ipc" not in index
+                and any(not hasattr(pl, dtype) for dtype in index["schema"].values())
+            ):
+                # Existing coordinate authority needs only its original typed
+                # schema. Audit original bytes and footer schemas explicitly;
+                # nested numerical bodies need not fit a materialization budget.
+                leaves = (
+                    [part["reference"] for part in ref["parts"]]
+                    if ref.get("format") == "concat" else [ref]
+                )
+                original_stamp = self._reference_stamp(ref)
+                physical_schema = None
+                for path, leaf in zip(paths, leaves, strict=True):
+                    check_canceled()
+                    if _file_hash(path) != leaf["checksum"]:
+                        raise ValueError("corrupt BT artifact")
+                    candidate = pl.read_parquet_schema(_path(path))
+                    if (
+                        list(candidate) != index["columns"]
+                        or {key: str(value) for key, value in candidate.items()}
+                        != index["schema"]
+                    ):
+                        raise ValueError(
+                            "BT typed schema index differs from original table"
+                        )
+                    physical_schema = candidate
+                payload = {
+                    key: value for key, value in index.items() if key != "digest"
+                }
+                payload["schema_ipc"] = json.loads(self._index_schema(
+                    ref, physical_schema
+                ))["schema_ipc"]
+                with self._connect() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    check_canceled()
+                    self._require_publication_files({"schema": ref})
+                    if self._reference_stamp(ref) != original_stamp:
+                        raise ValueError(
+                            "BT original changed during schema maintenance"
+                        )
+                    current = connection.execute(
+                        "SELECT reference_json,schema_json FROM bt_table_index "
+                        "WHERE table_id=?", (ref["table_id"],)
+                    ).fetchone()
+                    if current is None or tuple(current) != original_row:
+                        raise ValueError("BT table index changed during maintenance")
+                    connection.execute(
+                        "UPDATE bt_table_index SET schema_json=? WHERE table_id=?",
+                        (self._seal_index(ref, payload), ref["table_id"]),
+                    )
+                completed += 1
+                progress(position, len(plan["tables"]))
+                continue
             if not all(admit_parquet_materialization(_path(path)) for path in paths):
                 unknown += 1
                 progress(position, len(plan["tables"]))
@@ -1656,7 +1737,9 @@ class BTStore:
                         ref["parts"][0]["reference"]["table_id"]
                     ) as leaf:
                         index = {
-                            key: leaf["index"][key] for key in ("schema", "columns")
+                            key: leaf["index"][key]
+                            for key in ("schema", "columns", "schema_ipc")
+                            if key in leaf["index"]
                         }
                 schema = self._seal_index(
                     ref,
@@ -1771,7 +1854,8 @@ class BTStore:
                 )
             if (predicates or coordinates is not None) and expected == 0:
                 return self._empty_indexed_table(
-                    index["schema"], columns=index.get("columns")
+                    index["schema"], columns=index.get("columns"),
+                    schema_ipc=index.get("schema_ipc"),
                 )
             key = (
                 reference["table_id"],
@@ -1823,7 +1907,8 @@ class BTStore:
                         "BT empty selection needs explicit table-index maintenance"
                     )
                 return self._empty_indexed_table(
-                    index["schema"], columns=index.get("columns")
+                    index["schema"], columns=index.get("columns"),
+                    schema_ipc=index.get("schema_ipc"),
                 )
             path = self._table_path(str(reference.get("table_id", "")))
             try:
@@ -1876,18 +1961,32 @@ class BTStore:
         return tuple(result)
 
     @staticmethod
-    def _empty_indexed_table(schema, *, columns=None):
+    def _empty_indexed_table(schema, *, columns=None, schema_ipc=None):
         if columns is None:
             raise ValueError(
                 "BT empty selection needs explicit original-column index maintenance"
             )
         try:
+            if schema_ipc is not None:
+                frame = pl.read_ipc(
+                    io.BytesIO(base64.b64decode(schema_ipc, validate=True))
+                )
+                types = {name: str(dtype) for name, dtype in frame.schema.items()}
+                if (
+                    not frame.is_empty()
+                    or frame.columns != columns
+                    or types != schema
+                ):
+                    raise ValueError("BT empty schema differs from registered types")
+                return frame
             return pl.DataFrame(
                 schema={key: getattr(pl, schema[key]) for key in (columns or schema)}
             )
-        except (AttributeError, TypeError) as error:
+        except (
+            AttributeError, TypeError, binascii.Error, pl.exceptions.PolarsError
+        ) as error:
             raise ValueError(
-                "BT selection needs a supported registered typed schema"
+                "BT selection needs explicit original-schema index maintenance"
             ) from error
 
     def execution_references(
@@ -2024,6 +2123,10 @@ class BTStore:
             raise ValueError(
                 "BT original-column index differs from original table columns"
             )
+        if "schema_ipc" in index and self._empty_indexed_table(
+            index["schema"], columns=index["columns"], schema_ipc=index["schema_ipc"]
+        ).schema != frame.schema:
+            raise ValueError("BT typed schema index differs from original table")
         recorded = index.get("coordinates")
         if recorded is not None and not recorded.get("composition"):
             columns = [name for name in recorded["columns"] if name != "_rows"]

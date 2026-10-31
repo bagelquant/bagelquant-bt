@@ -1,5 +1,6 @@
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -7,6 +8,146 @@ from polars.testing import assert_frame_equal
 
 from bagelquant_bt import BTStore
 from bagelquant_bt.store import _identity
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pl.Series("value", [[1.0, 2.0]], dtype=pl.List(pl.Float64)),
+        pl.Series("value", [Decimal("1.20")], dtype=pl.Decimal(12, 2)),
+        pl.Series("value", [datetime(2024, 1, 1)], dtype=pl.Datetime("ns", "UTC")),
+        pl.Series("value", [{"x": [1, 2]}], dtype=pl.Struct({"x": pl.List(pl.Int64)})),
+    ],
+    ids=["list", "decimal", "datetime", "nested_struct"],
+)
+def test_empty_parameterized_selections_use_only_registered_metadata(
+    tmp_path, monkeypatch, payload
+):
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    frame = pl.DataFrame({"time": [date(2024, 1, 1)], "value": payload})
+    reference = store.publish_table(frame)
+    original = store._table_path(reference["table_id"]).read_bytes()
+    composed = store.compose_reference([{"reference": reference}])
+    empty_keys = frame.select("time").head(0)
+    with monkeypatch.context() as patch:
+        def forbidden(*_args, **_kwargs):
+            pytest.fail("empty selection opened numerical Parquet")
+
+        patch.setattr(pl, "read_parquet", forbidden)
+        patch.setattr(pl, "scan_parquet", forbidden)
+        for selected in (reference, composed):
+            assert_frame_equal(
+                store.read_reference(selected, coordinates=empty_keys), frame.head(0)
+            )
+            assert_frame_equal(
+                store.read_reference(
+                    selected,
+                    filters=[{
+                        "column": "time", "operation": "eq", "value": date(2024, 1, 2)
+                    }],
+                ),
+                frame.head(0),
+            )
+    store.verify_reference(reference, deep=True)
+    assert store._table_path(reference["table_id"]).read_bytes() == original
+
+
+@pytest.mark.parametrize("composed", [False, True])
+def test_parameterized_legacy_schema_requires_explicit_original_maintenance(
+    tmp_path, monkeypatch, composed
+):
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    frame = pl.DataFrame({"time": [date(2024, 1, 1)], "values": [[1.0, 2.0]]})
+    receipt = store.publish_shared("owner", "primitive", "first", {"daily": frame})
+    reference = receipt["files"]["daily"]
+    original = store._table_path(reference["table_id"]).read_bytes()
+    selected = (
+        store.compose_reference([{"reference": reference}]) if composed else reference
+    )
+    with store._connect() as connection:
+        originals = {reference["table_id"]: reference, selected["table_id"]: selected}
+        for ref in originals.values():
+            index = json.loads(connection.execute(
+                "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+                (ref["table_id"],),
+            ).fetchone()[0])
+            index.pop("schema_ipc", None)
+            index.pop("digest")
+            connection.execute(
+                "UPDATE bt_table_index SET schema_json=? WHERE table_id=?",
+                (store._seal_index(ref, index), ref["table_id"]),
+            )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            pl, "read_parquet", lambda *_a, **_k: pytest.fail("implicit audit")
+        )
+        with pytest.raises(ValueError, match=r"explicit.*maintenance"):
+            store.read_reference(selected, coordinates=frame.select("time").head(0))
+        assert store.maintain_reference(selected)["status"] == "complete"
+    assert_frame_equal(
+        store.read_reference(selected, coordinates=frame.select("time").head(0)),
+        frame.head(0),
+    )
+    assert store.shared_receipt("owner", "primitive", input_identity="first") == receipt
+    assert store._table_path(reference["table_id"]).read_bytes() == original
+
+
+def test_empty_schema_index_is_bound_to_original_types(tmp_path, monkeypatch):
+    import base64
+
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    frame = pl.DataFrame({"time": [date(2024, 1, 1)], "values": [[1.0, 2.0]]})
+    reference = store.publish_table(frame)
+    wrong = pl.DataFrame(schema={"time": pl.Date, "values": pl.List(pl.Int64)})
+    with store._connect() as connection:
+        index = json.loads(connection.execute(
+            "SELECT schema_json FROM bt_table_index WHERE table_id=?",
+            (reference["table_id"],),
+        ).fetchone()[0])
+        index.pop("digest")
+        index["schema_ipc"] = base64.b64encode(
+            wrong.write_ipc(None).getvalue()
+        ).decode()
+        connection.execute(
+            "UPDATE bt_table_index SET schema_json=? WHERE table_id=?",
+            (store._seal_index(reference, index), reference["table_id"]),
+        )
+    monkeypatch.setattr(
+        pl, "read_parquet", lambda *_a, **_k: pytest.fail("empty read opened values")
+    )
+    with pytest.raises(ValueError, match="schema differs"):
+        store.read_reference(reference, coordinates=frame.select("time").head(0))
+
+
+def test_missing_composition_index_retains_enriched_leaf_schema(tmp_path, monkeypatch):
+    store = BTStore(tmp_path / "bt.sqlite", tmp_path / "artifacts")
+    store.initialize()
+    frame = pl.DataFrame({"time": [date(2024, 1, 1)],
+                          "value": [datetime(2024, 1, 1)]})
+    original = store.publish_shared("owner", "leaf", "first", {"daily": frame})
+    reference = original["files"]["daily"]
+    before = store._table_path(reference["table_id"]).read_bytes()
+    composed = store.compose_reference([{"reference": reference}])
+    receipt = store.publish_shared(
+        "owner", "composed", "first", {}, file_references={"daily": composed}
+    )
+    with store._connect() as connection:
+        connection.execute("DELETE FROM bt_table_index WHERE table_id=?",
+                           (composed["table_id"],))
+    assert store.maintain_reference(composed)["status"] == "complete"
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            pl, "read_parquet", lambda *_a, **_k: pytest.fail("empty read opened data")
+        )
+        assert_frame_equal(
+            store.read_reference(composed, coordinates=frame.select("time").head(0)),
+            frame.head(0),
+        )
+    assert store.shared_receipt("owner", "composed", input_identity="first") == receipt
+    assert store._table_path(reference["table_id"]).read_bytes() == before
 
 
 def test_exact_key_and_checkpoint_selections_prune_original_leaves(

@@ -786,35 +786,79 @@ def _risk_profile_result(output, exposures, diagnostics, state, solves):
     )
 
 
-def industry_exposure_strength(exposures: pl.DataFrame) -> pl.DataFrame:
+def industry_exposure_strength(
+    exposures: pl.DataFrame, *, industry_activity: pl.DataFrame | None = None
+) -> pl.DataFrame:
     """Return the L2 norm of the complete industry-beta vector on each date.
 
-    Callers select one return metric before invoking this function. Structural
-    zero betas are valid; missing or non-finite coordinates invalidate the date.
+    Callers select one return metric before invoking this function. Without an
+    activity table, a factor is expected from its first supplied appearance
+    onward. Supply complete prior population history or explicit activity when
+    clipping history. ``industry_activity`` contains only industry factors with
+    nonnull Date time, String factor and Boolean active columns; it declares the
+    exact active population on each date, including structural absences.
+    Structural zero betas are valid; missing or non-finite active coordinates
+    invalidate the date. An explicitly empty active population has norm zero.
     The norm measures exposure magnitude, not direction or variance contribution.
     """
     schema = {"time": pl.Date, "beta": pl.Float64}
-    if exposures.is_empty():
+    if exposures.is_empty() and industry_activity is None:
         return pl.DataFrame(schema=schema)
-    industry = exposures.filter(pl.col("family") == "industry")
-    if industry.is_empty():
+    industry = (
+        pl.DataFrame(schema={"time": pl.Date, "factor": pl.String, "beta": pl.Float64})
+        if exposures.is_empty()
+        else exposures.filter(pl.col("family") == "industry")
+    )
+    if industry.is_empty() and industry_activity is None:
         return pl.DataFrame(schema=schema)
     if industry.select("time", "factor").unique().height != industry.height:
         raise ValueError("industry exposure requires unique time/factor coordinates")
-    expected = industry["factor"].n_unique()
-    return (
+    observed = (
         industry.group_by("time")
         .agg(
-            pl.when(
-                (pl.len() == expected)
-                & pl.col("beta").is_finite().fill_null(False).all()
-            )
-            .then(pl.col("beta").pow(2).sum().sqrt())
-            .otherwise(None)
-            .alias("beta")
+            pl.len().alias("observed"),
+            pl.col("beta").is_finite().fill_null(False).all().alias("finite"),
+            pl.col("beta").pow(2).sum().sqrt().alias("beta"),
         )
         .sort("time")
     )
+    if industry_activity is None:
+        first_seen = (
+            industry.group_by("factor").agg(pl.col("time").min())
+            .group_by("time").len(name="expected").sort("time")
+            .with_columns(pl.col("expected").cum_sum())
+        )
+        selected = observed.join_asof(first_seen, on="time", strategy="backward")
+    else:
+        required = {"time": pl.Date, "factor": pl.String, "active": pl.Boolean}
+        if any(
+            industry_activity.schema.get(name) != dtype
+            or industry_activity[name].null_count()
+            for name, dtype in required.items()
+        ):
+            raise ValueError("industry activity requires nonnull Date/String/Boolean")
+        if industry_activity.select("time", "factor").is_duplicated().any():
+            raise ValueError("industry activity coordinates must be unique")
+        active = industry_activity.filter("active").select("time", "factor")
+        if industry.select("time", "factor").join(
+            active, on=["time", "factor"], how="anti"
+        ).height:
+            raise ValueError("industry exposure contradicts its declared activity")
+        expected = industry_activity.group_by("time").agg(
+            pl.col("active").sum().alias("expected")
+        )
+        selected = expected.join(observed, on="time", how="left").with_columns(
+            pl.col("observed").fill_null(0),
+            pl.col("finite").fill_null(True),
+            pl.col("beta").fill_null(0.0),
+        )
+    return selected.select(
+        "time",
+        pl.when((pl.col("observed") == pl.col("expected")) & pl.col("finite"))
+        .then(pl.col("beta"))
+        .otherwise(None)
+        .alias("beta"),
+    ).sort("time")
 
 
 def link_risk_contributions(

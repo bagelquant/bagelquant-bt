@@ -12,6 +12,13 @@ buffers and cancellation checks each session/order/planning step. Callers may
 share read-only market inputs, while every scenario owns independent account
 state. Reuse verified saved artifacts before preparing market rows.
 
+Execution and saved-weight scheduling build a date-to-calendar-index mapping
+once per operation. Session and rebalance lookup therefore takes linear total
+calendar work rather than scanning the full calendar for every decision. This
+does not change sizing, order, settlement, checkpoint identity or sequential
+account state. Append retains the existing historical checkpoint and processes
+only its admitted new sessions.
+
 Research weight paths retain interval and availability scalars during the daily
 loop and materialize the returned weight checkpoint once, after the final mature
 session. Asset and rebalance sets are reduced to unique coordinates before

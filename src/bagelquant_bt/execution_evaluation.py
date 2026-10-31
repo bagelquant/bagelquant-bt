@@ -761,13 +761,14 @@ def run_execution_from_weights(
     ):
         raise InputValidationError("decisions must be unique with known statuses")
     sessions = calendar.get_column("time").cast(pl.Date).unique().sort().to_list()
+    session_indices = {day: index for index, day in enumerate(sessions)}
     schedule = {}
     for row in decision_rows.filter(pl.col("status") == "rebalance").to_dicts():
-        if row["time"] not in sessions:
+        if row["time"] not in session_indices:
             raise InputValidationError(
                 "decision date must be a supplied trading session"
             )
-        offset = sessions.index(row["time"]) + session_lag
+        offset = session_indices[row["time"]] + session_lag
         if offset >= len(sessions):
             raise InputValidationError("known future execution calendar is incomplete")
         schedule[row["time"]] = sessions[offset]
@@ -890,6 +891,7 @@ def _run(
     historical = sessions_frame.filter(pl.col("time") <= cutoff)
     sessions = historical["time"].to_list()
     all_sessions = sessions_frame["time"].to_list()
+    session_indices = {day: index for index, day in enumerate(all_sessions)}
     if not set(prices["time"].to_list()) <= set(all_sessions):
         raise InputValidationError("market dates must belong to the explicit calendar")
     if not set(plans["execution_date"].to_list()) <= set(all_sessions):
@@ -1259,7 +1261,7 @@ def _run(
     starting_actual_equity = previous_actual
     for completed, day in enumerate(sessions):
         check_canceled()
-        index = all_sessions.index(day)
+        index = session_indices[day]
         day_prices = prices_by_day.get(day, {})
         for state, fifo, ledger in (
             (ideal, ideal_lots, "ideal"),

@@ -29,6 +29,20 @@ counts. They do not publish another expanded coordinate grid. Append and repair
 reuse original tables and their index blocks without recomputing history.
 Explicit maintenance preserves the evidence capabilities of retained references.
 
+Parameterized and nested table types carry an authenticated empty Arrow IPC
+schema in their optional descriptor header. Empty date or exact-coordinate
+selections reconstruct the original List, Struct, Decimal and Datetime types
+from that metadata without opening numerical Parquet. Composition retains the
+same schema proof. Headers predating this evidence require explicit
+`maintain_reference`; ordinary reads never infer types from string expressions
+or enrich historical metadata. Schema-only maintenance verifies every original
+file checksum and footer schema, preserves existing coordinate/evidence blocks
+and rechecks source/index fences before publication. It can enrich nested types
+without materializing their numerical bodies. Missing coordinate authority still
+uses ordinary bounded index maintenance and can remain unknown when full
+materialization is unsupported. Original receipts, numerical bytes and identities
+remain unchanged; deep audits compare the registered schema with the original.
+
 Block reads verify encoded identity, typed schema, row count and pruning bounds.
 An operation rechecks consumed file stats before returning, including memo hits.
 Deep reference verification checks every original, coordinate and evidence

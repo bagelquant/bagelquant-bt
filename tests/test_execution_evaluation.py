@@ -53,6 +53,46 @@ def plans(rows):
     )
 
 
+@pytest.mark.parametrize("count", [8, 32])
+def test_execution_calendar_lookup_is_linear_and_preserves_accounts(monkeypatch, count):
+    days = [D1 + timedelta(days=index) for index in range(count)]
+    prices = market([(day, "a", 10, 10) for day in days])
+    calendar = pl.DataFrame({"time": days})
+    targets = pl.DataFrame({"time": days[:-1], "asset_id": ["a"] * (count - 1),
+                            "weight": [0.5] * (count - 1)})
+    decisions = pl.DataFrame({"time": days[:-1], "status": ["rebalance"] * (count - 1)})
+    kwargs = {"initial_capital": 100, "calendar": calendar,
+              "config": ExecutionConfig(rate=0, min_fee=0)}
+    expected = run_execution_from_weights(targets, decisions, prices, **kwargs)
+    to_list = pl.Series.to_list
+    visits = []
+
+    class Calendar(list):
+        def index(self, *_args):
+            pytest.fail("execution searched the calendar instead of its date index")
+
+        def __iter__(self):
+            for day in super().__iter__():
+                visits.append(day)
+                yield day
+
+        def __contains__(self, selected):
+            return any(day == selected for day in self)
+
+    def measured(series):
+        values = to_list(series)
+        return Calendar(values) if series.name == "time" else values
+
+    monkeypatch.setattr(pl.Series, "to_list", measured)
+    actual = run_execution_from_weights(targets, decisions, prices, **kwargs)
+    assert set(actual.tables) == set(expected.tables)
+    for name in actual.tables:
+        assert_frame_equal(actual.tables[name], expected.tables[name])
+    assert actual.metrics == expected.metrics
+    assert actual.checkpoint.prefix_hash == expected.checkpoint.prefix_hash
+    assert len(visits) <= 12 * count
+
+
 def test_default_partial_fill_minimum_fee_and_fifo_reconcile():
     # Ideal buys 10 x 10 and sells all at 12. Actual can afford 9 shares
     # plus the minimum fee. Actual sells nine, paying a second minimum fee.
