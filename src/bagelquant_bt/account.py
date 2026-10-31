@@ -290,7 +290,10 @@ def _build_stateful_decision_plan(
         return _empty_target_position_plans()
     lot_frame = pl.DataFrame(
         [
-            {ASSET_ID: asset_id, "lot_size": int(lots.get(asset_id, 1))}
+            {
+                ASSET_ID: asset_id,
+                "lot_size": int(lots.get(asset_id, config.default_buy_lot_size)),
+            }
             for asset_id in required_assets
         ],
         schema={ASSET_ID: pl.String, "lot_size": pl.Int64},
@@ -429,6 +432,33 @@ def _validate_corporate_actions(frame: pl.DataFrame | None) -> pl.DataFrame:
     if result.select(pl.col("action_id").is_duplicated().any()).item():
         raise InputValidationError("corporate action_id values must be unique")
     return result.sort(["ex_date", ASSET_ID, "action_id"])
+
+
+def _validate_corporate_action_calendar(
+    actions: pl.DataFrame, *, sessions: list[date], through: date
+) -> None:
+    """Reject skipped applicable events inside the supplied observation range.
+
+    Future events may precede an extension of the known calendar. The caller
+    aligns dates; the account never chooses an implicit next trading session.
+    """
+    if actions.is_empty() or not sessions:
+        return
+    for coordinate, applicable in (
+        ("record_date", pl.lit(True)),
+        ("ex_date", pl.lit(True)),
+        ("cash_pay_date", pl.col("cash_dividend_per_share") > 0),
+        ("share_available_date", pl.col("stock_dividend_per_share") > 0),
+    ):
+        if actions.filter(
+            applicable
+            & pl.col(coordinate).is_between(sessions[0], through)
+            & ~pl.col(coordinate).is_in(sessions)
+        ).height:
+            raise InputValidationError(
+                f"corporate action {coordinate} must belong to the supplied "
+                "calendar within the observed range"
+            )
 
 
 def _restore_state(

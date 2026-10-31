@@ -24,6 +24,21 @@ def test_benchmark_performance_preserves_reason_columns():
     assert performance.item(0, "annualized_return_reason") is None
 
 
+def test_benchmark_comparison_retains_finite_path_when_annualization_overflows():
+    day = date(2024, 1, 2)
+    paths, summary = compare_portfolio_to_benchmarks(
+        pl.DataFrame({"time": [day], "return": [0.0]}),
+        pl.DataFrame({"time": [day], "benchmark": ["market"], "return": [-0.95]}),
+    )
+    assert paths["relative_wealth"][0] == pytest.approx(20)
+    assert summary["annualized_excess_return"][0] is None
+    assert (
+        summary["annualized_excess_return_reason"][0]
+        == "annualized wealth is non-finite"
+    )
+    assert summary["max_relative_drawdown"][0] == 0
+
+
 def test_portfolio_benchmark_comparison_uses_exact_aligned_returns() -> None:
     portfolio = pl.DataFrame(
         {

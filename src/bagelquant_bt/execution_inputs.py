@@ -13,6 +13,7 @@ from .exceptions import InputValidationError
 from .input_maintenance import SharedInputEvidence
 
 VERSION = "bt.execution.inputs.v1"
+WEIGHT_SIZING_POLICY = "bt.execution.weight_sizing.v2"
 CHANNELS = frozenset(
     {"prices", "calendar", "availability", "lot_sizes", "actions", "action_coverage"}
 )
@@ -116,10 +117,13 @@ def _projection(value):
     }
 
 
-def _settings(config):
-    return {
+def _settings(config, *, mode):
+    settings = {
         key: value for key, value in config.identity().items() if key != "annualization"
     }
+    if mode == "weights" and config.default_buy_lot_size != 1:
+        settings["weight_sizing_policy"] = WEIGHT_SIZING_POLICY
+    return settings
 
 
 def bind_execution_inputs(
@@ -158,7 +162,7 @@ def bind_execution_inputs(
         "mode": mode,
         "through": through.isoformat(),
         "initial_capital": initial_capital,
-        "settings": _settings(config),
+        "settings": _settings(config, mode=mode),
         "session_lag": session_lag,
         "reference_price_mode": reference_price_mode,
         "channels": channels,
@@ -216,7 +220,7 @@ def validate_execution_continuation(
         or _day(binding["through"]) != _day(boundary)
         or binding["mode"] != mode
         or binding["initial_capital"] != initial_capital
-        or binding["settings"] != _settings(config)
+        or binding["settings"] != _settings(config, mode=mode)
         or binding["session_lag"] != session_lag
         or binding["reference_price_mode"] != reference_price_mode
     ):

@@ -23,7 +23,11 @@ from . import account as _account
 from .account import AccountBacktestConfig, AccountStateCheckpoint
 from .config import TransactionCostConfig
 from .exceptions import InputValidationError
-from .execution_inputs import bind_execution_inputs, validate_execution_continuation
+from .execution_inputs import (
+    WEIGHT_SIZING_POLICY,
+    bind_execution_inputs,
+    validate_execution_continuation,
+)
 from .input_maintenance import SharedInputEvidence
 
 
@@ -1022,6 +1026,9 @@ def _run(
                 "checkpoint requires complete verified record-date "
                 "position history and sessions"
             )
+    _account._validate_corporate_action_calendar(
+        actions, sessions=all_sessions, through=cutoff
+    )
     if corporate_action_coverage is not None:
         _account._validate_corporate_action_coverage(
             corporate_action_coverage, sessions
@@ -1114,6 +1121,11 @@ def _run(
                     if start <= through
                 },
                 "reference_price_mode": reference_price_mode,
+                **(
+                    {"weight_sizing_policy": WEIGHT_SIZING_POLICY}
+                    if weight_targets is not None and config.default_buy_lot_size != 1
+                    else {}
+                ),
                 **{
                     name: logical_content_hash(causal_prefix_frame(frame, through))
                     for name, frame in prefix_extra.items()

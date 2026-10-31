@@ -53,6 +53,134 @@ def plans(rows):
     )
 
 
+@pytest.mark.parametrize(
+    "mode,default_lot,affected",
+    [("weights", 100, True), ("weights", 1, False),
+     ("transactions", 100, False), ("transactions", 1, False)],
+)
+def test_weight_sizing_policy_fences_only_affected_legacy_row_prefixes(
+    mode, default_lot, affected, monkeypatch
+):
+    from bagelquant_bt import execution_evaluation as owner
+
+    prices = market([(day, "a", 10, 10) for day in (D1, D2, D3)])
+    kwargs = {"initial_capital": 1500,
+              "config": ExecutionConfig(rate=0, min_fee=0,
+                                        default_buy_lot_size=default_lot),
+              "calendar": pl.DataFrame({"time": [D1, D2, D3]})}
+    if mode == "weights":
+        targets = pl.DataFrame({"time": [D1], "asset_id": ["a"], "weight": [1.0]})
+        decisions = pl.DataFrame({"time": [D1], "status": ["rebalance"]})
+
+        def run(**options):
+            return run_execution_from_weights(targets, decisions, prices,
+                                              **kwargs, **options)
+    else:
+        transactions = plans([("buy", D1, "a", 100)])
+
+        def run(**options):
+            return evaluate_execution(transactions, prices, **kwargs, **options)
+
+    digest = owner._digest
+    with monkeypatch.context() as legacy_code:
+        # Reproduce the original proof bytes without rewriting a saved checkpoint.
+        legacy_code.setattr(owner, "_digest", lambda value: digest({
+            key: item for key, item in value.items() if key != "weight_sizing_policy"
+        } if isinstance(value, dict) else value))
+        legacy = run(available_date=D2)
+    current = run(available_date=D2)
+    assert (current.checkpoint.prefix_hash != legacy.checkpoint.prefix_hash) == affected
+    if affected:
+        with pytest.raises(InputValidationError, match="causal prefix changed"):
+            run(checkpoint=legacy.checkpoint)
+    else:
+        run(checkpoint=legacy.checkpoint)
+
+
+@pytest.mark.parametrize("partial_rules", [False, True])
+def test_weight_bridge_default_lots_match_explicit_rules_and_resume(partial_rules):
+    prices = market([(day, "a", 10, 10) for day in (D1, D2, D3)])
+    targets = pl.DataFrame({"time": [D1, D2], "asset_id": ["a", "a"],
+                            "weight": [1.0, 1.0]})
+    decisions = pl.DataFrame({"time": [D1, D2], "status": ["rebalance"] * 2})
+    kwargs = {"initial_capital": 1500, "calendar": pl.DataFrame({"time": [D1, D2, D3]}),
+              "config": ExecutionConfig(rate=0, min_fee=0, default_buy_lot_size=100)}
+    explicit = run_execution_from_weights(targets, decisions, prices, **kwargs,
+        lot_sizes=pl.DataFrame({"asset_id": ["a"], "buy_lot_size": [100]}))
+    rules = (
+        pl.DataFrame({"asset_id": ["other"], "buy_lot_size": [1]})
+        if partial_rules else None
+    )
+    actual = run_execution_from_weights(
+        targets, decisions, prices, **kwargs, lot_sizes=rules
+    )
+    for name in explicit.tables:
+        assert_frame_equal(actual.tables[name], explicit.tables[name])
+    assert actual.tables["orders"]["requested_quantity"].to_list() == [100]
+    first = run_execution_from_weights(targets, decisions, prices, **kwargs,
+                                       lot_sizes=rules, available_date=D2)
+    tail = run_execution_from_weights(targets, decisions, prices, **kwargs,
+                                      lot_sizes=rules, checkpoint=first.checkpoint)
+    merged = merge_execution_tables(first.tables, tail.tables)
+    for name in actual.tables:
+        assert_frame_equal(merged[name], actual.tables[name])
+
+
+@pytest.mark.parametrize(
+    "coordinate", ["record_date", "ex_date", "cash_pay_date", "share_available_date"]
+)
+def test_corporate_action_requires_applicable_dates_in_observed_calendar(coordinate):
+    calendar = pl.DataFrame({"time": [D1, D2, D4]})
+    action = {"action_id": "div", "asset_id": "a", "is_implemented": True,
+              "record_date": D1, "ex_date": D2, "cash_pay_date": D4,
+              "share_available_date": D4, "cash_dividend_per_share": 1.0,
+              "stock_dividend_per_share": 1.0}
+    action[coordinate] = D3
+    if coordinate == "record_date":
+        action["ex_date"] = D4
+    with pytest.raises(InputValidationError, match=coordinate):
+        evaluate_execution(plans([("buy", D1, "a", 10)]),
+            market([(day, "a", 10, 10) for day in (D1, D2, D4)]),
+            initial_capital=100, calendar=calendar,
+            config=ExecutionConfig(rate=0, min_fee=0),
+            corporate_actions=pl.DataFrame([action]))
+
+
+def test_corporate_action_future_dates_admit_calendar_extension_on_resume():
+    prices = market([(day, "a", 10, 10) for day in (D1, D2, D3, D4)])
+    transactions = plans([("buy", D1, "a", 10)])
+    actions = pl.DataFrame({"action_id": ["div"], "asset_id": ["a"],
+        "is_implemented": [True], "record_date": [D1], "ex_date": [D2],
+        "cash_pay_date": [D3], "share_available_date": [D3],
+        "cash_dividend_per_share": [1.0], "stock_dividend_per_share": [1.0]})
+    kwargs = {"initial_capital": 100, "config": ExecutionConfig(rate=0, min_fee=0),
+              "corporate_actions": actions}
+    first = evaluate_execution(transactions, prices.filter(pl.col("time") <= D2),
+        **kwargs, calendar=pl.DataFrame({"time": [D1, D2]}))
+    full = evaluate_execution(transactions, prices, **kwargs)
+    tail = evaluate_execution(
+        transactions, prices, **kwargs, checkpoint=first.checkpoint
+    )
+    merged = merge_execution_tables(first.tables, tail.tables)
+    for name in full.tables:
+        assert_frame_equal(merged[name], full.tables[name])
+    assert tail.tables["account_value"]["cash"][-1] == 10
+    assert tail.checkpoint.actual.cash_receivables.is_empty()
+    assert tail.checkpoint.actual.stock_receivables.is_empty()
+
+
+def test_corporate_action_ignores_nonapplicable_payment_dates():
+    actions = pl.DataFrame({"action_id": ["div"], "asset_id": ["a"],
+        "is_implemented": [True], "record_date": [D1], "ex_date": [D2],
+        "cash_pay_date": [D3], "share_available_date": [D3],
+        "cash_dividend_per_share": [0.0], "stock_dividend_per_share": [0.0]})
+    result = evaluate_execution(plans([("buy", D1, "a", 10)]),
+        market([(day, "a", 10, 10) for day in (D1, D2, D4)]),
+        initial_capital=100, config=ExecutionConfig(rate=0, min_fee=0),
+        corporate_actions=actions)
+    assert result.metrics["actual_pnl"] == 0
+
+
 @pytest.mark.parametrize("count", [8, 32])
 def test_execution_calendar_lookup_is_linear_and_preserves_accounts(monkeypatch, count):
     days = [D1 + timedelta(days=index) for index in range(count)]

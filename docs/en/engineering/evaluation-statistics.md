@@ -110,6 +110,10 @@ complete initial Portfolio bankruptcy yields -100% instead of NaN. The public
 `BENCHMARK_COMPARISON_POLICY` is the single policy marker for persisted default
 and saved-window comparisons. Hosts bind it into new derived identities while
 preserving old immutable chapters and reusing saved account/benchmark returns.
+Benchmark annualization uses the shared overflow-safe helper. An unrepresentable
+annualized relative return is null with `annualized_excess_return_reason`, while
+finite relative paths and other statistics remain available. Original saved
+chapters are never rewritten to add this diagnostic.
 Universe benchmark inputs also require unique nonnull normalized date/asset
 keys before accepting an equal- or size-weighted result. Reject ambiguous duplicates
 instead of changing constituent weights or permitting coverage above one.
@@ -223,6 +227,12 @@ statistics. Match finite coordinates before rank ties, retain unaffected daily
 summaries and remove replaced/deleted days. Applications prove complete holdings
 sessions before requesting absent-key zero fill. Account/holdings date evidence
 is captured on publication or explicit original-bound maintenance, never browsing.
+`pair_correlation_batches` shares that engine and policy for lazy bounded input
+batches, copying saved scalar days and finalizing only once per operation.
+Changed dates are disjoint across batches; cancellation or a failed producer
+returns no partial state and never changes the supplied saved history. Only
+new/affected numerical rows enter the daily kernel. Resource admission and
+original source/access proofs remain the caller's responsibility.
 
 `industry_exposure_strength` computes each date's L2 industry-beta norm against
 the causal population: without explicit activity, each factor becomes expected

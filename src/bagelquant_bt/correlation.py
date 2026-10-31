@@ -6,7 +6,7 @@ proofs. State contains daily scalar summaries, never signal/holdings panels.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from math import fsum, isfinite
 from typing import Any, Literal
@@ -31,9 +31,42 @@ def pair_correlation(
     zero_missing: bool = False,
     minimum_samples: int = 12,
     minimum_assets: int = 3,
+    check_canceled: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Update only caller-proved changed dates and summarize the selected window.
+    """Update and summarize one bounded pair batch; see pair_correlation_batches."""
+    return pair_correlation_batches(
+        ((left, right, changed_dates),),
+        kind=kind,
+        method=method,
+        previous=previous,
+        start=start,
+        end=end,
+        zero_missing=zero_missing,
+        minimum_samples=minimum_samples,
+        minimum_assets=minimum_assets,
+        check_canceled=check_canceled,
+    )
 
+
+def pair_correlation_batches(
+    batches: Iterable[tuple[pl.DataFrame, pl.DataFrame, Sequence[date]]],
+    *,
+    kind: Literal["returns", "cross_section"] = "returns",
+    method: Literal["pearson", "spearman"] = "pearson",
+    previous: Mapping[str, Any] | None = None,
+    start: date,
+    end: date,
+    zero_missing: bool = False,
+    minimum_samples: int = 12,
+    minimum_assets: int = 3,
+    check_canceled: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Consume bounded pair batches and summarize the saved scalar history once.
+
+    Each batch is ``(left, right, changed_dates)``. Changed dates must be unique
+    across all batches; an empty batch iterable is a metadata-only continuation.
+    Original daily state is copied once and never mutated, including on failure
+    or cancellation. Frames are consumed one batch at a time without retention.
     Frames have Date ``time`` and numeric ``value``; cross-sections also require
     nonnull String ``asset_id``. Changed dates remove previous observations even
     when replacement inputs are empty. Spearman ranks average ties *after* the
@@ -45,6 +78,8 @@ def pair_correlation(
     Previous state must have the same mode/method/missingness policy; the caller
     must separately prove every retained date's original input identity.
     """
+    cancel = check_canceled or (lambda: None)
+    cancel()
     if kind not in {"returns", "cross_section"} or method not in {
         "pearson",
         "spearman",
@@ -54,11 +89,6 @@ def pair_correlation(
         raise ValueError("Return correlation uses pairwise finite Pearson samples")
     if type(start) is not date or type(end) is not date or start > end:
         raise ValueError("Correlation requires ordered Date bounds")
-    changed = set(changed_dates)
-    if len(changed) != len(changed_dates) or any(
-        type(day) is not date for day in changed
-    ):
-        raise ValueError("Changed dates must be unique Date values")
     if any(
         type(value) is not int or value < 2
         for value in (minimum_samples, minimum_assets)
@@ -76,6 +106,57 @@ def pair_correlation(
         previous.get(key) != value for key, value in policy.items()
     ):
         raise ValueError("Previous correlation state has a different policy")
+    # Retain scalar history once; replacement dates may represent deletions.
+    days = {}
+    for index, row in enumerate((previous or {}).get("days", ())):
+        if index % 256 == 0:
+            cancel()
+        date.fromisoformat(row["time"])
+        days[row["time"]] = dict(row)
+    changed_all: set[date] = set()
+    iterator = iter(batches)
+    while True:
+        cancel()
+        try:
+            left, right, changed_dates = next(iterator)
+        except StopIteration:
+            break
+        cancel()
+        changed = set(changed_dates)
+        if (
+            len(changed) != len(changed_dates)
+            or any(type(day) is not date for day in changed)
+            or not changed_all.isdisjoint(changed)
+        ):
+            raise ValueError("Changed dates must be unique Date values across batches")
+        _validate_pair_frames(left, right, kind=kind, changed=changed)
+        changed_all.update(changed)
+        for day in changed:
+            days.pop(day.isoformat(), None)
+        _update_pair_days(
+            days,
+            left,
+            right,
+            kind=kind,
+            method=method,
+            zero_missing=zero_missing,
+            minimum_assets=minimum_assets,
+            check_canceled=cancel,
+        )
+        # Release consumed panels before asking a lazy producer for its next batch.
+        del left, right, changed_dates
+    cancel()
+    return _summarize_pair_days(
+        days,
+        policy=policy,
+        start=start,
+        end=end,
+        processed_dates=len(changed_all),
+        check_canceled=cancel,
+    )
+
+
+def _validate_pair_frames(left, right, *, kind, changed):
     keys = ["time"] + (["asset_id"] if kind == "cross_section" else [])
     for frame in (left, right):
         if not {*keys, "value"} <= set(frame.columns):
@@ -92,12 +173,11 @@ def pair_correlation(
             raise ValueError("Correlation coordinates must be unique")
         if not set(frame["time"].to_list()) <= changed:
             raise ValueError("Correlation inputs exceed the admitted changed dates")
-    # Retain scalar history; replacement dates can represent deletions/empty days.
-    days = {
-        row["time"]: dict(row)
-        for row in (previous or {}).get("days", ())
-        if date.fromisoformat(row["time"]) not in changed
-    }
+
+
+def _update_pair_days(
+    days, left, right, *, kind, method, zero_missing, minimum_assets, check_canceled
+):
     if kind == "returns":
         paired = (
             left.select("time", pl.col("value").alias("left"))
@@ -106,8 +186,10 @@ def pair_correlation(
             .sort("time")
         )
         for row in paired.iter_rows(named=True):
+            check_canceled()
             days[str(row["time"])] = {**row, "time": str(row["time"])}
     else:
+        keys = ["time", "asset_id"]
         left_frame = left.select(
             *keys, pl.col("value").alias("left"), pl.lit(True).alias("left_present")
         )
@@ -146,6 +228,7 @@ def pair_correlation(
             .sort("time")
         )
         for row in grouped.iter_rows(named=True):
+            check_canceled()
             valid = (
                 row["sample_count"] >= minimum_assets
                 and row["left_unique"] >= 2
@@ -160,12 +243,13 @@ def pair_correlation(
                 if valid
                 else None,
             }
-    selected = [
-        row
-        for day, row in sorted(days.items())
-        if start.isoformat() <= day <= end.isoformat()
-    ]
-    if kind == "returns":
+
+
+def _summarize_pair_days(days, *, policy, start, end, processed_dates, check_canceled):
+    ordered = sorted(days.items())
+    start_key, end_key = start.isoformat(), end.isoformat()
+    selected = [row for day, row in ordered if start_key <= day <= end_key]
+    if policy["kind"] == "returns":
         left_frame = pl.DataFrame(
             {
                 "time": [date.fromisoformat(row["time"]) for row in selected],
@@ -178,7 +262,7 @@ def pair_correlation(
             schema={"time": pl.Date, "value": pl.Float64},
         )
         result = factor_return_correlation(
-            left_frame, right_frame, minimum_samples=minimum_samples
+            left_frame, right_frame, minimum_samples=policy["minimum_samples"]
         )
         if result["correlation"] is not None and not isfinite(result["correlation"]):
             result.update(correlation=None, reason="undefined_correlation")
@@ -195,8 +279,9 @@ def pair_correlation(
             "asset_sample_count": sum(row["sample_count"] for row in valid_days),
             "reason": None if valid_days else "insufficient_cross_sections",
         }
+    check_canceled()
     return {
         **result,
-        "state": {**policy, "days": [row for _, row in sorted(days.items())]},
-        "processed_dates": len(changed),
+        "state": {**policy, "days": [row for _, row in ordered]},
+        "processed_dates": processed_dates,
     }

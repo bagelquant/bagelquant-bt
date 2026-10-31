@@ -30,6 +30,18 @@ Default costs are max(0.0005 * executed notional, 5), with no tax/slippage, lot 
 and settlement 0. Custom pure cost rules need stable ID/version/parameters and
 nonnegative valid quotes; total buy charge must increase with quantity.
 Caller supplies exchange-specific lots/settlement/tax/slippage/actions.
+The weight bridge uses that same configured default lot during decision sizing;
+per-asset overrides need not enumerate all assets.
+For weight mode with a non-unit default, `WEIGHT_SIZING_POLICY` binds the fixed
+sizing to native financial settings and standalone prefix proofs. Marker-free
+old account state cannot continue under the corrected implementation. Explicit
+transactions and unit-default weights preserve their existing proofs.
+Applicable corporate-action dates inside the supplied observation range must
+belong to its calendar.
+Reject missing record/ex dates or positive cash/share settlement dates before
+executing, rather than silently losing income or stranding receivables. Dates
+after the cutoff may await a future calendar extension; original historical
+entitlement proofs remain required on continuation.
 
 The ideal zero-fee account fully executes original quantities at supplied
 reference prices without actual blocks/lots/settlement constraints. It must

@@ -38,6 +38,9 @@ starts at -10% relative drawdown. An initial complete Portfolio loss remains
 their Evaluation/chapter identity and retain old receipts. Re-aggregation uses
 saved account returns; it does not authorize account replay or value rebuilding.
 Each selected window starts with its own unit base and excludes earlier peaks.
+If the annualized relative wealth exceeds finite floating-point range,
+`annualized_excess_return` is null and `annualized_excess_return_reason` explains
+why. Finite paths and independently defined statistics remain available.
 
 `build_universe_benchmark_returns` requires unique, nonnull `(time, asset_id)`
 coordinates after its supported Date/String normalization. Duplicate stock

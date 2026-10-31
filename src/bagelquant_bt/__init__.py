@@ -10,7 +10,11 @@ from .benchmarks import (
 from .config import (
     TransactionCostConfig,
 )
-from .correlation import PAIR_CORRELATION_POLICY, pair_correlation
+from .correlation import (
+    PAIR_CORRELATION_POLICY,
+    pair_correlation,
+    pair_correlation_batches,
+)
 from .diagnostics import (
     aggregate_exposures,
     alpha_evaluation_contract,
@@ -47,7 +51,7 @@ from .execution_evaluation import (
     save_checkpoint,
     summarize_transaction_pnl,
 )
-from .execution_inputs import validate_execution_continuation
+from .execution_inputs import WEIGHT_SIZING_POLICY, validate_execution_continuation
 from .factor_analysis import (
     factor_return_correlation,
     holdings_factor_exposure,
@@ -172,6 +176,7 @@ __all__ = [
     "RISK_UPDATE_POLICY",
     "SAMPLE_POLICY",
     "SIGNAL_PERSISTENCE_HORIZONS",
+    "WEIGHT_SIZING_POLICY",
     "BTExecutionOptions",
     "BTStore",
     "BacktestConfigError",
@@ -250,6 +255,7 @@ __all__ = [
     "non_overlapping_cohort_statistics",
     "one_sample_t_test",
     "pair_correlation",
+    "pair_correlation_batches",
     "partial_rank_ic",
     "plan_risk_factor_update",
     "plan_risk_profile_update",

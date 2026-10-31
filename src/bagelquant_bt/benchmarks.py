@@ -9,7 +9,7 @@ import polars as pl
 
 from .exceptions import InputValidationError
 from .inputs import ASSET_ID, TIME, validate_universe
-from .statistics import return_metrics
+from .statistics import annualized_return, return_metrics
 
 DEFAULT_BENCHMARK = "universe_equal_weight"
 BENCHMARK_COMPARISON_POLICY = "saved-value-benchmark.v2"
@@ -86,10 +86,8 @@ def compare_portfolio_to_benchmarks(
         active_mean = float(np.mean(active))
         active_std = float(np.std(active, ddof=1)) if periods > 1 else math.nan
         final_relative_wealth = float(relative_wealth[-1])
-        annualized_excess = (
-            final_relative_wealth ** (annualization / periods) - 1.0
-            if final_relative_wealth > 0.0
-            else -1.0
+        annualized_excess = annualized_return(
+            final_relative_wealth, periods=periods, annualization=annualization
         )
         path_frames.append(
             frame.with_columns(
@@ -120,7 +118,14 @@ def compare_portfolio_to_benchmarks(
                 "periods": periods,
                 "portfolio_total_return": float(portfolio_wealth[-1] - 1.0),
                 "benchmark_total_return": float(benchmark_wealth[-1] - 1.0),
-                "annualized_excess_return": annualized_excess,
+                "annualized_excess_return": (
+                    annualized_excess if math.isfinite(annualized_excess) else None
+                ),
+                "annualized_excess_return_reason": (
+                    None
+                    if math.isfinite(annualized_excess)
+                    else "annualized wealth is non-finite"
+                ),
                 "tracking_error": (
                     active_std * math.sqrt(annualization)
                     if not math.isnan(active_std)
@@ -167,6 +172,7 @@ def _portfolio_benchmark_summary_schema() -> dict[str, pl.DataType]:
         "portfolio_total_return": pl.Float64,
         "benchmark_total_return": pl.Float64,
         "annualized_excess_return": pl.Float64,
+        "annualized_excess_return_reason": pl.String,
         "tracking_error": pl.Float64,
         "information_ratio": pl.Float64,
         "max_relative_drawdown": pl.Float64,

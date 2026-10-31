@@ -191,6 +191,14 @@ changes. Normal WAL read-mark coordination may touch SHM; durable payloads stay
 unchanged. The default `runtime=False` retains strict offline inspection and
 source/sidecar preservation for setup and installation.
 
+`WEIGHT_SIZING_POLICY = "bt.execution.weight_sizing.v2"` identifies corrected
+decision sizing for weight-mode accounts with a non-unit default buy lot. BT
+binds it into native source settings and standalone checkpoint proofs only for
+that mode/configuration. Hosts bind it into their account/evaluation identity
+before reusing results. Marker-free affected checkpoints require an explicit
+fresh calculation; original results remain readable. Transaction mode and
+unit-default weight accounts retain their original identities.
+
 `evaluation_sample` (including optional `minimum_signal_coverage`) and `SAMPLE_POLICY` expose the saved effective-sample contract; [research statistics](research-statistics.md) defines dates, gaps and empirical ES95.
 
 
@@ -202,7 +210,7 @@ it, `workers` retains the standalone bounded-thread behavior.
 
 
 `pair_correlation(left, right, *, kind, method="pearson", changed_dates,
-previous=None, start=None, end=None, zero_missing=False, ...)` computes saved-input
+previous=None, start, end, zero_missing=False, ...)` computes saved-input
 return or daily cross-section correlation. Inputs are typed Date `time`, Float64
 `value`, plus String `asset_id` for cross-sections; keys are unique. Return
 correlation uses the common finite dates, default minimum 12, and Pearson only.
@@ -213,10 +221,24 @@ the union of assets held by either account, excluding keys with zero weight in
 both accounts and filling absent keys only; callers must first prove both daily
 snapshots complete. Explicit nulls/nonfinite values never become zero.
 
+`pair_correlation_batches(batches, *, kind="returns", method="pearson",
+previous=None, start, end, zero_missing=False, minimum_samples=12,
+minimum_assets=3, check_canceled=None)` accepts an iterable of bounded
+`(left, right, changed_dates)` tuples through the same numerical engine. It
+copies retained scalar history once, consumes one batch at a time and finalizes
+the selected window once. Changed dates must be unique across the entire
+operation. Empty replacements delete old observations; an empty iterable
+summarizes unchanged state. Input errors, producer failures and cooperative
+cancellation propagate without modifying the supplied previous state.
+`pair_correlation` delegates one batch and accepts the same optional cancellation
+callback. The caller proves source identity and admits the size of each batch;
+BT retains no historical numerical panels and introduces no cache or store.
+
 The result includes compact daily `state`, `processed_dates`, correlation, sample
 counts and coverage. A same-policy previous state retains unchanged dates; only
 `changed_dates` are replaced or deleted and final range clipping uses summaries.
-The caller owns source/access identity, batching, resource admission and memory
+`processed_dates` sums the unique changed dates across all consumed batches.
+The caller owns source/access identity, batch sizing, resource admission and memory
 lifetime. BT never persists this transient state. Account unit-return and actual
 holdings references now capture compact date evidence during publication. Older
 ones return unknown until explicit original-bound `index_plan(evidence=True,

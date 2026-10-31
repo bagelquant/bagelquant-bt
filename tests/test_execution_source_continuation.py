@@ -1,6 +1,7 @@
 """Native source authority admits only new account sessions and immutable tails."""
 
 import hashlib
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -9,6 +10,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from bagelquant_bt import (
+    WEIGHT_SIZING_POLICY,
     BTStore,
     ExecutionConfig,
     InputValidationError,
@@ -20,6 +22,8 @@ from bagelquant_bt import (
     save_checkpoint,
     validate_execution_continuation,
 )
+from bagelquant_bt.execution_evaluation import _digest
+from bagelquant_bt.execution_inputs import bind_execution_inputs
 from test_execution_evaluation import market, plans
 
 START = date(2024, 1, 2)
@@ -67,6 +71,38 @@ def bridge_inputs():
     )
     calendar = pl.DataFrame({"time": DAYS})
     return weights, decisions, prices, calendar
+
+
+@pytest.mark.parametrize(
+    "mode,default_lot,affected",
+    [("weights", 100, True), ("weights", 1, False),
+     ("transactions", 100, False), ("transactions", 1, False)],
+)
+def test_weight_sizing_policy_rejects_only_affected_legacy_source_bindings(
+    mode, default_lot, affected
+):
+    config = ExecutionConfig(default_buy_lot_size=default_lot)
+    binding = bind_execution_inputs(
+        evidence(DAYS[1], mode=mode), through=DAYS[1], initial_capital=1500,
+        config=config, mode=mode, session_lag=1, reference_price_mode="execution",
+    )
+    legacy = deepcopy(binding)
+    marker = legacy["settings"].pop("weight_sizing_policy", None)
+    assert marker == (WEIGHT_SIZING_POLICY if affected else None)
+    metadata = {"time": str(DAYS[1]), "source_binding": legacy,
+                "prefix_hash": _digest(legacy)}
+    kwargs = {"prefix_evidence": evidence(DAYS[1], mode=mode),
+              "initial_capital": 1500, "config": config, "mode": mode}
+    if affected:
+        with pytest.raises(InputValidationError, match="numerical settings differ"):
+            validate_execution_continuation(metadata, **kwargs)
+    else:
+        assert binding == legacy
+        assert binding["settings"] == {
+            key: value for key, value in config.identity().items()
+            if key != "annualization"
+        }
+        validate_execution_continuation(metadata, **kwargs)
 
 
 def test_native_continuation_rejects_changed_static_rule_on_consumed_asset():

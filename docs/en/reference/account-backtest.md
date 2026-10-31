@@ -23,10 +23,26 @@ typed `target_return_reason` or `actual_return_reason` of `no_filled_notional`.
 `run_execution_from_weights` sizes complete saved weights at the actual decision
 close and freezes signed deltas for caller-selected future execution. Opening
 gaps never re-size shares. Known calendar must cover execution and settlement.
+Decision sizing and actual fills both use `config.default_buy_lot_size` for
+assets absent from the optional per-asset `lot_sizes` overrides.
+For weight-mode execution with a non-unit default lot, public
+`WEIGHT_SIZING_POLICY` (`bt.execution.weight_sizing.v2`) binds the corrected
+sizing into source authority and standalone checkpoint proofs. A checkpoint
+created under the former sizing implementation requires an explicit fresh
+calculation; retained results are unchanged. Unit-default weights and explicit
+transaction plans retain their existing identities.
 Price gaps freeze last observed marks; recovery recognizes the cumulative move.
 Its `reference_price_mode="execution"` default uses the supplied execution
 reference, while explicit `"decision"` freezes the decision-close price alongside
 the frozen quantity. Workbench selects `"decision"` for its target comparison.
+
+Applicable corporate-action record/ex dates and cash/share payment dates within
+the observed calendar range must be supplied trading sessions. Missing dates
+raise an input error; BT does not choose a next-session convention or silently
+skip events. Cash payment dates apply only to positive cash dividends and share
+availability dates only to positive stock dividends. Future dates remain valid
+before the calendar is extended on continuation, and verified old record dates
+retain their existing history requirements.
 
 Checkpoint/codec preserve both states, zero coordinates, FIFO entitlements and
 future/retry plans. Resume verifies historical settings/input/calendar proofs;
