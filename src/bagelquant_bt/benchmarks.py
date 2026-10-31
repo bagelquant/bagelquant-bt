@@ -12,6 +12,7 @@ from .inputs import ASSET_ID, TIME, validate_universe
 from .statistics import return_metrics
 
 DEFAULT_BENCHMARK = "universe_equal_weight"
+BENCHMARK_COMPARISON_POLICY = "saved-value-benchmark.v2"
 
 
 def compare_portfolio_to_benchmarks(
@@ -25,6 +26,8 @@ def compare_portfolio_to_benchmarks(
     Inputs are aligned independently for each benchmark on exact dates.  The
     returned path contains relative wealth, while the summary contains the
     standard active-return statistics for the same aligned observations.
+    Relative drawdown includes the initial relative wealth of one, including
+    a first-observation loss or complete portfolio bankruptcy.
     """
 
     if not isinstance(portfolio_returns, pl.DataFrame):
@@ -75,9 +78,10 @@ def compare_portfolio_to_benchmarks(
         portfolio_wealth = np.cumprod(1.0 + portfolio_values)
         benchmark_wealth = np.cumprod(1.0 + benchmark_values)
         relative_wealth = portfolio_wealth / benchmark_wealth
-        relative_drawdown = (
-            relative_wealth / np.maximum.accumulate(relative_wealth) - 1.0
-        )
+        relative_peaks = np.maximum.accumulate(relative_wealth)
+        if relative_peaks[0] < 1.0:
+            np.maximum(relative_peaks, 1.0, out=relative_peaks)
+        relative_drawdown = relative_wealth / relative_peaks - 1.0
         periods = len(active)
         active_mean = float(np.mean(active))
         active_std = float(np.std(active, ddof=1)) if periods > 1 else math.nan
@@ -200,7 +204,10 @@ def build_universe_benchmark_returns(
         pl.col(ASSET_ID).cast(pl.String),
         pl.col("forward_return").cast(pl.Float64, strict=False),
     )
-    if universe is None and sizes is None:
+    if returns[TIME].null_count() or returns[ASSET_ID].null_count():
+        raise InputValidationError("forward_returns require nonnull time and asset_id")
+    inferred_equal_weight = universe is None and sizes is None
+    if inferred_equal_weight:
         valid = (
             pl.col("forward_return").is_not_null()
             & pl.col("forward_return").is_finite()
@@ -209,11 +216,24 @@ def build_universe_benchmark_returns(
             returns.group_by(TIME)
             .agg(
                 pl.len().cast(pl.Int64).alias("expected_count"),
+                pl.col(ASSET_ID).n_unique().alias("_unique_assets"),
                 valid.sum().cast(pl.Int64).alias("observed_count"),
                 pl.col("forward_return").filter(valid).mean().alias("return"),
             )
             .sort(TIME)
         )
+        # Validate every source row in the already required date reduction,
+        # including missing returns, without another full-panel hash/mask.
+        duplicate_keys = (
+            aggregated["expected_count"] != aggregated["_unique_assets"]
+        ).any()
+    else:
+        duplicate_keys = returns.select(
+            pl.struct(TIME, ASSET_ID).is_duplicated().any()
+        ).item()
+    if duplicate_keys:
+        raise InputValidationError("forward_returns must be unique by (time, asset_id)")
+    if inferred_equal_weight:
         benchmark = aggregated.filter(pl.col("observed_count") > 0).select(
             TIME, pl.lit(name).alias("benchmark"), "return"
         )

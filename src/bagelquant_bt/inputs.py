@@ -22,6 +22,7 @@ def validate_panel_frame(
 
     if not isinstance(frame, pl.DataFrame):
         raise InputValidationError(f"{label} must be a polars DataFrame")
+    value_columns = tuple(value_columns)
     columns = set(frame.columns)
     required = {TIME, ASSET_ID, *value_columns}
     missing = sorted(required - columns)

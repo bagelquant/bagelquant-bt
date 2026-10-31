@@ -242,7 +242,8 @@ def quantile_rank_information_coefficients(
 
     When ``periods`` is supplied, daily gross returns are compounded within
     each ``[time, next_time)`` execution interval before the cross-sectional
-    Rank IC is calculated.  The result is labelled by the interval start.
+    Rank IC is calculated. Each quantile requires a finite return on every
+    observed date in the interval. The result is labelled by the interval start.
     """
 
     schema = {
@@ -325,8 +326,14 @@ def _compound_quantile_period_returns(
         interval = quantile_returns.filter(
             (pl.col(TIME) >= start) & (pl.col(TIME) < end)
         )
+        expected_count = interval.get_column(TIME).n_unique()
+        # Group once so each quantile uses the same daily coverage requirement
+        # without rescanning the interval separately for every quantile.
+        by_label = dict(
+            interval.group_by("quantile").agg(pl.col("return")).iter_rows()
+        )
         for label in expected_labels:
-            values = interval.filter(pl.col("quantile") == label).get_column("return")
+            values = by_label.get(label, ())
             finite = [
                 float(value)
                 for value in values
@@ -334,7 +341,7 @@ def _compound_quantile_period_returns(
             ]
             compounded = (
                 float(np.prod(1.0 + np.asarray(finite, dtype=float)) - 1.0)
-                if finite and len(finite) == len(values)
+                if finite and len(finite) == expected_count
                 else None
             )
             rows.append({TIME: start, "quantile": label, "return": compounded})

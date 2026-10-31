@@ -7,6 +7,7 @@ from bagelquant_bt.exceptions import InputValidationError
 from bagelquant_bt.inputs import (
     validate_execution_availability,
     validate_factor,
+    validate_panel_frame,
     validate_prices,
     validate_weights,
 )
@@ -102,3 +103,20 @@ def test_execution_availability_rejects_null_rule_values() -> None:
         match="execution_availability must not contain null values",
     ):
         validate_execution_availability(frame)
+
+
+def test_panel_value_columns_iterator_keeps_numeric_and_missingness_validation():
+    frame = pl.DataFrame({
+        "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+        "asset_id": ["a"] * 3,
+        "value": [1.0, None, float("nan")],
+    })
+    result = validate_panel_frame(
+        frame, label="signal", value_columns=iter(["value"])
+    )
+    assert result["value"].to_list() == [1.0]
+    with pytest.raises(InputValidationError, match=r"signal\.value must be numeric"):
+        validate_panel_frame(
+            frame.with_columns(pl.lit("invalid").alias("value")),
+            label="signal", value_columns=iter(["value"]),
+        )

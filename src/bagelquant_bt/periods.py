@@ -178,7 +178,10 @@ def aggregate_saved_window(
                 annualization=annualization,
             )
         if section == "benchmark":
-            from bagelquant_bt.benchmarks import compare_portfolio_to_benchmarks
+            from bagelquant_bt.benchmarks import (
+                BENCHMARK_COMPARISON_POLICY,
+                compare_portfolio_to_benchmarks,
+            )
 
             returns = (
                 sample["benchmark_comparison"]
@@ -192,7 +195,7 @@ def aggregate_saved_window(
                 annualization=annualization,
             )
             sample.update(benchmark_comparison=path, benchmark_statistics=statistics)
-            metrics["benchmark_contract"] = "saved-value-benchmark.v1"
+            metrics["benchmark_contract"] = BENCHMARK_COMPARISON_POLICY
         # Rebase the saved account's wealth; preserve equity and actual holdings.
         account = sample.get("account_account_value")
         if (

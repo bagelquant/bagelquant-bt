@@ -90,6 +90,20 @@ nonoverlapping and sequential; availability is at/after the economic end.
 Unmatured labels are unavailable, not zero. Mature missing constituents retain
 fixed Book/Spread weight with visible coverage; IC and complete quantile rules
 remain strict. Calendar gaps must not compress economic windows.
+Periodized quantile Rank IC requires finite saved returns for every quantile on
+the union of supplied dates in each execution interval. Missing quantile/date
+rows remain unavailable instead of shortening one quantile's compounding window.
+Group each interval once; saved-window aggregation never replays daily kernels.
+
+Benchmark comparison policy `saved-value-benchmark.v2` includes initial relative
+wealth 1 in its running peak. First-session underperformance remains drawdown;
+complete initial Portfolio bankruptcy yields -100% instead of NaN. The public
+`BENCHMARK_COMPARISON_POLICY` is the single policy marker for persisted default
+and saved-window comparisons. Hosts bind it into new derived identities while
+preserving old immutable chapters and reusing saved account/benchmark returns.
+Universe benchmark inputs also require unique nonnull normalized date/asset
+keys before accepting an equal- or size-weighted result. Reject ambiguous duplicates
+instead of changing constituent weights or permitting coverage above one.
 
 Alpha/Prediction share evaluation: Pearson/rank IC and IR, cross-sectional and
 window returns, gross-one centered-rank Book/Spread, deterministic quantiles,

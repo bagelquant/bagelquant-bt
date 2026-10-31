@@ -17,6 +17,34 @@ coordinates/returns/holdings. `account_fill_turnover` uses actual fill notional
 and prior equity. Default/custom periods aggregate saved primitives and correct
 maturity without account or model replay.
 
+`quantile_rank_information_coefficients(..., periods=...)` compounds each
+quantile's saved daily returns over the same `[time, next_time)` interval.
+Every quantile needs one finite return on every date observed in that interval;
+an absent row has the same unavailable effect as an explicit null or nonfinite
+return. For example, if Q1 and Q2 have two daily returns but Q3 has only one,
+the period's Rank IC is unavailable. It never compares Q3's shorter holding
+period with the other quantiles' complete periods. Dates absent from all supplied
+quantiles cannot be inferred; callers supply the complete daily observation axis.
+Aggregation reads saved primitives only and leaves historical results unchanged.
+
+`compare_portfolio_to_benchmarks` compounds each matched Portfolio/benchmark
+sample from wealth 1. Relative wealth divides those two paths; relative drawdown
+divides that ratio by its running peak, including the initial ratio 1, then
+subtracts 1. A Portfolio return of -10% against a flat benchmark therefore
+starts at -10% relative drawdown. An initial complete Portfolio loss remains
+-100% relative drawdown instead of an undefined zero-over-zero ratio.
+`BENCHMARK_COMPARISON_POLICY` identifies this derived policy as
+`saved-value-benchmark.v2`. Hosts that persist comparisons bind the policy to
+their Evaluation/chapter identity and retain old receipts. Re-aggregation uses
+saved account returns; it does not authorize account replay or value rebuilding.
+Each selected window starts with its own unit base and excludes earlier peaks.
+
+`build_universe_benchmark_returns` requires unique, nonnull `(time, asset_id)`
+coordinates after its supported Date/String normalization. Duplicate stock
+returns are rejected rather than counted twice or silently deduplicated. Missing
+or nonfinite return values still reduce observed coverage and use the existing
+available-sample renormalization; they are distinct from missing coordinate keys.
+
 `capacity_participation` uses strictly prior 20 market-session traded amounts;
 execution-day observations are excluded. Nonnegative known zero is valid;
 missing/negative/nonfinite coverage or a zero denominator is unavailable. This

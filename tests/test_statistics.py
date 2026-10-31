@@ -156,3 +156,30 @@ def test_periodized_quantile_rank_ic_nulls_incomplete_and_constant_groups() -> N
     assert quantile_rank_information_coefficients(
         constant, periods=periods
     ).item(0, "quantile_rank_ic") is None
+
+
+@pytest.mark.parametrize("missing", ["absent", "null", "nan", "infinite"])
+def test_periodized_quantile_rank_ic_requires_matching_daily_coverage(missing):
+    days = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    rows = [
+        {"time": day, "quantile": f"q{number}", "return": (4 - number) / 100}
+        for day in days
+        for number in range(1, 4)
+    ]
+    # The first interval has q1/q2 on both dates but q3 lacks its second return.
+    if missing == "absent":
+        rows = [row for row in rows if not (
+            row["time"] == days[1] and row["quantile"] == "q3"
+        )]
+    else:
+        rows[5]["return"] = {
+            "null": None, "nan": float("nan"), "infinite": float("inf")
+        }[missing]
+    result = quantile_rank_information_coefficients(
+        pl.DataFrame(rows),
+        periods=pl.DataFrame({
+            "time": [days[0], days[2]],
+            "next_time": [days[2], date(2024, 1, 5)],
+        }),
+    )
+    assert result["quantile_rank_ic"].to_list() == [None, 1.0]

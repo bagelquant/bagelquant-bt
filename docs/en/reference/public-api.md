@@ -1,5 +1,10 @@
 # Public API — BT 0.12
 
+`BENCHMARK_COMPARISON_POLICY` identifies the saved benchmark comparison formula.
+Current policy `saved-value-benchmark.v2` includes initial relative wealth 1 in
+the relative-drawdown peak. Bind this marker when persisting comparisons; keep
+original historical receipts and reuse saved account returns for a new summary.
+
 `alpha_return_comparison(lag_returns, *, annualization)` consumes authorized,
 mature saved Alpha lag rows and returns common-date Book/Tail statistics and
 plot tables. `annualized_turnover(mean_daily_turnover, *, annualization)` scales

@@ -2,6 +2,7 @@
 
 from .allocation import IntegerTargetAllocation, allocate_integer_positions
 from .benchmarks import (
+    BENCHMARK_COMPARISON_POLICY,
     benchmark_performance,
     build_universe_benchmark_returns,
     compare_portfolio_to_benchmarks,
@@ -157,6 +158,7 @@ from .store import (
 from .window import alpha_return_comparison
 
 __all__ = [
+    "BENCHMARK_COMPARISON_POLICY",
     "DAILY_ALPHA_RETURN_LAGS",
     "DAILY_BOOK_LEAD_LAGS",
     "DAILY_BUCKET_WINDOWS",
